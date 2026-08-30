@@ -1,0 +1,13 @@
+{
+  "backend": "anthropic",
+  "anthropic_api_key": "",
+  "anthropic_model": "claude-sonnet-4-6",
+  "ollama_model": "llama3.1:8b",
+  "privacy_ack": false,
+  "default_direction": "Auto-detect",
+  "default_french_formality": "Informal (tu)",
+  "default_french_variant": "Neutral international French",
+  "protect_placeholders": true,
+  "save_local_history": false,
+  "max_input_chars": 2000
+}

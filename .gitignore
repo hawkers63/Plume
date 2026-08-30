@@ -1,0 +1,11 @@
+# Live config — contains a personal Anthropic API key
+plume_config.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller build output
+build/
+dist/
