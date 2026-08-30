@@ -91,6 +91,14 @@ FORMALITIES = (FORM_INFORMAL, FORM_FORMAL, FORM_AUTO)
 VARIANT_NEUTRAL = "Neutral international French"
 VARIANTS = (VARIANT_NEUTRAL,)
 
+# French gender-agreement controls. A conversation has two people, so Plume
+# tracks agreement for the speaker ("I"/"we") and the addressee ("you")
+# independently. "Avoid where possible" prefers wording that needs no gender.
+GENDER_FEMININE = "Feminine"
+GENDER_MASCULINE = "Masculine"
+GENDER_AVOID = "Avoid where possible"
+FRENCH_GENDERS = (GENDER_FEMININE, GENDER_MASCULINE, GENDER_AVOID)
+
 # Confidence values the model may report for language detection.
 CONFIDENCE_VALUES = ("high", "medium", "low")
 
@@ -108,7 +116,7 @@ _PH_TOKEN_RE = re.compile(r"\u27e6PH\d+\u27e7")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
-ANTHROPIC_MAX_TOKENS = 2000
+ANTHROPIC_MAX_TOKENS = 4096
 ANTHROPIC_TIMEOUT = 60
 
 OLLAMA_BASE_URL = "http://localhost:11434"
@@ -151,6 +159,8 @@ DEFAULT_CONFIG = {
     "default_direction": DIR_AUTO,
     "default_french_formality": FORM_INFORMAL,
     "default_french_variant": VARIANT_NEUTRAL,
+    "default_french_speaker_gender": GENDER_FEMININE,
+    "default_french_recipient_gender": GENDER_FEMININE,
     "protect_placeholders": True,
     "save_local_history": False,
     "max_input_chars": DEFAULT_MAX_INPUT_CHARS,
@@ -159,6 +169,15 @@ DEFAULT_CONFIG = {
 
 class ConfigError(Exception):
     """Raised when configuration cannot be saved safely."""
+
+
+def _coerce_choice(value, allowed, default):
+    """Return *value* if it is one of *allowed*, otherwise *default*.
+
+    Used to harden configuration loading against a hand-edited file that
+    contains a stale or misspelt value for a fixed-choice field.
+    """
+    return value if value in allowed else default
 
 
 def _is_existing_file_malformed(path: str) -> bool:
@@ -197,6 +216,35 @@ def load_config():
     for key, value in data.items():
         if key in DEFAULT_CONFIG:
             config[key] = value
+
+    # Harden types: a hand-edited file may hold the wrong kind of value. Unknown
+    # keys were already ignored above; here we coerce known ones so the UI thread
+    # and the backend dispatcher can trust them. A misspelt "Ollama" must not
+    # silently send text to Claude, and a non-numeric limit must not raise.
+    config["backend"] = (
+        "ollama" if str(config.get("backend") or "").strip().lower() == "ollama"
+        else "anthropic"
+    )
+    config["default_direction"] = _coerce_choice(
+        config.get("default_direction"), DIRECTIONS, DIR_AUTO)
+    config["default_french_formality"] = _coerce_choice(
+        config.get("default_french_formality"), FORMALITIES, FORM_INFORMAL)
+    config["default_french_variant"] = _coerce_choice(
+        config.get("default_french_variant"), VARIANTS, VARIANT_NEUTRAL)
+    config["default_french_speaker_gender"] = _coerce_choice(
+        config.get("default_french_speaker_gender"), FRENCH_GENDERS, GENDER_FEMININE)
+    config["default_french_recipient_gender"] = _coerce_choice(
+        config.get("default_french_recipient_gender"), FRENCH_GENDERS, GENDER_FEMININE)
+    config["protect_placeholders"] = bool(config.get("protect_placeholders"))
+    config["privacy_ack"] = bool(config.get("privacy_ack"))
+    config["save_local_history"] = bool(config.get("save_local_history"))
+    try:
+        config["max_input_chars"] = int(config.get("max_input_chars"))
+        if config["max_input_chars"] < 1:
+            raise ValueError
+    except (TypeError, ValueError):
+        config["max_input_chars"] = DEFAULT_MAX_INPUT_CHARS
+
     return config, None
 
 
@@ -387,10 +435,37 @@ _SCHEMA_HINT = """{
 }"""
 
 
+def build_gender_clause(speaker_gender=GENDER_AVOID,
+                        recipient_gender=GENDER_AVOID) -> str:
+    """Describe the requested French gender-agreement context.
+
+    French agreement affects adjectives and some past participles in the first
+    and second person, so the speaker ("I"/"we") and the addressee ("you") are
+    handled independently. Explicit gender in the source always wins over these
+    settings, and "avoid where possible" prefers wording that needs no gender.
+    """
+    return (
+        "French gender agreement context: use {speaker} agreement for the "
+        "speaker/user in first-person French wording (I, me, we), and use "
+        "{recipient} agreement for the addressee/other person in second-person "
+        "French wording (you). When the source text explicitly marks gender, "
+        "preserve that explicit meaning in preference to these settings. When a "
+        "value is 'avoid where possible', prefer natural wording that does not "
+        "require gendered agreement, and if gendered wording cannot be avoided "
+        "add one concise note rather than guessing. When translating from French "
+        "into English, do not invent gender in the English; use these settings "
+        "only to read ambiguous or inclusive French. If a sentence is "
+        "gender-neutral in French, do not force gendered wording. If it involves "
+        "both 'I' and 'you', apply both settings."
+    ).format(speaker=speaker_gender.lower(), recipient=recipient_gender.lower())
+
+
 def build_translation_prompt(direction=DIR_AUTO,
                              french_formality=FORM_INFORMAL,
                              french_variant=VARIANT_NEUTRAL,
-                             protect_tokens: bool = True) -> str:
+                             protect_tokens: bool = True,
+                             speaker_gender=GENDER_AVOID,
+                             recipient_gender=GENDER_AVOID) -> str:
     """Build the system prompt. Pure function: same inputs -> same output.
 
     The prompt states the requested direction, the French address form and
@@ -457,9 +532,8 @@ def build_translation_prompt(direction=DIR_AUTO,
         + " Respect the requested French regional variant: "
         + french_variant
         + ". Do not manufacture regional slang.\n"
-        "Avoid gender-dependent French wording where possible. When it cannot "
-        "be avoided, use neutral phrasing or an inclusive form such as "
-        "'content(e)', and never guess the user's gender.\n"
+        + build_gender_clause(speaker_gender, recipient_gender)
+        + "\n"
         + token_clause
         + "\n\nReturn one primary translation and exactly five distinct, "
         "idiomatic alternatives in the target language. The five alternatives "
@@ -481,15 +555,20 @@ def build_translation_prompt(direction=DIR_AUTO,
 def build_user_envelope(text: str,
                         direction=DIR_AUTO,
                         french_formality=FORM_INFORMAL,
-                        french_variant=VARIANT_NEUTRAL) -> str:
+                        french_variant=VARIANT_NEUTRAL,
+                        speaker_gender=GENDER_AVOID,
+                        recipient_gender=GENDER_AVOID) -> str:
     """Wrap the (already masked) user text in a small labelled envelope."""
     return (
         "Requested direction: {}\n"
         "French address preference: {}\n"
         "French variant: {}\n"
+        "French speaker agreement: {}\n"
+        "French addressee agreement: {}\n"
         "Text to translate:\n"
         "{}"
-    ).format(direction, french_formality, french_variant, text)
+    ).format(direction, french_formality, french_variant,
+             speaker_gender, recipient_gender, text)
 
 
 class TranslationValidationError(Exception):
@@ -714,6 +793,13 @@ def call_anthropic(config_snapshot, system_prompt, user_text):
         "messages": [{"role": "user", "content": user_text}],
     }
     data = _http_post_json(ANTHROPIC_URL, payload, headers, ANTHROPIC_TIMEOUT)
+    if not isinstance(data, dict):
+        raise BackendError("The Claude API returned a response that could not be read.")
+    if data.get("stop_reason") == "max_tokens":
+        raise BackendError(
+            "The translation was cut short by the model's length limit. Please "
+            "shorten the message and try again."
+        )
     parts = []
     for block in data.get("content", []):
         if isinstance(block, dict) and block.get("type") == "text":
@@ -749,6 +835,13 @@ def call_ollama(config_snapshot, system_prompt, user_text):
                 "running?".format(OLLAMA_BASE_URL)
             )
         raise
+    if not isinstance(data, dict):
+        raise BackendError("Ollama returned a response that could not be read.")
+    if data.get("error"):
+        # Do not interpolate the error text: it could echo a prompt fragment.
+        raise BackendError(
+            "Ollama reported an error. Please check the model name in Settings."
+        )
     message = data.get("message") or {}
     text = (message.get("content") or "").strip()
     if not text:
@@ -768,6 +861,8 @@ def list_ollama_models(base_url=OLLAMA_BASE_URL):
             "Could not reach Ollama on {}. Is it running?".format(base_url)
         )
     except (ValueError, OSError):
+        raise BackendError("Ollama returned a model list that could not be read.")
+    if not isinstance(data, dict):
         raise BackendError("Ollama returned a model list that could not be read.")
     names = []
     for model in data.get("models", []):
@@ -796,11 +891,17 @@ def translate(config_snapshot, text):
     direction = config_snapshot.get("default_direction", DIR_AUTO)
     formality = config_snapshot.get("default_french_formality", FORM_INFORMAL)
     variant = config_snapshot.get("default_french_variant", VARIANT_NEUTRAL)
+    speaker_gender = config_snapshot.get("default_french_speaker_gender", GENDER_FEMININE)
+    recipient_gender = config_snapshot.get("default_french_recipient_gender", GENDER_FEMININE)
     protect = bool(config_snapshot.get("protect_placeholders", True))
 
     masked, mapping = protect_text(text, enabled=protect)
-    system_prompt = build_translation_prompt(direction, formality, variant, protect)
-    user_envelope = build_user_envelope(masked, direction, formality, variant)
+    system_prompt = build_translation_prompt(
+        direction, formality, variant, protect, speaker_gender, recipient_gender
+    )
+    user_envelope = build_user_envelope(
+        masked, direction, formality, variant, speaker_gender, recipient_gender
+    )
 
     raw = run_backend(config_snapshot, system_prompt, user_envelope)
     result = parse_translation_result(raw, forced_direction=direction)
@@ -823,9 +924,14 @@ def format_status(config, char_count, state="ready") -> str:
     else:
         model = config.get("anthropic_model") or DEFAULT_ANTHROPIC_MODEL
         left = "Backend: Claude \u00b7 {} \u2014 text is sent to Anthropic".format(model)
-    right = state if state else "ready"
-    if char_count is not None:
+    # Honour an explicit state (e.g. "translating…"); fall back to the character
+    # count only when the caller did not request a non-default state.
+    if state and state != "ready":
+        right = state
+    elif char_count is not None:
         right = "{} characters".format(char_count)
+    else:
+        right = "ready"
     return "{} | {}".format(left, right)
 
 
@@ -934,17 +1040,15 @@ if GUI_AVAILABLE:
             self.detect_btn.grid(row=0, column=1)
             row += 1
 
-            # French defaults
-            ctk.CTkLabel(self, text="Default French address form").grid(
-                row=row, column=0, sticky="w", padx=16
-            )
-            row += 1
-            self.formality_var = ctk.StringVar(
-                value=self._config.get("default_french_formality", FORM_INFORMAL)
-            )
-            ctk.CTkOptionMenu(
-                self, values=list(FORMALITIES), variable=self.formality_var
-            ).grid(row=row, column=0, sticky="ew", **pad)
+            # The live conversational controls (direction, French form, and the
+            # Me/You gender agreement) live on the main toolbar and are persisted
+            # as defaults whenever these Settings are saved.
+            ctk.CTkLabel(
+                self,
+                text="Direction, French form and Me/You gender agreement are set "
+                     "on the toolbar and saved as defaults here.",
+                text_color="gray60", justify="left", anchor="w", wraplength=500,
+            ).grid(row=row, column=0, sticky="w", padx=16, pady=(4, 4))
             row += 1
 
             # Toggles
@@ -987,7 +1091,20 @@ if GUI_AVAILABLE:
                     msg = "Found: " + ", ".join(names) if names else "No local models found."
                 except BackendError as exc:
                     names, msg = [], str(exc)
-                self.after(0, lambda: self._finish_detect(names, msg))
+                except Exception:  # pragma: no cover - defensive
+                    names, msg = [], "Could not read the Ollama model list."
+
+                def _finish():
+                    try:
+                        self._finish_detect(names, msg)
+                    except tk.TclError:
+                        pass
+
+                try:
+                    if self.winfo_exists():
+                        self.after(0, _finish)
+                except tk.TclError:  # window closed during detection
+                    pass
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -1003,9 +1120,22 @@ if GUI_AVAILABLE:
             self._config["anthropic_api_key"] = self.key_entry.get().strip()
             self._config["anthropic_model"] = self.model_entry.get().strip() or DEFAULT_ANTHROPIC_MODEL
             self._config["ollama_model"] = self.ollama_entry.get().strip() or DEFAULT_OLLAMA_MODEL
-            self._config["default_french_formality"] = self.formality_var.get()
             self._config["protect_placeholders"] = bool(self.protect_var.get())
             self._config["privacy_ack"] = bool(self.privacy_var.get())
+
+            # Carry the live toolbar selections forward so a deliberate change
+            # made this session is persisted rather than reset to the file
+            # default on next launch. The toolbar is the single source of truth
+            # for these four fields.
+            master = self.master
+            if hasattr(master, "direction_var"):
+                self._config["default_direction"] = master.direction_var.get()
+            if hasattr(master, "formality_var"):
+                self._config["default_french_formality"] = master.formality_var.get()
+            if hasattr(master, "speaker_gender_var"):
+                self._config["default_french_speaker_gender"] = master.speaker_gender_var.get()
+            if hasattr(master, "recipient_gender_var"):
+                self._config["default_french_recipient_gender"] = master.recipient_gender_var.get()
             try:
                 save_config(self._config)
             except ConfigError as exc:
@@ -1033,13 +1163,14 @@ if GUI_AVAILABLE:
             config, load_error = load_config()
             self.config_data = config
             self._request_id = 0
-            self._active_snapshot = None
+            self._settings = None
             self._variation_cards = []
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
 
             self.title(APP_TITLE)
+            self._apply_window_icon()
             self.geometry("1180x760")
             self.minsize(920, 600)
 
@@ -1050,6 +1181,10 @@ if GUI_AVAILABLE:
             self._build_body()
             self._build_status_bar()
             self._bind_shortcuts()
+
+            # Invalidate any in-flight worker when the window is closed so a
+            # late callback cannot run against a destroyed widget tree.
+            self.protocol("WM_DELETE_WINDOW", self._on_close)
 
             self._refresh_status()
 
@@ -1063,33 +1198,75 @@ if GUI_AVAILABLE:
 
         # --- construction -------------------------------------------------
 
+        def _apply_window_icon(self):
+            """Set the window/taskbar icon when running from source.
+
+            Best-effort only: a missing file or a platform that rejects .ico is
+            ignored silently rather than blocking start-up.
+            """
+            icon_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "icon", "icon-96.ico"
+            )
+            try:
+                if os.path.exists(icon_path):
+                    self.iconbitmap(icon_path)
+            except Exception:  # pragma: no cover - platform dependent
+                pass
+
         def _build_toolbar(self):
             bar = ctk.CTkFrame(self)
             bar.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
-            for i in range(6):
-                bar.grid_columnconfigure(i, weight=0)
-            bar.grid_columnconfigure(5, weight=1)
+            bar.grid_columnconfigure(0, weight=1)
+
+            # Row 0: Direction on the left, Settings pinned to the right.
+            top = ctk.CTkFrame(bar, fg_color="transparent")
+            top.grid(row=0, column=0, sticky="ew")
+            top.grid_columnconfigure(2, weight=1)
 
             self.direction_var = ctk.StringVar(
                 value=self.config_data.get("default_direction", DIR_AUTO)
             )
-            ctk.CTkLabel(bar, text="Direction").grid(row=0, column=0, padx=(10, 6), pady=8)
+            ctk.CTkLabel(top, text="Direction").grid(row=0, column=0, padx=(10, 6), pady=6)
             ctk.CTkSegmentedButton(
-                bar, values=list(DIRECTIONS), variable=self.direction_var,
-                command=self._on_direction_change,
-            ).grid(row=0, column=1, padx=6, pady=8)
+                top, values=list(DIRECTIONS), variable=self.direction_var,
+                command=self._on_toolbar_change,
+            ).grid(row=0, column=1, padx=6, pady=6)
+
+            ctk.CTkButton(
+                top, text="Settings", width=110, command=self._open_settings
+            ).grid(row=0, column=3, sticky="e", padx=10)
+
+            # Row 1: French form and the Me/You gender-agreement controls.
+            bottom = ctk.CTkFrame(bar, fg_color="transparent")
+            bottom.grid(row=1, column=0, sticky="ew")
+            bottom.grid_columnconfigure(6, weight=1)
 
             self.formality_var = ctk.StringVar(
                 value=self.config_data.get("default_french_formality", FORM_INFORMAL)
             )
-            ctk.CTkLabel(bar, text="French form").grid(row=0, column=2, padx=(16, 6))
+            ctk.CTkLabel(bottom, text="French form").grid(row=0, column=0, padx=(10, 6), pady=(0, 8))
             ctk.CTkOptionMenu(
-                bar, values=list(FORMALITIES), variable=self.formality_var, width=170
-            ).grid(row=0, column=3, padx=6)
+                bottom, values=list(FORMALITIES), variable=self.formality_var,
+                width=150, command=self._on_toolbar_change,
+            ).grid(row=0, column=1, padx=6, pady=(0, 8))
 
-            ctk.CTkButton(
-                bar, text="Settings", width=110, command=self._open_settings
-            ).grid(row=0, column=5, sticky="e", padx=10)
+            self.speaker_gender_var = ctk.StringVar(
+                value=self.config_data.get("default_french_speaker_gender", GENDER_FEMININE)
+            )
+            ctk.CTkLabel(bottom, text="Me").grid(row=0, column=2, padx=(16, 6), pady=(0, 8))
+            ctk.CTkOptionMenu(
+                bottom, values=list(FRENCH_GENDERS), variable=self.speaker_gender_var,
+                width=150, command=self._on_toolbar_change,
+            ).grid(row=0, column=3, padx=6, pady=(0, 8))
+
+            self.recipient_gender_var = ctk.StringVar(
+                value=self.config_data.get("default_french_recipient_gender", GENDER_FEMININE)
+            )
+            ctk.CTkLabel(bottom, text="You").grid(row=0, column=4, padx=(16, 6), pady=(0, 8))
+            ctk.CTkOptionMenu(
+                bottom, values=list(FRENCH_GENDERS), variable=self.recipient_gender_var,
+                width=150, command=self._on_toolbar_change,
+            ).grid(row=0, column=5, padx=6, pady=(0, 8))
 
         def _build_body(self):
             body = ctk.CTkFrame(self, fg_color="transparent")
@@ -1146,16 +1323,17 @@ if GUI_AVAILABLE:
                 font=ctk.CTkFont(size=15, weight="bold"),
             ).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 4))
 
-            # Primary translation card
+            # Primary translation card. A disabled textbox (rather than a fixed
+            # wraplength label) lets a long main translation reflow and scroll.
             self.primary_card = ctk.CTkFrame(right)
             self.primary_card.grid(row=1, column=0, sticky="ew", padx=12, pady=4)
             self.primary_card.grid_columnconfigure(0, weight=1)
-            self.primary_text = ctk.CTkLabel(
-                self.primary_card, text="Your main translation will appear here.",
-                justify="left", anchor="w", wraplength=460,
+            self.primary_text = ctk.CTkTextbox(
+                self.primary_card, wrap="word", height=92,
                 font=ctk.CTkFont(size=16),
             )
             self.primary_text.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+            self._set_primary_text("Your main translation will appear here.")
             self.copy_main_btn = ctk.CTkButton(
                 self.primary_card, text="Copy main translation",
                 command=lambda: self._copy(self._current_main),
@@ -1166,10 +1344,9 @@ if GUI_AVAILABLE:
             self.language_label = ctk.CTkLabel(right, text="", text_color="gray70")
             self.language_label.grid(row=2, column=0, sticky="w", padx=12)
 
-            # Five alternatives (scrollable)
-            self.alts_frame = ctk.CTkScrollableFrame(
-                right, label_text="Five natural alternatives"
-            )
+            # Five alternatives (scrollable). The heading is omitted: the numbered
+            # cards make the section self-evident and the space is better used.
+            self.alts_frame = ctk.CTkScrollableFrame(right)
             self.alts_frame.grid(row=3, column=0, sticky="nsew", padx=12, pady=6)
             self.alts_frame.grid_columnconfigure(0, weight=1)
 
@@ -1188,15 +1365,31 @@ if GUI_AVAILABLE:
             self.status_label.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 10))
 
         def _bind_shortcuts(self):
-            self.bind_all("<Control-Return>", self._translate_shortcut)
+            # Bind on the input box only (not application-wide) so Ctrl+Enter
+            # does not fire while the Settings key field or another widget has
+            # focus, and so it respects the disabled Translate button.
+            self.input_box.bind("<Control-Return>", self._translate_shortcut)
 
         # --- small helpers ------------------------------------------------
 
         def _input_text(self):
             return self.input_box.get("1.0", "end-1c")
 
-        def _on_direction_change(self, _value=None):
+        def _set_primary_text(self, text):
+            """Replace the read-only primary translation textbox contents."""
+            self.primary_text.configure(state="normal")
+            self.primary_text.delete("1.0", "end")
+            self.primary_text.insert("1.0", text)
+            self.primary_text.configure(state="disabled")
+
+        def _on_toolbar_change(self, _value=None):
+            # Mirror the live toolbar selections into the in-memory config so the
+            # status line and any snapshot stay consistent. Persistence happens
+            # when Settings is saved.
             self.config_data["default_direction"] = self.direction_var.get()
+            self.config_data["default_french_formality"] = self.formality_var.get()
+            self.config_data["default_french_speaker_gender"] = self.speaker_gender_var.get()
+            self.config_data["default_french_recipient_gender"] = self.recipient_gender_var.get()
 
         def _on_input_change(self, _event=None):
             self.char_label.configure(text="{} characters".format(len(self._input_text())))
@@ -1216,12 +1409,22 @@ if GUI_AVAILABLE:
             self._on_input_change()
 
         def _clear(self):
+            # Bump the request id so any in-flight worker result is treated as
+            # stale, honouring the spec's "Clear supersedes a pending request".
+            self._request_id += 1
+            self.translate_btn.configure(state="normal", text="Translate")
             self.input_box.delete("1.0", "end")
             self._clear_results()
             self._on_input_change()
+            self._refresh_status(state="ready")
+
+        def _on_close(self):
+            """Invalidate any in-flight worker, then destroy the window."""
+            self._request_id += 1
+            self.destroy()
 
         def _clear_results(self):
-            self.primary_text.configure(text="Your main translation will appear here.")
+            self._set_primary_text("Your main translation will appear here.")
             self.copy_main_btn.configure(state="disabled")
             self.language_label.configure(text="")
             self._current_main = ""
@@ -1237,12 +1440,27 @@ if GUI_AVAILABLE:
             self.clipboard_append(text)
 
         def _open_settings(self):
-            SettingsDialog(self, self.config_data, self._apply_settings)
+            # Reuse a single Settings window rather than stacking new ones.
+            existing = getattr(self, "_settings", None)
+            if existing is not None:
+                try:
+                    if existing.winfo_exists():
+                        existing.lift()
+                        existing.focus()
+                        return
+                except tk.TclError:
+                    pass
+            self._settings = SettingsDialog(self, self.config_data, self._apply_settings)
 
         def _apply_settings(self, new_config):
             # Applies to the next request; a request already in flight keeps its snapshot.
             self.config_data = new_config
+            self.direction_var.set(new_config.get("default_direction", DIR_AUTO))
             self.formality_var.set(new_config.get("default_french_formality", FORM_INFORMAL))
+            self.speaker_gender_var.set(
+                new_config.get("default_french_speaker_gender", GENDER_FEMININE))
+            self.recipient_gender_var.set(
+                new_config.get("default_french_recipient_gender", GENDER_FEMININE))
             self._refresh_status()
 
         # --- translation lifecycle ---------------------------------------
@@ -1252,6 +1470,12 @@ if GUI_AVAILABLE:
             return "break"  # suppress the newline Ctrl+Enter would insert
 
         def _translate(self):
+            # Refuse to start a second request while one is in flight. The
+            # Translate button is disabled during a run; Ctrl+Enter would
+            # otherwise still reach this method and start a duplicate worker.
+            if str(self.translate_btn.cget("state")) == "disabled":
+                return
+
             text = self._input_text()
             limit = int(self.config_data.get("max_input_chars", DEFAULT_MAX_INPUT_CHARS))
             ok, message = validate_source_size(text, limit)
@@ -1264,6 +1488,8 @@ if GUI_AVAILABLE:
             snapshot = dict(self.config_data)
             snapshot["default_direction"] = self.direction_var.get()
             snapshot["default_french_formality"] = self.formality_var.get()
+            snapshot["default_french_speaker_gender"] = self.speaker_gender_var.get()
+            snapshot["default_french_recipient_gender"] = self.recipient_gender_var.get()
 
             if snapshot.get("backend") == "anthropic" and not snapshot.get("privacy_ack"):
                 proceed = messagebox.askokcancel(
@@ -1279,11 +1505,17 @@ if GUI_AVAILABLE:
                 try:
                     save_config(self.config_data)
                 except ConfigError:
-                    pass
+                    # Don't abort the translation, but tell the user the
+                    # acknowledgement did not persist, so the notice reappearing
+                    # next launch is not a mystery. No submitted text is shown.
+                    self.advisory.configure(
+                        text="Your privacy acknowledgement could not be saved. "
+                             "You may see this notice again next time."
+                    )
+                    self.advisory.grid()
 
             self._request_id += 1
             rid = self._request_id
-            self._active_snapshot = (rid, text)
 
             self.translate_btn.configure(state="disabled", text="Translating\u2026")
             self.advisory.grid_remove()
@@ -1298,11 +1530,29 @@ if GUI_AVAILABLE:
                 except Exception as exc:  # pragma: no cover - defensive
                     payload = ("error", "An unexpected error occurred: {}".format(
                         exc.__class__.__name__))
-                self.after(0, lambda: self._deliver(rid, text, payload))
+
+                def _deliver_safe():
+                    try:
+                        self._deliver(rid, text, payload)
+                    except tk.TclError:  # pragma: no cover - window closed
+                        pass
+
+                # Do not schedule against a destroyed window.
+                try:
+                    if self.winfo_exists():
+                        self.after(0, _deliver_safe)
+                except tk.TclError:  # pragma: no cover - window closed
+                    pass
 
             threading.Thread(target=worker, daemon=True).start()
 
         def _deliver(self, rid, snap_text, payload):
+            # The window may have been destroyed between scheduling and running.
+            try:
+                if not self.winfo_exists():
+                    return
+            except tk.TclError:
+                return
             # Ignore any result whose request has been superseded (later request,
             # Clear, or close). This is the stale-callback guard.
             if result_is_stale(rid, self._request_id):
@@ -1330,7 +1580,7 @@ if GUI_AVAILABLE:
 
         def _render_result(self, result):
             self._current_main = result["main_translation"]
-            self.primary_text.configure(text=self._current_main)
+            self._set_primary_text(self._current_main)
             self.copy_main_btn.configure(state="normal")
             self.language_label.configure(text=format_language_label(result))
 
@@ -1340,19 +1590,19 @@ if GUI_AVAILABLE:
 
             for index, variation in enumerate(result["variations"], start=1):
                 card = ctk.CTkFrame(self.alts_frame, border_width=1)
-                card.grid(row=index, column=0, sticky="ew", pady=6, padx=4)
+                card.grid(row=index, column=0, sticky="ew", pady=4, padx=4)
                 card.grid_columnconfigure(0, weight=1)
 
                 ctk.CTkLabel(
                     card, text="{}. {}".format(index, variation["translation"]),
                     justify="left", anchor="w", wraplength=430,
                     font=ctk.CTkFont(size=14),
-                ).grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 0))
+                ).grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 0))
 
                 ctk.CTkLabel(
                     card, text="[{}]".format(variation["english_meaning_check"]),
                     justify="left", anchor="w", wraplength=430, text_color="gray65",
-                ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 4))
+                ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 3))
 
                 ctk.CTkButton(
                     card, text="Copy", width=80,

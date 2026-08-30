@@ -1,0 +1,679 @@
+Plume - Read-Only Codebase Review (Note 2)
+==========================================
+Scope  : C:\Plume on Hawkeye (local working copy is the source of truth)
+Date   : 30 August 2026, ~17:10 BST
+Author : Grok Bot
+Mode   : Static analysis only. No project files were modified, moved or deleted.
+Prior  : C:\Plume\notes\00_Drafts\notes_001.txt (Mavis, 30 Aug 2026).
+        
+------------------------------------------------------------------------
+0. How this review relates to notes_001
+------------------------------------------------------------------------
+Claude Code DID land the security/process work:
+  - .gitignore now excludes plume_config.json (Bug 1).
+  - AGENTS.md now forbids auto-push and forbids staging credential files.
+
+Claude Code did NOT change plume.py. Bugs 2-8 from notes_001 are still
+present in the current source. Bug 9 is the same root cause as Bug 5
+and is not re-reported as a separate defect.
+
+This note reports: still-open notes_001 bugs (verified), newly found
+bugs, remaining/new enhancements, architecture, tests, secrets, and
+GitHub vs local.
+
+------------------------------------------------------------------------
+1. Executive summary
+------------------------------------------------------------------------
+Plume is a single well-sectioned CustomTkinter module. The deterministic
+core (config atomicity, placeholder protection, prompt builder, strict
+JSON contract, urllib backends, stale-id helper) is sound and covered
+by tests. HTTP is stdlib urllib only; there is no Anthropic SDK and no
+requests/httpx. User-facing strings in plume.py are British English.
+
+The remaining defects cluster in the translation lifecycle and Tk
+threading, not in the parser:
+
+  - Clear and window-close do not invalidate in-flight work, despite
+    project.txt requiring that.
+  - Ctrl+Enter is bound with bind_all and does not honour the disabled
+    Translate button, so a second request can fire while one is in flight.
+  - Settings -> Detect can leave the button stuck on "..." if /api/tags
+    returns a non-object JSON body.
+  - The status bar never shows "translating..." because format_status
+    always overwrites state with the character count.
+
+None of the remaining bugs leak the submitted phrase into diagnostics.
+The live Anthropic key is on disk locally, gitignored, and not in git
+history.
+
+------------------------------------------------------------------------
+2. Architecture (current)
+------------------------------------------------------------------------
+Single module plume.py, eight sections:
+
+  1  Constants, config_dir() / config_path()
+     (source: beside the module; frozen: %LOCALAPPDATA%\Plume)
+  2  DEFAULT_CONFIG, load_config(), atomic save_config()
+     (tmp -> fsync -> os.replace)
+  3  Placeholder protect/restore, uniqueness normalisation, source-size
+     check
+  4  build_translation_prompt(), build_user_envelope(),
+     parse_translation_result()
+  5  _http_post_json(), call_anthropic(), call_ollama(),
+     list_ollama_models(), run_backend(), translate()
+  -  Status helpers: format_status(), format_language_label(),
+     mask_api_key(), result_is_stale()
+  6  SettingsDialog (backend, key, models, Detect, formality, privacy)
+  7  PlumeApp dual-pane UI and callbacks
+  8  main()
+
+Translation flow:
+  1. User types in the left CTkTextbox and presses Translate or Ctrl+Enter.
+  2. _translate validates length, copies a config snapshot (direction +
+     formality from the toolbar), optionally shows the Claude privacy
+     notice, increments _request_id, disables the button, starts a
+     daemon thread.
+  3. Worker calls translate(snapshot, text): mask placeholders -> build
+     prompt/envelope -> run_backend (anthropic -> Claude Messages;
+     ollama -> http://localhost:11434/api/chat) -> parse_translation_result
+     -> restore tokens.
+  4. Worker schedules self.after(0, lambda: self._deliver(rid, text, payload)).
+  5. _deliver drops the result if result_is_stale(rid, self._request_id);
+     otherwise it renders one main card plus five alternative cards with
+     Copy buttons. If the input changed, it keeps the result and shows
+     "Generated for an earlier message".
+
+GUI imports are defensive so tests\test_translator_logic.py can import
+plume headless.
+
+------------------------------------------------------------------------
+3. Repo structure
+------------------------------------------------------------------------
+Git-tracked (origin/main, matches local HEAD):
+
+  .gitignore
+  AGENTS.md
+  Plume.bat
+  README.md
+  bug_hunter.md
+  enhancement_agent.md
+  environment_admin.md
+  icon/icon-96.ico
+  icon/icon-96.png
+  plume.py
+  plume.spec
+  plume_config.example.json
+  project.txt
+  requirements.txt
+  test_translator_logic.py          <- duplicate of tests/
+  tests/test_translator_logic.py
+
+Local only (not on GitHub):
+
+  plume_config.json     Live config with API key; gitignored
+  notes/00_Drafts/      Prior and current reviews
+  desktop.ini           Windows folder metadata
+  update_repo.bat       Stale Scriptorium-era helper (wrong filenames,
+                        auto git push)
+
+requirements.txt is a single line: customtkinter>=5.2.0
+
+------------------------------------------------------------------------
+4. GitHub vs local
+------------------------------------------------------------------------
+  Remote        https://github.com/hawkers63/Plume.git (private)
+  Branch        main, tracking origin/main
+  Working tree  Clean for tracked files (git diff HEAD empty)
+  Latest commit 66c04d681733b057f925af359a9feb174c191b2a
+  Date          30 Aug 2026, 15:59 BST (14:59 UTC)
+  Message       "Require explicit user confirmation before pushing in AGENTS.md"
+  Previous      eb0f99f "Add Plume application source, tests, and project files"
+                (15:59 BST); 832a1adc "first commit" (15:43 BST)
+
+Local and GitHub application source are identical. Drift is only
+untracked local files (notes/, desktop.ini, update_repo.bat) plus the
+gitignored live config.
+
+------------------------------------------------------------------------
+5. Secrets, API keys, credentials
+------------------------------------------------------------------------
+  C:\Plume\plume_config.json
+      Live Anthropic key present (sk-ant-..., length 108). Do not commit.
+      Redacted here.
+  Git index / history
+      git ls-files and git log -- plume_config.json show the file was
+      never committed.
+  .gitignore
+      Line 2: plume_config.json. git check-ignore -v confirms it.
+  plume_config.example.json
+      "anthropic_api_key": ""  -- safe.
+  notes_001.txt
+      Incomplete redaction of the live key (prefix/suffix quoted).
+      Keep notes/ untracked.
+  Runtime
+      Key also accepted from ANTHROPIC_API_KEY. Settings masks with
+      mask_api_key().
+
+No other credentials found in tracked files.
+
+------------------------------------------------------------------------
+6. Existing tests and gaps
+------------------------------------------------------------------------
+Canonical suite: tests\test_translator_logic.py (358 lines, SHA256
+bf29d89e35caf7b27d7405b9d69f2462d3423d1e4d92ebf6d2698069081bdb7e).
+
+Run command (README): python -m unittest discover -s tests -v
+
+Covered:
+  valid EN<->FR parse; malformed JSON / scalar / list / missing or empty
+  primary / wrong variation count / bad objects; uniqueness after
+  normalisation; forced-direction mismatch; atomic config refuse-then-force;
+  placeholder round-trip and non-leaking warnings; prompt constraints;
+  format_status privacy (not behaviour); mask_api_key; validate_source_size;
+  result_is_stale(1, 2).
+
+Gaps (no GUI tests, as designed):
+  - Clear does not bump _request_id -- test_cleared_request_is_stale only
+    asserts result_is_stale(3, 5) and its own comment says
+    "After Clear increments nothing".
+  - format_status ignoring an explicit state when char_count is set.
+  - list_ollama_models on a non-dict /api/tags body.
+  - call_anthropic stop_reason == "max_tokens".
+  - load_config type coercion (backend, max_input_chars).
+  - In-flight Ctrl+Enter / window-close behaviour.
+
+Duplicate: root test_translator_logic.py is byte-identical and committed.
+unittest discover from the repo root (without -s tests) would run both
+copies.
+
+------------------------------------------------------------------------
+7. Verification of notes_001 bugs
+------------------------------------------------------------------------
+  Bug 1  missing .gitignore / live key
+         FIXED. .gitignore exists; file untracked; never in history.
+  Bug 2  Clear does not bump _request_id
+         STILL OPEN. _clear at 1218-1221.
+  Bug 3  format_status discards state
+         STILL OPEN. 817-829 and _refresh_status 1205-1208.
+  Bug 4  close during translate -> TclError
+         STILL OPEN. No WM_DELETE_WINDOW; unguarded after(0, ...) at 1301.
+  Bug 5  privacy save swallowed
+         STILL OPEN. 1279-1282 except ConfigError: pass.
+  Bug 6  duplicate test file
+         STILL OPEN. Both copies tracked, same hash.
+  Bug 7  _active_snapshot dead
+         STILL OPEN. Set at 1036 and 1286; never read.
+  Bug 8  toolbar direction not persisted coherently
+         STILL OPEN. _on_direction_change 1198-1199; Settings _save never
+         writes default_direction.
+  Bug 9  privacy_ack snapshot vs save
+         Same as Bug 5; not re-listed.
+
+notes_001 enhancements (history strip, register tags, Translate back)
+are not implemented (no deque, no register field, no reverse button).
+
+------------------------------------------------------------------------
+8. Findings
+------------------------------------------------------------------------
+
+FINDING A - Clear does not invalidate an in-flight request
+  Severity : High
+  File     : plume.py, PlumeApp._clear ~1218; _deliver comment ~1306
+             claims Clear is handled.
+
+  project.txt requires: ignore a result if a later request, Clear, or
+  window close superseded it. _request_id is only incremented in
+  _translate (1284). _clear empties the input and results but leaves
+  the current id unchanged, so the worker's result is not stale.
+  _deliver then renders it and, because the input no longer matches
+  snap_text, appends "Generated for an earlier message" -- the cleared
+  pane is repopulated.
+
+  Current code (~1218):
+        def _clear(self):
+            self.input_box.delete("1.0", "end")
+            self._clear_results()
+            self._on_input_change()
+
+  Recommended fix: insert at the start of _clear:
+
+        def _clear(self):
+            """Clear the input and drop any in-flight translation."""
+            self._request_id += 1
+            self.translate_btn.configure(state="normal", text="Translate")
+            self.input_box.delete("1.0", "end")
+            self._clear_results()
+            self._on_input_change()
+            self._refresh_status(state="ready")
+
+------------------------------------------------------------------------
+
+FINDING B - Window close during translation can raise TclError
+  Severity : High
+  File     : plume.py, PlumeApp.__init__ ~1031; worker ~1301;
+             _deliver ~1305.
+
+  No protocol("WM_DELETE_WINDOW", ...). Spec: "Close during a request
+  produces no Tk callback exception." The worker always does:
+
+                self.after(0, lambda: self._deliver(rid, text, payload))
+
+  If the root is destroyed, after or _deliver (translate_btn.configure,
+  etc.) raises TclError. The worker's except Exception does not cover
+  the after call (it is outside the inner try) nor the callback body.
+
+  Recommended fix: after _bind_shortcuts() in __init__, and new methods
+  on PlumeApp:
+
+            self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        def _on_close(self):
+            """Invalidate in-flight work, then destroy the window."""
+            self._request_id += 1
+            self.destroy()
+
+        def _deliver(self, rid, snap_text, payload):
+            try:
+                if not self.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            if result_is_stale(rid, self._request_id):
+                return
+            # ...existing body...
+
+  And wrap the worker's schedule (replace the bare self.after at 1301):
+
+                def _deliver_safe():
+                    try:
+                        self._deliver(rid, text, payload)
+                    except tk.TclError:
+                        return
+                try:
+                    self.after(0, _deliver_safe)
+                except tk.TclError:
+                    return
+
+------------------------------------------------------------------------
+
+FINDING C - Ctrl+Enter starts a second translation while one is in flight
+  Severity : High (new)
+  File     : plume.py, _bind_shortcuts 1190-1191;
+             _translate_shortcut 1250-1252; _translate 1254.
+
+  The Translate button is disabled at 1288, but there is no busy guard
+  in _translate. bind_all("<Control-Return>", ...) is application-wide,
+  so Ctrl+Enter still calls _translate, increments _request_id, and
+  starts another daemon thread (duplicate Claude spend; first result
+  discarded as stale). It also fires while Settings has focus
+  (API-key entry).
+
+  Current bind (~1190):
+        def _bind_shortcuts(self):
+            self.bind_all("<Control-Return>", self._translate_shortcut)
+
+  Recommended fix: bind only on the input box (matches spec: "from the
+  input textbox"), and refuse if busy. In _bind_shortcuts replace
+  bind_all with:
+
+            self.input_box.bind("<Control-Return>", self._translate_shortcut)
+
+  At the top of _translate, after reading text:
+
+            if str(self.translate_btn.cget("state")) == "disabled":
+                return
+
+------------------------------------------------------------------------
+
+FINDING D - Settings Detect can hang if Ollama's model list is not a
+            JSON object
+  Severity : High (new)
+  File     : plume.py, list_ollama_models 759-777;
+             SettingsDialog._detect_models 980-992.
+
+  Current code (~772):
+    names = []
+    for model in data.get("models", []):
+
+  If /api/tags returns a JSON list or scalar, data.get raises
+  AttributeError. That is not wrapped as BackendError. The Detect
+  worker only catches BackendError, so _finish_detect never runs and
+  the button stays disabled with text "...".
+
+  Recommended fix: in list_ollama_models, immediately after a successful
+  json.loads:
+
+    if not isinstance(data, dict):
+        raise BackendError("Ollama returned a model list that could not be read.")
+
+  And in _detect_models.worker, catch unexpected failures so the button
+  recovers:
+
+            def worker():
+                try:
+                    names = list_ollama_models()
+                    msg = "Found: " + ", ".join(names) if names else "No local models found."
+                except BackendError as exc:
+                    names, msg = [], str(exc)
+                except Exception:
+                    names, msg = [], "Could not read the Ollama model list."
+                def _finish():
+                    try:
+                        self._finish_detect(names, msg)
+                    except tk.TclError:
+                        return
+                try:
+                    self.after(0, _finish)
+                except tk.TclError:
+                    return
+
+  The TclError guards also cover closing Settings while Detect is in
+  flight (same family as Finding B).
+
+------------------------------------------------------------------------
+
+FINDING E - format_status silently discards state
+  Severity : Medium
+  File     : plume.py, format_status 817-829; _refresh_status 1205-1208.
+
+  Current code (~826):
+    right = state if state else "ready"
+    if char_count is not None:
+        right = "{} characters".format(char_count)
+    return "{} | {}".format(left, right)
+
+  _refresh_status always passes len(self._input_text()), so the
+  if char_count is not None branch always wins. _translate calls
+  _refresh_status(state="translating...") but the bar still reads
+  "Backend: ... | N characters". The button label still changes, so
+  this is UX-only.
+
+  Recommended fix: replace the right-hand assignment inside format_status:
+
+    right = state if state else "ready"
+    if char_count is not None and (not state or state == "ready"):
+        right = "{} characters".format(char_count)
+
+  Add: assert format_status(cfg, 47, "translating\u2026").endswith("translating\u2026")
+
+------------------------------------------------------------------------
+
+FINDING F - Privacy-notice save failure is swallowed
+  Severity : Low
+  File     : plume.py, PlumeApp._translate 1277-1282.
+
+  Current code (~1279):
+                try:
+                    save_config(self.config_data)
+                except ConfigError:
+                    pass
+
+  In-memory privacy_ack is True, so the notice is not shown again this
+  session; a failed persist means it returns next launch with no
+  explanation. (notes_001 Bug 9 is this same path.)
+
+  Recommended fix: replace the bare pass with an advisory (must not
+  include the phrase):
+
+                try:
+                    save_config(self.config_data)
+                except ConfigError:
+                    self.advisory.configure(
+                        text="Your privacy acknowledgement could not be saved. "
+                             "You may see this notice again next time."
+                    )
+                    self.advisory.grid()
+
+------------------------------------------------------------------------
+
+FINDING G - Duplicate test module committed at repo root
+  Severity : Low
+  Files    : C:\Plume\test_translator_logic.py and
+             C:\Plume\tests\test_translator_logic.py (identical SHA256).
+
+  README discovery uses tests\. The extra copy will drift.
+  Recommended fix: delete the top-level file; keep
+  tests\test_translator_logic.py.
+
+------------------------------------------------------------------------
+
+FINDING H - Dead _active_snapshot
+  Severity : Low
+  File     : plume.py 1036 and 1286.
+
+  Assigned, never read.
+  Recommended fix: delete self._active_snapshot = None in __init__ and
+  self._active_snapshot = (rid, text) in _translate.
+
+------------------------------------------------------------------------
+
+FINDING I - Toolbar direction / formality vs Settings save
+  Severity : Low
+  File     : plume.py, _on_direction_change 1198-1199;
+             SettingsDialog._save 1001-1020; _apply_settings 1242-1246.
+
+  Direction is written only in memory. Formality on the toolbar has no
+  command, so it is not even copied into config_data until the next
+  Translate snapshot. Opening Settings snapshots config at open time;
+  Save writes that copy (no default_direction field) and _apply_settings
+  resets formality_var from the saved file. A toolbar change made while
+  Settings is open, or a formality-only toolbar change followed by
+  Settings -> Save, is lost.
+
+  Recommended fix: at the start of SettingsDialog._save, copy the live
+  toolbar values from the master. Insert immediately before
+  self._config["backend"] = ... in _save:
+
+            # Keep the toolbar's current direction if the user set it this session.
+            master = self.master
+            if hasattr(master, "direction_var"):
+                self._config["default_direction"] = master.direction_var.get()
+                self._config["default_french_formality"] = master.formality_var.get()
+
+------------------------------------------------------------------------
+
+FINDING J - load_config does not coerce types; Translate can throw on
+            the Tk thread
+  Severity : Medium (new)
+  File     : plume.py, load_config 197-199; _translate 1256;
+             run_backend 780-785.
+
+  Unknown keys are ignored (good), but values are copied raw. Then:
+
+            limit = int(self.config_data.get("max_input_chars", DEFAULT_MAX_INPUT_CHARS))
+
+  A non-numeric max_input_chars raises ValueError/TypeError on the UI
+  thread (no worker yet). A misspelt backend such as "Ollama" is not
+  equal to "ollama", so run_backend calls Claude while the user may
+  believe they are local. format_status uses the same == "ollama" test,
+  so the status bar would also claim Anthropic -- the privacy text would
+  be correct, but the surprise send is still wrong if they intended
+  Ollama.
+
+  Recommended fix: after the merge loop in load_config:
+
+    backend = str(config.get("backend") or "anthropic").strip().lower()
+    config["backend"] = "ollama" if backend == "ollama" else "anthropic"
+    try:
+        config["max_input_chars"] = int(config.get("max_input_chars"))
+        if config["max_input_chars"] < 1:
+            raise ValueError
+    except (TypeError, ValueError):
+        config["max_input_chars"] = DEFAULT_MAX_INPUT_CHARS
+    config["privacy_ack"] = bool(config.get("privacy_ack"))
+    config["protect_placeholders"] = bool(config.get("protect_placeholders"))
+
+  And in _translate, keep int(...) but it will now be safe.
+
+------------------------------------------------------------------------
+
+FINDING K - Claude stop_reason ignored; Ollama error field ignored
+  Severity : Medium (new)
+  File     : plume.py, call_anthropic 716-724; call_ollama 752-755.
+
+  call_anthropic concatenates text blocks and never reads stop_reason.
+  A max_tokens cut-off (budget is ANTHROPIC_MAX_TOKENS = 2000 for one
+  main + five alternatives) becomes a generic JSON validation error.
+  data.get("content") also assumes data is a dict.
+
+  call_ollama ignores a top-level "error" on HTTP 200 and reports
+  "Ollama returned an empty message."
+
+  Recommended fix: in call_anthropic, after _http_post_json:
+
+    if not isinstance(data, dict):
+        raise BackendError("The Claude API returned a response that could not be read.")
+    if data.get("stop_reason") == "max_tokens":
+        raise BackendError(
+            "The translation was cut short by the model's length limit. "
+            "Please shorten the message and try again."
+        )
+
+  In call_ollama, after _http_post_json:
+
+    if not isinstance(data, dict):
+        raise BackendError("Ollama returned a response that could not be read.")
+    if data.get("error"):
+        raise BackendError(
+            "Ollama reported an error. Please check the model name in Settings."
+        )
+
+  Do not interpolate data["error"] (could theoretically echo prompt
+  fragments).
+
+------------------------------------------------------------------------
+
+FINDING L - Primary translation is a fixed-wrap CTkLabel
+  Severity : Medium (new)
+  File     : plume.py, _build_right 1153-1157, variation labels
+             wraplength=430.
+
+  Spec: "long output wraps instead of disappearing." wraplength is
+  hardcoded (460 / 430). On resize the label does not reflow; a long
+  main translation cannot scroll (alternatives live in
+  CTkScrollableFrame, the primary card does not).
+
+  Recommended fix (smallest): make the primary text a disabled
+  CTkTextbox inside the card, replacing the CTkLabel at 1153:
+
+            self.primary_text = ctk.CTkTextbox(
+                self.primary_card, wrap="word", height=90, font=ctk.CTkFont(size=16)
+            )
+            self.primary_text.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+            self.primary_text.insert("1.0", "Your main translation will appear here.")
+            self.primary_text.configure(state="disabled")
+
+  Then in _render_result / _clear_results toggle state around
+  delete/insert. Optional follow-up: bind <Configure> to update
+  alternative wraplength.
+
+------------------------------------------------------------------------
+
+FINDING M - British English / agent-doc slips
+  Severity : Low (new)
+  Files    : AGENTS.md line 4; bug_hunter.md; README.md last line.
+
+  - AGENTS.md: "Englist to French Translator" (typo), plus leftover
+    [cite: N] markers, and it still describes a dual-pane revision
+    assistant rather than a conversation translator. Reporting path
+    D:\Bot_Activity\notes_[N].txt disagrees with bug_hunter.md
+    (C:\Plume\notes\00_Drafts\plume_notes_[N].txt).
+  - bug_hunter.md still says "C:\Scriptorium directory".
+  - README.md ends with a stray "# Plume".
+  - plume.py UI/comments/prompts are British ("normalise", "dialogue"
+    in comments). gray70 / fg_color are Tk/CustomTkinter API names,
+    not user-facing Americanisms.
+
+  Recommended fix (AGENTS.md first sentence):
+
+    You are currently working on **Plume**, a lightweight English-French
+    translator desktop application for Windows 11.
+
+------------------------------------------------------------------------
+
+FINDING N - update_repo.bat is a stale auto-push helper
+  Severity : Low (new; local untracked)
+  File     : C:\Plume\update_repo.bat
+
+  It git add Plume.py README.md scriptorium_config.example.json (wrong
+  names -- leftover Scriptorium), then git commit and git push with no
+  confirmation, which contradicts AGENTS.md. Not on GitHub. Delete it,
+  or rewrite to git add the real paths and stop before push.
+
+  .gitignore should also list desktop.ini, Thumbs.db, and notes/ so
+  git add --all (still in AGENTS.md) cannot publish review notes that
+  mention the live key.
+
+    # already present
+    plume_config.json
+
+    # add
+    desktop.ini
+    Thumbs.db
+    notes/
+    update_repo.bat
+
+------------------------------------------------------------------------
+9. Enhancements (incremental)
+------------------------------------------------------------------------
+These are not bugs. notes_001's three features remain unimplemented;
+listed briefly so they are not lost.
+
+1. Window icon when running from source
+   icon/icon-96.ico is bundled in plume.spec but PlumeApp never calls
+   iconbitmap / iconphoto. After self.title(APP_TITLE):
+
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon", "icon-96.ico")
+            if os.path.exists(icon_path):
+                try:
+                    self.iconbitmap(icon_path)
+                except tk.TclError:
+                    pass
+
+2. One Settings window
+   _open_settings always constructs a new CTkToplevel with no grab_set
+   / reuse. Keep a self._settings handle and lift() if it still exists.
+
+3. Raise ANTHROPIC_MAX_TOKENS (e.g. 4096) once Finding K is in, so five
+   alternatives on a ~2,000-character input are less likely to truncate.
+
+4. Optional register tag / history strip / Translate back -- still
+   reasonable; see notes_001 section 4. Do not change the JSON contract
+   without making register optional (parser already drops unknown keys).
+
+5. save_local_history is in DEFAULT_CONFIG and the example JSON but
+   never read. Either wire a tiny on-disk history behind the existing
+   flag, or drop the key from the example so Settings matches reality.
+   README already says history is off in version 1.
+
+------------------------------------------------------------------------
+10. What looks solid (do not "fix")
+------------------------------------------------------------------------
+  - Atomic config save; refuse to clobber a malformed file; Settings
+    recovery force=True.
+  - Placeholder restore warnings never echo the original token value.
+  - Validation errors never include submitted text.
+  - TimeoutError and URLError/HTTPError are mapped to BackendError on
+    the POST path.
+  - Stale-id helper is correct when the id actually changes.
+  - Snapshot of config at request start; Settings applies to the next
+    request.
+  - Detect for Ollama already runs on a worker thread (not the Tk thread).
+  - No third-party HTTP stack; no Anthropic SDK.
+  - Example config has an empty key.
+
+------------------------------------------------------------------------
+11. Suggested implementation order
+------------------------------------------------------------------------
+  1. Findings A-C (Clear / close / Ctrl+Enter) -- spec lifecycle,
+     user-visible.
+  2. Finding D -- Detect hang.
+  3. Findings E, J, K -- status bar, config coercion, backend envelopes.
+  4. Findings F-I, L-N -- hygiene, UX, docs.
+  5. Enhancements.
+
+After A-E, add the tests listed in section 6 Gaps. Do not re-apply
+notes_001 section 3.1 (.gitignore already exists).
+
+All other project files were left read-only. Implementation requires
+explicit authorisation.

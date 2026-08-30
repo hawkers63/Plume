@@ -22,8 +22,12 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   and intent — it never adds facts, softens commitments, or invents context.
 - Five genuinely distinct alternatives (different word choice, idiom or word
   order — not punctuation-only variants), each with its English meaning check.
-- **tu / vous** consistency, neutral wording when gender is ambiguous, and a
-  language-confidence indicator.
+- **tu / vous** consistency and a language-confidence indicator.
+- **French gender agreement** for both people in the conversation: separate
+  **Me** (speaker) and **You** (addressee) controls on the toolbar, each
+  *Feminine* / *Masculine* / *Avoid where possible*. Woman-to-woman chat is the
+  default (Feminine / Feminine); explicit gender in the source always wins, and
+  French → English never invents gender in the English.
 - Placeholder protection for names, links, dates and `[Name]` / `{amount}`
   style markers, so they survive translation unchanged.
 - A copy button on every result, with a prominent **Copy main translation**.

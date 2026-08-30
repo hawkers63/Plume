@@ -1,0 +1,163 @@
+### Plume Read-Only Review: Alternatives Layout and French Gender Agreement
+
+**Date:** 30th August 2026  
+**Author:** Mark
+
+---
+
+### Scope
+This document reviews the current implementation of the Plume application located at `C:\Plume`, along with the provided screenshot `01.jpg`. The following proposals aim to suggest solutions for Claude's review.
+
+### Relevant Current Implementation
+1. The output pane on the right side is constructed in `C:\Plume\plume.py` within the method `PlumeApp._build_right()`.
+2. The alternatives section is a `CTkScrollableFrame` that employs `label_text="Five natural alternatives"` around line 1171.
+3. Each alternative card is generated in the method `_render_result()` between lines 1341-1362, featuring generous outer and inner vertical padding.
+4. The current French-specific user control addresses only the form of address: "Informal (tu)", "Formal (vous)", or "Let Plume decide".
+5. The existing prompt instructs the model to avoid gender-specific French terminology and to refrain from inferring the user's gender. While this approach was suitable for a generic translator, it now conflicts with the new requirement to explicitly select either feminine or masculine French agreement.
+
+### Finding 1: Alternatives Heading Consumes Useful Vertical Space
+**Severity:** Low usability issue.
+
+The screenshot `01.jpg` shows that the label "Five natural alternatives" occupies valuable vertical space within the scrollable frame. Removing this label poses a low risk, as the numbered cards effectively convey the section's purpose, and the main "Translation" heading continues to provide structure to the pane.
+
+**Recommended Solution:**
+Eliminate the `label_text` from the scrollable frame to utilise the saved vertical space for the cards. Should five rows still cause overflow at a window height of 760px, consider slightly reducing the card padding.
+
+**Suggested Code Direction:**
+```python
+# In PlumeApp._build_right(), replace:
+self.alts_frame = ctk.CTkScrollableFrame(
+    right, label_text="Five natural alternatives"
+)
+
+# With:
+self.alts_frame = ctk.CTkScrollableFrame(right)
+```
+
+**Optional Second Step if Needed:**
+```python
+# In _render_result(), tighten the card spacing slightly:
+card.grid(row=index, column=0, sticky="ew", pady=4, padx=4)
+
+# Translation label:
+).grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 0))
+
+# Meaning-check label:
+).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 3))
+```
+
+**Rationale for Preference:**
+- Minimal alterations are required.
+- There is no change to the result contract or backend behaviour.
+- All five alternatives remain visually distinct.
+- Scrolling is reduced without creating a cramped output pane.
+
+**Additional Optional Polish:**
+While the Copy buttons are beneficial, they consume vertical space, making each card appear as a two-row mini-panel. A future UI refinement could replace the text button with a compact copy icon accompanied by a tooltip, although this change is not urgent for the current issues.
+
+### Finding 2: Gender Agreement Requires Explicit French Context
+**Severity:** Medium product requirement.
+
+French gender agreement diverges from English gender norms, impacting French adjectives and certain past participles, particularly in first-person and second-person constructions:
+
+- "I am happy" translates to "Je suis contente" for a woman, and "Je suis content" for a man.
+- "I went" translates to "Je suis allée" for a woman, and "Je suis allé" for a man.
+- "Are you ready?" translates to "Tu es prête ?" for a woman, and "Tu es prêt ?" for a man.
+
+A single "French gender" setting would be ambiguous, as conversations typically involve two individuals:
+
+- The user/speaker, represented as "I", "me", or "we".
+- The other participant/addressee, represented as "you".
+
+The primary use case involves woman-to-woman dialogue, thus Plume should accommodate feminine agreement for both participants while still permitting masculine or neutral settings when required.
+
+**Recommended Product Model:**
+Introduce two French agreement controls:
+
+1. "Me" or "Speaker": Feminine / Masculine / Avoid where possible
+2. "You" or "Other person": Feminine / Masculine / Avoid where possible
+
+**Recommended UI:**
+Position these controls in the top toolbar, as they influence the subsequent translation and may require adjustments during live conversation. A practical layout would be:
+
+**Direction | French Form | Me: Feminine | You: Feminine | Settings**
+
+Utilise compact `CTkOptionMenu` controls rather than a settings-only preference. The settings can still retain the defaults, but the live toolbar should make them accessible.
+
+**Suggested Constants:**
+```python
+GENDER_FEMININE = "Feminine"
+GENDER_MASCULINE = "Masculine"
+GENDER_AVOID = "Avoid where possible"
+FRENCH_GENDERS = (GENDER_FEMININE, GENDER_MASCULINE, GENDER_AVOID)
+```
+
+**Suggested Config Keys:**
+```python
+"default_french_speaker_gender": GENDER_FEMININE,
+"default_french_recipient_gender": GENDER_FEMININE,
+```
+
+If maintaining a general-public default is preferred, utilise `GENDER_AVOID` for both options and allow users to specify woman-to-woman defaults in Settings. For the primary user group, Feminine/Feminine is the most effective working default.
+
+**Prompt Change:**
+Revise the current generic gender-avoidance clause in `build_translation_prompt()` to incorporate a clause that respects the selected French agreement context.
+
+**Suggested Code Direction:**
+```python
+def build_gender_clause(speaker_gender, recipient_gender):
+    return (
+        "French gender agreement context: use {speaker} agreement for the "
+        "speaker/user in first-person French wording, and {recipient} "
+        "agreement for the addressee/other person in second-person French "
+        "wording. When the source text explicitly marks gender, preserve "
+        "that explicit meaning. When the selected value is 'Avoid where "
+        "possible', prefer natural wording that does not require gendered "
+        "agreement; if gendered wording cannot be avoided, use a concise "
+        "note rather than guessing."
+    ).format(speaker=speaker_gender.lower(), recipient=recipient_gender.lower())
+```
+
+Then invoke this function from `build_translation_prompt()` and include the same values in `build_user_envelope()`:
+```python
+"French speaker agreement: {}\n"
+"French addressee agreement: {}\n"
+```
+
+**Behavioural Rules for the Model:**
+- For translations from English to French, apply the gender settings to the generated French output.
+- For translations from French to English, refrain from inferring gender in English. Use the settings solely to interpret ambiguous or inclusive French wording where relevant.
+- If the French source explicitly states "content" or "contente", prioritise the source over the toolbar setting.
+- If the sentence encompasses both "I" and "you", apply both settings.
+- If the sentence is gender-neutral in French, do not enforce gendered wording.
+
+### Recommended Validation/Testing
+Introduce deterministic tests rather than relying solely on visual inspection:
+
+1. Ensure the prompt construction includes both gender controls while still incorporating existing parameters such as direction, formality, variant, JSON, five-alternative, and placeholder constraints.
+2. Confirm that the user envelope includes the selected speaker and addressee agreement.
+3. Validate that defaults and configuration load/save mechanisms encompass the two new keys.
+4. Ensure the translation snapshot replicates the current toolbar's speaker/addressee selections, similar to how it currently captures direction and French form.
+5. Conduct manual smoke tests, including:
+   - English to French: "I am pleased to hear that." with Me set to Feminine should yield "contente", not "content".
+   - English to French: "Are you ready?" with You set to Feminine should yield "prête", not "prêt".
+   - English to French: "I am glad you came." with both feminine should result in feminine agreement for both first-person and second-person meanings where natural.
+   - French to English: explicit feminine French should translate naturally into English without awkward bracketed gender explanations unless genuinely useful.
+
+### Recommended Implementation Sequence
+1. Remove `label_text` from the alternatives scrollable frame.
+2. Execute the application and verify that all five alternatives fit within a window size of 1180x760 for typical one-line alternatives.
+3. Tighten card padding only if the fifth row still necessitates scrolling.
+4. Introduce gender constants and defaults.
+5. Add live toolbar controls for speaker/addressee agreement.
+6. Incorporate matching Settings defaults.
+7. Propagate the values through snapshot -> translate() -> prompt/envelope.
+8. Replace the prompt's broad "avoid gender-dependent French wording" clause with the explicit French agreement clause.
+9. Add unit tests for prompt/envelope/config coverage.
+10. Execute:
+    ```bash
+    python -m unittest discover -s tests -v
+    ```
+
+### Conclusion
+The removal of the alternatives heading is a straightforward and low-risk UI modification. The handling of gender requests should be implemented as two distinct French agreement controls, rather than a singular broad gender toggle. Woman-to-woman conversations will be best supported by visible "Me: Feminine" and "You: Feminine" defaults, while also retaining options for masculine and neutral/avoid settings for other conversational contexts.

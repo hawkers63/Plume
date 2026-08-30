@@ -1,0 +1,13 @@
+# Plume — Enhancement Ideas & Feature Roadmap
+
+## 1. Local History & Favourites UI
+The `DEFAULT_CONFIG` already includes a `"save_local_history": False` key, yet no interface currently exists to view or manage previous translations. A slide-out panel or secondary Tkinter window for logging successful translations would facilitate the review of daily phrases. A 'star' or 'favourite' toggle on the variation cards could save specific idioms to a dedicated SQLite or JSON file for later study.
+
+## 2. Contextual Prompting
+Conversational French depends heavily on context (e.g., ordering at a café versus speaking with a neighbour). An optional, single-line 'Situation' entry box above the main text area would allow the user to define the scenario. This context could be appended directly to the `build_user_envelope` function, markedly improving the LLM's situational accuracy and tone.
+
+## 3. Text-to-Speech Voice Integration
+Translating text addresses only half of the conversational challenge; correct pronunciation is equally important. Integrating a text-to-speech module would position Plume as an effective pronunciation aid. An ElevenLabs voice integration, similar to that powering Kes in the 'Contacts' application, could be linked to a small speaker button on each variation card to read the French text aloud natively.
+
+## 4. Quick-Swap Direction Toggle
+Changing the translation direction currently requires interacting with a dropdown menu. For rapid, live conversation, a prominent 'Swap Language' toggle button within the toolbar would enable seamless switching between `French -> English` and `English -> French`, more closely reflecting the natural back-and-forth of an exchange.

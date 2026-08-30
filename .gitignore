@@ -9,3 +9,8 @@ __pycache__/
 # PyInstaller build output
 build/
 dist/
+
+# OS / editor cruft
+desktop.ini
+Thumbs.db
+.DS_Store

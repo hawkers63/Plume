@@ -296,6 +296,143 @@ class TestPromptConstruction(unittest.TestCase):
         self.assertIn("hello", env)
 
 
+class TestGenderAgreement(unittest.TestCase):
+    def test_prompt_includes_gender_agreement(self):
+        prompt = plume.build_translation_prompt(
+            direction=plume.DIR_EN_FR,
+            french_formality=plume.FORM_INFORMAL,
+            french_variant=plume.VARIANT_NEUTRAL,
+            protect_tokens=True,
+            speaker_gender=plume.GENDER_FEMININE,
+            recipient_gender=plume.GENDER_MASCULINE,
+        )
+        self.assertIn("feminine", prompt)     # speaker
+        self.assertIn("masculine", prompt)    # addressee
+        # The pre-existing constraints must survive the gender change.
+        self.assertIn("exactly five", prompt)
+        self.assertIn("JSON", prompt)
+        self.assertIn("\u27e6PH", prompt)
+        self.assertIn("tu", prompt)
+
+    def test_gender_clause_avoid(self):
+        clause = plume.build_gender_clause(plume.GENDER_AVOID, plume.GENDER_AVOID)
+        self.assertIn("avoid where possible", clause)
+
+    def test_gender_clause_explicit_source_wins(self):
+        clause = plume.build_gender_clause(plume.GENDER_FEMININE, plume.GENDER_FEMININE)
+        self.assertIn("explicitly marks gender", clause)
+
+    def test_envelope_includes_gender(self):
+        env = plume.build_user_envelope(
+            "hello", plume.DIR_AUTO, plume.FORM_INFORMAL, plume.VARIANT_NEUTRAL,
+            plume.GENDER_FEMININE, plume.GENDER_MASCULINE,
+        )
+        self.assertIn("French speaker agreement: Feminine", env)
+        self.assertIn("French addressee agreement: Masculine", env)
+
+    def test_defaults_include_gender_keys(self):
+        self.assertEqual(plume.DEFAULT_CONFIG["default_french_speaker_gender"], "Feminine")
+        self.assertEqual(plume.DEFAULT_CONFIG["default_french_recipient_gender"], "Feminine")
+
+
+class TestStatusState(unittest.TestCase):
+    def test_status_honours_explicit_state(self):
+        cfg = dict(plume.DEFAULT_CONFIG)
+        self.assertTrue(plume.format_status(cfg, 47, "translating\u2026").endswith("translating\u2026"))
+
+    def test_status_uses_char_count_when_ready(self):
+        cfg = dict(plume.DEFAULT_CONFIG)
+        self.assertTrue(plume.format_status(cfg, 47).endswith("47 characters"))
+        self.assertTrue(plume.format_status(cfg, 47, "ready").endswith("47 characters"))
+
+    def test_status_ready_when_no_count(self):
+        cfg = dict(plume.DEFAULT_CONFIG)
+        self.assertTrue(plume.format_status(cfg, None).endswith("ready"))
+
+
+class TestConfigCoercion(unittest.TestCase):
+    def _load_with(self, raw_dict):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, plume.CONFIG_FILENAME)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(raw_dict, fh)
+            with mock.patch.object(plume, "config_path", return_value=path):
+                config, error = plume.load_config()
+            return config, error
+
+    def test_bad_backend_coerced_to_anthropic(self):
+        config, _ = self._load_with({"backend": "Ollama-typo"})
+        self.assertEqual(config["backend"], "anthropic")
+
+    def test_ollama_backend_preserved(self):
+        config, _ = self._load_with({"backend": "ollama"})
+        self.assertEqual(config["backend"], "ollama")
+
+    def test_non_numeric_limit_falls_back(self):
+        config, _ = self._load_with({"max_input_chars": "banana"})
+        self.assertEqual(config["max_input_chars"], plume.DEFAULT_MAX_INPUT_CHARS)
+
+    def test_negative_limit_falls_back(self):
+        config, _ = self._load_with({"max_input_chars": -5})
+        self.assertEqual(config["max_input_chars"], plume.DEFAULT_MAX_INPUT_CHARS)
+
+    def test_unknown_gender_falls_back_to_feminine(self):
+        config, _ = self._load_with({"default_french_speaker_gender": "nonsense"})
+        self.assertEqual(config["default_french_speaker_gender"], "Feminine")
+
+    def test_unknown_direction_falls_back_to_auto(self):
+        config, _ = self._load_with({"default_direction": "Sideways"})
+        self.assertEqual(config["default_direction"], plume.DIR_AUTO)
+
+
+class TestBackendHardening(unittest.TestCase):
+    KEY_CONFIG = {"anthropic_api_key": "sk-test", "anthropic_model": "m"}
+
+    def test_anthropic_max_tokens_cutoff(self):
+        payload = {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "..."}]}
+        with mock.patch.object(plume, "_http_post_json", return_value=payload):
+            with self.assertRaises(plume.BackendError):
+                plume.call_anthropic(self.KEY_CONFIG, "sys", "user")
+
+    def test_anthropic_non_dict_response(self):
+        with mock.patch.object(plume, "_http_post_json", return_value=["oops"]):
+            with self.assertRaises(plume.BackendError):
+                plume.call_anthropic(self.KEY_CONFIG, "sys", "user")
+
+    def test_ollama_error_field(self):
+        payload = {"error": "model not found", "message": {"content": "{}"}}
+        with mock.patch.object(plume, "_http_post_json", return_value=payload):
+            with self.assertRaises(plume.BackendError):
+                plume.call_ollama({"ollama_model": "x"}, "sys", "user")
+
+    def test_ollama_non_dict_response(self):
+        with mock.patch.object(plume, "_http_post_json", return_value=[1, 2]):
+            with self.assertRaises(plume.BackendError):
+                plume.call_ollama({"ollama_model": "x"}, "sys", "user")
+
+    def test_ollama_error_message_has_no_prompt_fragment(self):
+        payload = {"error": "leaked-prompt-fragment", "message": {}}
+        with mock.patch.object(plume, "_http_post_json", return_value=payload):
+            try:
+                plume.call_ollama({"ollama_model": "x"}, "sys", "user")
+            except plume.BackendError as exc:
+                self.assertNotIn("leaked-prompt-fragment", str(exc))
+            else:
+                self.fail("expected BackendError")
+
+    def test_list_models_non_dict_body(self):
+        class _Resp:
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *a):
+                return False
+            def read(self_inner):
+                return b"[]"  # a JSON list, not an object
+        with mock.patch("urllib.request.urlopen", return_value=_Resp()):
+            with self.assertRaises(plume.BackendError):
+                plume.list_ollama_models()
+
+
 class TestPrivacyOfDiagnostics(unittest.TestCase):
     SECRET = "please meet me at the old bridge at midnight"
 
