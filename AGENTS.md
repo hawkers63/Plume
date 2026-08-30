@@ -33,9 +33,9 @@ Following implementation, move the task into testing and run appropriate tests o
 
 # Version Control & Repository Management
 * **Target Repository:** The active remote repository for this project is `https://github.com/hawkers63/Plume`.
-* **Branching Strategy:** Commit and push all changes directly to the `main` branch. Do not create feature branches.
-* **Commit Protocol:** Once a task has passed testing and is marked as complete, automatically stage and commit all modifications. Track all changes, including overwrites and deleted files (e.g., using `git add --all`), to ensure the repository precisely mirrors the local directory and outdated files are permanently removed.
-* **Continuous Sync:** Push all successful commits to the remote `main` branch immediately, so that the remote codebase remains strictly current at all times.
+* **Branching Strategy:** Commit changes directly to the `main` branch. Do not create feature branches.
+* **Commit Protocol:** Once a task has passed testing and is marked as complete, stage and commit the modifications. Track all changes, including overwrites and deleted files (e.g., using `git add --all`), to ensure the repository precisely mirrors the local directory and outdated files are permanently removed. Never stage or commit `plume_config.json` or any other file containing a live API key or credential.
+* **Push Approval Required:** Do not push automatically. After committing, summarise what was committed and explicitly ask the user for confirmation before running `git push`. Only push once the user has approved that specific push.
 * **Pre-requisite Check:** Before pushing, confirm the local working tree is clean and all intended changes have been captured.
 
 # Plans And Final Responses
