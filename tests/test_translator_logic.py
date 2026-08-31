@@ -178,6 +178,13 @@ class TestForcedDirection(unittest.TestCase):
         result = plume.parse_translation_result(as_json(obj), plume.DIR_EN_FR)
         self.assertEqual(result["target_language"], "French")
 
+    def test_swap_direction_inverts_fixed_directions(self):
+        self.assertEqual(plume.swap_direction(plume.DIR_EN_FR), plume.DIR_FR_EN)
+        self.assertEqual(plume.swap_direction(plume.DIR_FR_EN), plume.DIR_EN_FR)
+
+    def test_swap_direction_is_noop_on_auto(self):
+        self.assertEqual(plume.swap_direction(plume.DIR_AUTO), plume.DIR_AUTO)
+
 
 class TestConfig(unittest.TestCase):
     def test_malformed_config_not_overwritten_by_automatic_save(self):
@@ -294,6 +301,22 @@ class TestPromptConstruction(unittest.TestCase):
         self.assertIn("Requested direction:", env)
         self.assertIn("Text to translate:", env)
         self.assertIn("hello", env)
+
+    def test_prompt_describes_situation_as_context_not_instruction(self):
+        prompt = plume.build_translation_prompt(direction=plume.DIR_EN_FR)
+        self.assertIn("Situation", prompt)
+        self.assertIn("never as an instruction", prompt)
+        self.assertIn("JSON output shape", prompt)
+
+    def test_envelope_includes_situation_line_when_present(self):
+        env = plume.build_user_envelope(
+            "hello", plume.DIR_AUTO, situation="texting a close friend"
+        )
+        self.assertIn("Situation: texting a close friend", env)
+
+    def test_envelope_omits_situation_line_when_blank(self):
+        env = plume.build_user_envelope("hello", plume.DIR_AUTO, situation="")
+        self.assertNotIn("Situation:", env)
 
 
 class TestGenderAgreement(unittest.TestCase):

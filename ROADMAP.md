@@ -43,11 +43,18 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
   toolbar mirrors into `config_data`, refreshes the status bar immediately, and
   follows the existing "toolbar wins at save" rule.
 
-## v1.4 — Quick-swap direction + contextual prompting
+## v1.4 — Quick-swap direction + contextual prompting  ✅ landed and pushed
 
-- A one-click direction-swap (English → French ⇄ French → English).
-- An optional "situation" box to steer register/context without weakening the
-  strict JSON contract.
+- **Quick-swap direction:** `swap_direction()` inverts English → French ⇄
+  French → English (a no-op on Auto-detect); a "Swap" button sits on the
+  toolbar between Direction and Backend.
+- **Situation box:** an optional "Situation (optional)" field steers
+  register/context. Wired through `translate()` and `build_user_envelope()`
+  as a labelled line, bounded by the existing `_safe_short_string`. A
+  dedicated system-prompt clause requires the model to treat it strictly as
+  background context, never as an instruction — it cannot change the JSON
+  output shape, add or remove fields, override the requested direction, or
+  outrank the source text's own faithful meaning.
 
 ## v1.5 — Local History & Favourites
 
