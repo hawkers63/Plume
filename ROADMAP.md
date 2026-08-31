@@ -175,7 +175,7 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
   pattern; `plume_config.example.json` stays in parity with
   `DEFAULT_CONFIG`.
 
-## v1.11 — Live-loop polish (notes_008 backlog)
+## v1.11 — Live-loop polish (notes_008 backlog)  ✅ landed locally
 
 Three of the five lightweight feature candidates notes_008 raised
 alongside its hardening findings, not picked up by v1.8 because that
@@ -183,16 +183,23 @@ release was fixes-only. Grouped together as small, self-contained
 button/menu additions that reuse existing helpers with no config
 schema impact beyond one constants tuple:
 
-- **Situation presets:** an option menu beside the Situation field
-  with local-only presets (Close friend, Formal work email,
-  Neighbour, Appointment, Dating/chat) that fill the existing field.
+- **Situation presets:** a `SITUATION_PRESETS` tuple (Close friend,
+  Formal work email, Neighbour, Appointment, Dating/chat) backs a
+  `CTkOptionMenu` beside the Situation field; picking one writes it
+  straight into the existing entry via `_apply_situation_preset()`, so
+  it is still freely editable afterwards and reuses the same prompt
+  pathway as a hand-typed situation.
 - **Copy source:** a "Copy source" button beside Paste/Clear, for
-  chat back-and-forth.
+  chat back-and-forth, backed by `_copy_source()`.
 - **Re-translate using current output as input:** a "Use as input"
   button that copies the main translation into the input box, swaps
   the fixed direction if applicable (reusing `swap_direction()`), and
   clears results — the sibling case to v1.9's Reply for when the
   reply arrives as spoken/typed French rather than being pasted.
+  `_use_main_as_input()` always sends the raw main translation (never
+  a finishing touch, matching Speak's convention) and is disabled
+  alongside Translate/Reply while a request is in flight, guarding
+  against a stale delivery landing on top of the fresh input.
 
 ## v1.12 — Voice extensions (notes_008 backlog, notes_010 Feature 2)
 

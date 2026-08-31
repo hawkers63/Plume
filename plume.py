@@ -119,6 +119,15 @@ GENDER_MASCULINE = "Masculine"
 GENDER_AVOID = "Avoid where possible"
 FRENCH_GENDERS = (GENDER_FEMININE, GENDER_MASCULINE, GENDER_AVOID)
 
+# --- Situation presets (notes_008 candidate #1) -----------------------------
+# Local-only quick-fills for the Situation field. Selecting one simply writes
+# its text into the existing entry, so it reuses the same prompt pathway as a
+# hand-typed situation with no backend changes.
+SITUATION_PRESET_PLACEHOLDER = "Presets…"
+SITUATION_PRESETS = (
+    "Close friend", "Formal work email", "Neighbour", "Appointment", "Dating/chat",
+)
+
 # --- Finishing-touch catalogue (notes_004) ---------------------------------
 # A small, curated set of end-of-message emotes the user may optionally append
 # to a copied translation. Deliberately NOT read from Essential Shortcuts.txt
@@ -2063,23 +2072,34 @@ if GUI_AVAILABLE:
                 placeholder_text="e.g. texting a close friend, formal work email",
             )
             self.situation_entry.grid(row=0, column=1, sticky="ew")
+            self.situation_preset_var = ctk.StringVar(value=SITUATION_PRESET_PLACEHOLDER)
+            ctk.CTkOptionMenu(
+                situation_row,
+                values=[SITUATION_PRESET_PLACEHOLDER] + list(SITUATION_PRESETS),
+                variable=self.situation_preset_var, width=150,
+                command=self._apply_situation_preset,
+            ).grid(row=0, column=2, padx=(8, 0))
 
             buttons = ctk.CTkFrame(left, fg_color="transparent")
             buttons.grid(row=5, column=0, sticky="ew", padx=12, pady=(8, 12))
-            buttons.grid_columnconfigure(3, weight=1)
+            buttons.grid_columnconfigure(4, weight=1)
             ctk.CTkButton(buttons, text="Paste", width=90, command=self._paste,
                           fg_color="gray30").grid(row=0, column=0, padx=(0, 8))
             ctk.CTkButton(buttons, text="Clear", width=90, command=self._clear,
                           fg_color="gray30").grid(row=0, column=1, padx=(0, 8))
+            ctk.CTkButton(
+                buttons, text="Copy source", width=100, command=self._copy_source,
+                fg_color="gray30",
+            ).grid(row=0, column=2, padx=(0, 8))
             self.reply_btn = ctk.CTkButton(
                 buttons, text="Reply", width=90, command=self._reply,
                 fg_color="gray30",
             )
-            self.reply_btn.grid(row=0, column=2, padx=(0, 8))
+            self.reply_btn.grid(row=0, column=3, padx=(0, 8))
             self.translate_btn = ctk.CTkButton(
                 buttons, text="Translate", width=140, command=self._translate
             )
-            self.translate_btn.grid(row=0, column=4, sticky="e")
+            self.translate_btn.grid(row=0, column=5, sticky="e")
 
         def _build_right(self, parent):
             right = ctk.CTkFrame(parent)
@@ -2135,7 +2155,13 @@ if GUI_AVAILABLE:
                 command=lambda: self._speak(self._current_main),
                 state="disabled",
             )
-            self.speak_main_btn.grid(row=0, column=1)
+            self.speak_main_btn.grid(row=0, column=1, padx=(0, 8))
+            self.use_as_input_btn = ctk.CTkButton(
+                main_buttons, text="Use as input", width=110,
+                command=self._use_main_as_input,
+                state="disabled",
+            )
+            self.use_as_input_btn.grid(row=0, column=2)
 
             self.language_label = ctk.CTkLabel(right, text="", text_color="gray70")
             self.language_label.grid(row=2, column=0, sticky="w", padx=12)
@@ -2207,6 +2233,17 @@ if GUI_AVAILABLE:
         def _copy_main(self):
             """Copy the main translation with the current finishing touch."""
             self._copy(append_finishing_touch(self._current_main, self._current_touch()))
+
+        def _copy_source(self):
+            """Copy the input box's text as-is, for chat back-and-forth."""
+            self._copy(self._input_text())
+
+        def _apply_situation_preset(self, value):
+            """Fill Situation from a local-only preset menu selection."""
+            if value == SITUATION_PRESET_PLACEHOLDER:
+                return
+            self.situation_entry.delete(0, "end")
+            self.situation_entry.insert(0, value)
 
         def _copy_variation(self, text):
             """Copy an alternative with the current finishing touch."""
@@ -2287,6 +2324,7 @@ if GUI_AVAILABLE:
             self._set_primary_text("Your main translation will appear here.")
             self.copy_main_btn.configure(state="disabled")
             self.speak_main_btn.configure(state="disabled")
+            self.use_as_input_btn.configure(state="disabled")
             self._stop_speech()
             self._cleanup_tts_file()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
@@ -2319,6 +2357,28 @@ if GUI_AVAILABLE:
             self._refresh_primary_display()
             self.copy_main_btn.configure(state="normal")
             self.speak_main_btn.configure(state="normal")
+            self.use_as_input_btn.configure(state="normal")
+
+        def _use_main_as_input(self):
+            """Re-translate using the current main translation as new input.
+
+            The sibling case to Reply (v1.9) for when the other side's reply
+            arrives as spoken or typed French rather than being pasted: takes
+            the raw main translation (never a finishing touch, since that is
+            not meant to be sent back to the model), swaps the fixed direction
+            via swap_direction() (a no-op on Auto-detect), and clears the old
+            result so a fresh translation can be requested. No network request
+            is made here.
+            """
+            if not self._current_main:
+                return
+            text = self._current_main
+            self._swap_direction()
+            self._clear_results()
+            self.input_box.delete("1.0", "end")
+            self.input_box.insert("1.0", text)
+            self._on_input_change()
+            self.input_box.focus_set()
 
         def _reopen_history_entry(self, entry):
             """Load a saved history entry back into the working translator.
@@ -2546,6 +2606,7 @@ if GUI_AVAILABLE:
 
             self.translate_btn.configure(state="disabled", text="Translating\u2026")
             self.reply_btn.configure(state="disabled")
+            self.use_as_input_btn.configure(state="disabled")
             self.advisory.grid_remove()
             self._refresh_status(state="translating\u2026")
 
@@ -2587,6 +2648,7 @@ if GUI_AVAILABLE:
                 return
             self.translate_btn.configure(state="normal", text="Translate")
             self.reply_btn.configure(state="normal")
+            self.use_as_input_btn.configure(state="normal" if self._current_main else "disabled")
 
             kind, data = payload
             if kind == "error":
@@ -2657,6 +2719,7 @@ if GUI_AVAILABLE:
             self._refresh_primary_display()
             self.copy_main_btn.configure(state="normal")
             self.speak_main_btn.configure(state="normal")
+            self.use_as_input_btn.configure(state="normal")
             self.language_label.configure(text=format_language_label(result))
 
             for card in self._variation_cards:
