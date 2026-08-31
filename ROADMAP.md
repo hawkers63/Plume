@@ -19,7 +19,7 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
 - Earlier bug fixes (Clear supersedes in-flight work, window-close guard,
   status-bar state, config coercion, backend hardening) and `.gitignore`.
 
-## v1.2 — Essential Shortcuts + first console-less .exe  ✅ landed (pending your review/push)
+## v1.2 — Essential Shortcuts + first console-less .exe  ✅ landed and pushed
 
 - **Refactor (notes_006 §1):** extracted `PlumeApp._build_variation_card`, giving
   the alternative cards one seam for future button changes. No visual change.
