@@ -376,6 +376,29 @@ class TestStatusState(unittest.TestCase):
         self.assertTrue(plume.format_status(cfg, None).endswith("ready"))
 
 
+class TestAdvisories(unittest.TestCase):
+    def test_advisory_text_includes_language_note_and_notes(self):
+        result = valid_result()
+        result["language_note"] = "Ambiguous source language."
+        result["notes"] = ["Check the protected placeholder."]
+        text = plume.advisory_text_from_result(result)
+        self.assertIn("Ambiguous source language.", text)
+        self.assertIn("Check the protected placeholder.", text)
+
+    def test_advisory_text_ignores_blank_and_non_string_values(self):
+        result = valid_result()
+        result["language_note"] = " "
+        result["notes"] = ["", 42, "Useful note."]
+        self.assertEqual(plume.advisory_text_from_result(result), "Useful note.")
+
+    def test_advisory_text_can_append_extra_notes(self):
+        result = valid_result()
+        result["language_note"] = "Language note."
+        text = plume.advisory_text_from_result(result, extra_notes=["Input changed."])
+        self.assertIn("Language note.", text)
+        self.assertIn("Input changed.", text)
+
+
 class TestConfigCoercion(unittest.TestCase):
     def _load_with(self, raw_dict):
         with tempfile.TemporaryDirectory() as tmp:
@@ -401,6 +424,15 @@ class TestConfigCoercion(unittest.TestCase):
     def test_negative_limit_falls_back(self):
         config, _ = self._load_with({"max_input_chars": -5})
         self.assertEqual(config["max_input_chars"], plume.DEFAULT_MAX_INPUT_CHARS)
+
+    def test_positive_limit_is_preserved(self):
+        config, _ = self._load_with({"max_input_chars": "5000"})
+        self.assertEqual(config["max_input_chars"], 5000)
+
+    def test_coerce_positive_int(self):
+        self.assertEqual(plume.coerce_positive_int("5000", 2000), 5000)
+        self.assertEqual(plume.coerce_positive_int("banana", 2000), 2000)
+        self.assertEqual(plume.coerce_positive_int(0, 2000), 2000)
 
     def test_unknown_gender_falls_back_to_feminine(self):
         config, _ = self._load_with({"default_french_speaker_gender": "nonsense"})
@@ -452,6 +484,17 @@ class TestBackendHardening(unittest.TestCase):
             else:
                 self.fail("expected BackendError")
 
+    def test_ollama_http_error_names_ollama_not_claude(self):
+        with mock.patch("urllib.request.urlopen", side_effect=self._http_error(429)):
+            try:
+                plume.call_ollama({"ollama_model": "x"}, "sys", "user")
+            except plume.BackendError as exc:
+                message = str(exc)
+                self.assertIn("Ollama", message)
+                self.assertNotIn("Claude", message)
+            else:
+                self.fail("expected BackendError")
+
     def test_list_models_non_dict_body(self):
         class _Resp:
             def __enter__(self_inner):
@@ -463,6 +506,15 @@ class TestBackendHardening(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", return_value=_Resp()):
             with self.assertRaises(plume.BackendError):
                 plume.list_ollama_models()
+
+    @staticmethod
+    def _http_error(code):
+        def _raise(*args, **kwargs):
+            raise urllib.error.HTTPError(
+                "http://localhost:11434/api/chat", code, "err", {},
+                io.BytesIO(b"detail"),
+            )
+        return _raise
 
 
 class TestElevenLabsTTS(unittest.TestCase):
@@ -634,11 +686,17 @@ class TestUseAsMain(unittest.TestCase):
 
 class TestHistoryEntries(unittest.TestCase):
     def test_make_history_entry_captures_source_and_result(self):
-        entry = plume.make_history_entry("hello", valid_result())
+        result = valid_result()
+        result["language_note"] = "Language was slightly ambiguous."
+        result["notes"] = ["Check the register."]
+        entry = plume.make_history_entry("hello", result)
         self.assertEqual(entry["source_text"], "hello")
         self.assertEqual(entry["main_translation"], "Bonjour tout le monde")
         self.assertEqual(entry["source_language"], "English")
         self.assertEqual(entry["target_language"], "French")
+        self.assertEqual(entry["language_confidence"], "high")
+        self.assertEqual(entry["language_note"], "Language was slightly ambiguous.")
+        self.assertEqual(entry["notes"], ["Check the register."])
         self.assertEqual(len(entry["variations"]), 5)
         self.assertFalse(entry["favourite"])
         self.assertTrue(entry["id"])
@@ -679,6 +737,20 @@ class TestHistoryEntries(unittest.TestCase):
         entries = [{"id": "a", "favourite": True}, {"id": "b", "favourite": False}]
         remaining = plume.clear_history(entries)
         self.assertEqual([e["id"] for e in remaining], ["a"])
+
+    def test_normalise_history_entry_preserves_valid_entry(self):
+        entry = plume.make_history_entry("hello", valid_result(), situation="a text")
+        entry["favourite"] = True
+        clean = plume.normalise_history_entry(entry)
+        self.assertIsNotNone(clean)
+        self.assertEqual(clean["source_text"], "hello")
+        self.assertEqual(clean["language_confidence"], "high")
+        self.assertEqual(clean["situation"], "a text")
+        self.assertTrue(clean["favourite"])
+
+    def test_normalise_history_entry_drops_unusable_entry(self):
+        self.assertIsNone(plume.normalise_history_entry({"main_translation": "Bonjour"}))
+        self.assertIsNone(plume.normalise_history_entry({"variations": []}))
 
 
 class TestHistoryPersistence(unittest.TestCase):
@@ -722,6 +794,29 @@ class TestHistoryPersistence(unittest.TestCase):
                 self.assertEqual(plume.load_history(), [])
             with open(path, "r", encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "not json")  # untouched
+
+    def test_load_history_drops_malformed_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, plume.HISTORY_FILENAME)
+            entries = [
+                plume.make_history_entry("hello", valid_result()),
+                {"id": "bad", "main_translation": "Bonjour"},
+            ]
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(entries, fh)
+            with mock.patch.object(plume, "history_path", return_value=path):
+                loaded = plume.load_history()
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0]["source_text"], "hello")
+
+
+class TestDocumentationShape(unittest.TestCase):
+    def test_example_config_matches_default_config_keys(self):
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        path = os.path.join(root, "plume_config.example.json")
+        with open(path, "r", encoding="utf-8") as fh:
+            example = json.load(fh)
+        self.assertEqual(set(example), set(plume.DEFAULT_CONFIG))
 
 
 if __name__ == "__main__":

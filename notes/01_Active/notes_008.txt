@@ -1,0 +1,823 @@
+Plume read-only review - 2026-08-31
+====================================
+
+Scope
+-----
+Reviewed the files under C:\Plume, with the deepest pass on:
+
+- C:\Plume\plume.py
+- C:\Plume\tests\test_translator_logic.py
+- C:\Plume\README.md
+- C:\Plume\ROADMAP.md
+- C:\Plume\plume_config.example.json
+- C:\Plume\plume.spec
+- C:\Plume\Plume.bat
+- C:\Plume\AGENTS.md, bug_hunter.md, enhancement_agent.md, environment_admin.md
+- C:\Plume\notes\04_Random\Essential Shortcuts.txt
+- C:\Plume\notes\04_Random\Plume - Enhancement Ideas & Feature Roadmap.txt
+
+Constraint compliance
+---------------------
+This was a read-only review of C:\Plume. No project files were modified, moved, or deleted. The only write performed was this report at D:\Bot_Activity\notes_001.txt, matching the user's requested reporting path.
+
+Before writing this report, I checked whether an active task-tracking system was available in this session. No dedicated active task-tracking tool was exposed, so this review proceeded as a standalone read-only audit.
+
+Verification performed
+----------------------
+The system Python and Windows py launcher were not usable for tests:
+
+- python: command not found
+- py -3: No installed Python found
+
+The bundled Codex workspace runtime was available and used with bytecode writes disabled:
+
+    C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -B -m unittest discover -s tests -v
+
+Result:
+
+- Ran 97 tests
+- All passed
+
+Git status note
+---------------
+Using a read-only per-command safe-directory override, git reported pre-existing workspace changes:
+
+- D notes/00_Drafts/notes_007.txt
+- D notes/Essential Shortcuts.txt
+- D notes/Plume -- Enhancement Ideas & Feature Roadmap.txt
+- ?? notes/01_Active/notes_007.txt
+- ?? notes/04_Random/
+
+These were not created or altered by this review.
+
+Executive summary
+-----------------
+Plume is in generally good shape for a compact single-file CustomTkinter app. The deterministic translation core is unusually well covered: parsing, placeholder preservation, config hardening, backend error privacy, stale translation delivery, finishing touches, gender prompting, TTS wrapping, and history persistence all have focused tests.
+
+The main risks are concentrated in newer GUI-level paths that are not covered by the test suite: result advisory display, speech playback state, and history entry shape. The most important behavioural bug is that model notes and placeholder warnings are rendered only inside the opt-in history save method. Because local history is off by default, default users can miss low-confidence language notes or protected-placeholder warnings entirely.
+
+The rest of the findings are incremental rather than architectural: make history entries preserve all result metadata, protect the app from stale/out-of-order TTS playback, make generic HTTP errors service-aware, expose the existing max-input limit in Settings or adjust the message, and update documentation/config examples to match the features already landed in v1.5-v1.7.
+
+Identified bugs and targeted fixes
+==================================
+
+1. Moderate - Result advisories are skipped when local history is disabled
+---------------------------------------------------------------------------
+Location:
+
+- C:\Plume\plume.py:2345-2347
+- C:\Plume\plume.py:2416-2442
+
+Problem:
+
+Plume renders a completed result, then calls _save_to_history(). That method immediately returns when save_local_history is false:
+
+    if not self.config_data.get("save_local_history"):
+        return
+
+The advisory rendering for result["language_note"] and result["notes"] sits after that return. Since save_local_history defaults to false, language uncertainty notes and placeholder-loss warnings are invisible for default users.
+
+Impact:
+
+- Low-confidence auto-detection can be hidden.
+- Placeholder preservation warnings from restore_result_tokens() can be hidden.
+- Users may copy/send a translation without seeing that protected material may have been dropped.
+
+Targeted fix:
+
+Separate advisory display from history persistence. Keep _save_to_history() responsible only for optional disk persistence, and call a small advisory renderer for every successful result.
+
+Insertion point:
+
+- Add advisory_text_from_result() in C:\Plume\plume.py below format_language_label() at about line 1209, before mask_api_key().
+- Add _show_result_advisories() inside class PlumeApp below _render_result() at about line 2415.
+- In _deliver(), after self._render_result(data) and before self._save_to_history(...), call self._show_result_advisories(data).
+- Remove the advisory block from _save_to_history().
+
+Proposed code:
+
+```python
+def advisory_text_from_result(result: dict) -> str:
+    """Return the advisory text that should be shown for a translation result.
+
+    The language note and optional result notes are display concerns, not
+    history-persistence concerns. Keeping this helper pure makes it easy to
+    test that placeholder warnings and low-confidence notes are shown even
+    when local history is disabled.
+    """
+    notes = [result.get("language_note", "")]
+    notes.extend(result.get("notes", []))
+    return "  •  ".join(
+        note.strip()
+        for note in notes
+        if isinstance(note, str) and note.strip()
+    )
+```
+
+```python
+def _show_result_advisories(self, result):
+    """Display language and preservation advisories for a completed result."""
+    text = advisory_text_from_result(result)
+    if text:
+        self.advisory.configure(text=text)
+        self.advisory.grid()
+    else:
+        self.advisory.grid_remove()
+```
+
+Replace this part of _deliver():
+
+```python
+self._render_result(data)
+self._save_to_history(snap_text, situation, data)
+```
+
+with:
+
+```python
+self._render_result(data)
+self._show_result_advisories(data)
+self._save_to_history(snap_text, situation, data)
+```
+
+Then trim _save_to_history() to:
+
+```python
+def _save_to_history(self, source_text, situation, result):
+    """Best-effort, opt-in local save of a completed translation."""
+    if not self.config_data.get("save_local_history"):
+        return
+    entries = load_history()
+    entries.insert(0, make_history_entry(source_text, result, situation))
+    entries = prune_history(entries)
+    try:
+        save_history(entries)
+    except HistoryError:
+        pass
+```
+
+Suggested tests:
+
+- Add a pure test for advisory_text_from_result().
+- Add a GUI-adjacent unit test with a minimal dummy object if the project later introduces GUI test seams.
+
+
+2. Moderate - Saved history drops result metadata and reopened entries can show false confidence
+----------------------------------------------------------------------------------------------
+Location:
+
+- C:\Plume\plume.py:390-402
+- C:\Plume\plume.py:1209-1216
+- C:\Plume\plume.py:2086-2100
+- C:\Plume\ROADMAP.md:94-97
+
+Problem:
+
+make_history_entry() stores source_language, target_language, source_text, situation, main_translation, variations, and favourite, but does not store language_confidence, language_note, or notes. format_language_label() falls back to "low" when confidence is missing, so reopened history entries can show "detected with low confidence" even when the original result was high confidence. The roadmap already notes this as an accepted cosmetic quirk, but it is also a data-consistency issue now that history can reopen results as if they were live results.
+
+Impact:
+
+- Reopened entries display misleading confidence.
+- Original uncertainty/preservation notes are lost from history.
+- Future features that rely on result metadata would need special cases for history records.
+
+Targeted fix:
+
+Store the full display-relevant result metadata in new history entries. This is backward compatible because format_language_label() already has fallbacks for older records.
+
+Insertion point:
+
+- Update make_history_entry() in C:\Plume\plume.py at about line 390.
+
+Proposed replacement:
+
+```python
+def make_history_entry(source_text, result, situation="") -> dict:
+    """Build a new history entry from a completed translation result.
+
+    History entries preserve every field needed to render the saved result
+    later without inventing fallback metadata. Older history files may still
+    lack these keys; the existing render helpers already tolerate that.
+    """
+    return {
+        "id": uuid.uuid4().hex,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "source_language": result.get("source_language", ""),
+        "target_language": result.get("target_language", ""),
+        "language_confidence": result.get("language_confidence", "low"),
+        "language_note": result.get("language_note", ""),
+        "source_text": source_text,
+        "situation": situation,
+        "main_translation": result.get("main_translation", ""),
+        "variations": result.get("variations", []),
+        "notes": result.get("notes", []),
+        "favourite": False,
+    }
+```
+
+Suggested tests:
+
+- Extend TestHistoryEntries.test_make_history_entry_captures_source_and_result to assert language_confidence, language_note, and notes are preserved.
+- Add a test confirming older minimal history entries still render/reopen with fallbacks.
+
+
+3. Moderate - History loading accepts any dict, so malformed entries can crash Reopen
+------------------------------------------------------------------------------------
+Location:
+
+- C:\Plume\plume.py:346-363
+- C:\Plume\plume.py:2086-2100
+- C:\Plume\plume.py:2401-2414
+
+Problem:
+
+load_history() filters only for isinstance(entry, dict). The History window can therefore contain entries missing "main_translation" or "variations". Most card rendering uses .get(), but Reopen passes the raw entry into _render_result(), which indexes result["main_translation"] and result["variations"]. A partially malformed plume_history.json can therefore crash the UI when Reopen is clicked.
+
+Impact:
+
+- One bad history entry can break the Reopen workflow.
+- The malformed-file protection is strong at file level, but weak at entry-shape level.
+
+Targeted fix:
+
+Normalise history entries as they are loaded. Keep the rules modest: require only a renderable main_translation and a list of variation dicts with usable translation and english_meaning_check strings. Preserve unknown keys by copying only the fields Plume understands.
+
+Insertion point:
+
+- Add normalise_history_entry() below make_history_entry() in C:\Plume\plume.py.
+- Update load_history() at about line 363 to use the helper.
+
+Proposed code:
+
+```python
+def normalise_history_entry(entry) -> dict | None:
+    """Return a renderable history entry, or None if the entry is unusable.
+
+    The history file is user-local and may have been edited or produced by an
+    older Plume version. This keeps the History window resilient without
+    rewriting the file during load.
+    """
+    if not isinstance(entry, dict):
+        return None
+
+    main = entry.get("main_translation")
+    variations = entry.get("variations")
+    if not isinstance(main, str) or not main.strip():
+        return None
+    if not isinstance(variations, list):
+        return None
+
+    clean_variations = []
+    for item in variations:
+        if not isinstance(item, dict):
+            continue
+        translation = item.get("translation")
+        meaning = item.get("english_meaning_check")
+        if isinstance(translation, str) and translation.strip() and isinstance(meaning, str) and meaning.strip():
+            clean_variations.append(
+                {
+                    "translation": translation.strip(),
+                    "english_meaning_check": meaning.strip(),
+                }
+            )
+
+    if len(clean_variations) != VARIATION_COUNT:
+        return None
+
+    return {
+        "id": str(entry.get("id") or uuid.uuid4().hex),
+        "timestamp": str(entry.get("timestamp") or ""),
+        "source_language": entry.get("source_language", ""),
+        "target_language": entry.get("target_language", ""),
+        "language_confidence": entry.get("language_confidence", "low"),
+        "language_note": _safe_short_string(entry.get("language_note", "")),
+        "source_text": entry.get("source_text", ""),
+        "situation": _safe_short_string(entry.get("situation", "")),
+        "main_translation": main.strip(),
+        "variations": clean_variations,
+        "notes": _safe_string_list(entry.get("notes", [])),
+        "favourite": bool(entry.get("favourite")),
+    }
+```
+
+Replace the final return in load_history():
+
+```python
+return [entry for entry in data if isinstance(entry, dict)]
+```
+
+with:
+
+```python
+entries = []
+for entry in data:
+    clean = normalise_history_entry(entry)
+    if clean is not None:
+        entries.append(clean)
+return entries
+```
+
+Suggested tests:
+
+- load_history() drops a dict without variations.
+- load_history() preserves a valid v1.7 entry.
+- _reopen_history_entry() can render a normalised entry with confidence preserved.
+
+
+4. Moderate - Overlapping Speak requests can play stale audio
+-------------------------------------------------------------
+Location:
+
+- C:\Plume\plume.py:1678-1682
+- C:\Plume\plume.py:2102-2169
+- C:\Plume\plume.py:2179-2201
+
+Problem:
+
+Translation requests have a request-id stale guard, but TTS requests do not. If the user clicks Speak on text A, then quickly clicks Speak on text B, the slower response can arrive last and play A after B was requested. _play_wav_bytes() stops current playback before playing the arriving file, so a stale response can actively interrupt the newer intended speech.
+
+Impact:
+
+- Audio output can disagree with the user's latest click.
+- This is especially likely with cloud TTS latency.
+
+Targeted fix:
+
+Mirror the translation stale-guard pattern for speech. Track a _speech_request_id, pass it through the worker, and ignore stale deliveries. Also stop and clean up temp audio when closing the app.
+
+Insertion points:
+
+- Add self._speech_request_id = 0 in PlumeApp.__init__ near line 1678.
+- In _speak(), increment and capture speech_request_id before starting the worker.
+- Change _deliver_speech(self, payload) to _deliver_speech(self, speech_request_id, payload).
+- Add _cleanup_tts_file() near _stop_speech().
+- Call _stop_speech() and _cleanup_tts_file() inside _on_close().
+
+Proposed code:
+
+```python
+# In PlumeApp.__init__, after self._request_id = 0
+self._speech_request_id = 0
+```
+
+```python
+# In _speak(), immediately before defining worker()
+self._speech_request_id += 1
+speech_request_id = self._speech_request_id
+```
+
+```python
+# Inside worker(), replace the delivery call
+self._deliver_speech(speech_request_id, payload)
+```
+
+```python
+def _deliver_speech(self, speech_request_id, payload):
+    """Deliver speech audio only if it belongs to the latest Speak request."""
+    if result_is_stale(speech_request_id, self._speech_request_id):
+        return
+    kind, data = payload
+    if kind == "error":
+        self.advisory.configure(text=data)
+        self.advisory.grid()
+        return
+    self._play_wav_bytes(data)
+```
+
+```python
+def _cleanup_tts_file(self):
+    """Remove Plume's temporary TTS file if one is currently tracked."""
+    if not self._tts_temp_path:
+        return
+    try:
+        os.remove(self._tts_temp_path)
+    except OSError:
+        pass
+    self._tts_temp_path = None
+```
+
+Then simplify _play_wav_bytes():
+
+```python
+self._stop_speech()
+self._cleanup_tts_file()
+```
+
+Update _on_close():
+
+```python
+def _on_close(self):
+    """Invalidate in-flight work, stop playback, then destroy the window."""
+    self._request_id += 1
+    self._speech_request_id += 1
+    self._stop_speech()
+    self._cleanup_tts_file()
+    self.destroy()
+```
+
+Suggested tests:
+
+- A pure test can reuse result_is_stale for speech IDs.
+- A GUI-adjacent test can create a minimal PlumeApp-like dummy with advisory/_play_wav_bytes fakes and assert stale speech deliveries do nothing.
+
+
+5. Minor - Generic POST helper reports Claude-specific errors for Ollama HTTP failures
+-------------------------------------------------------------------------------------
+Location:
+
+- C:\Plume\plume.py:908-934
+- C:\Plume\plume.py:942-957
+- C:\Plume\plume.py:982
+- C:\Plume\plume.py:1015
+
+Problem:
+
+_http_post_json() is shared by Claude and Ollama, but its HTTPError path always calls _friendly_http_message(), whose 401/403 and 429 messages name "The Claude API". If Ollama returns an HTTP status error, the user can see a misleading Claude-specific message while using the Ollama backend.
+
+Impact:
+
+- Backend diagnostics can point the user at the wrong service.
+- This is confusing when switching backends from the toolbar.
+
+Targeted fix:
+
+Make the helper service-aware while keeping the privacy-preserving behaviour that avoids echoing backend detail text.
+
+Insertion points:
+
+- Replace _http_post_json() signature near line 908 with a service_name parameter defaulting to "backend".
+- Replace _friendly_http_message() signature near line 942 with service_name.
+- Pass "Claude API" from call_anthropic().
+- Pass "Ollama" from call_ollama().
+
+Proposed code:
+
+```python
+def _http_post_json(url, payload, headers, timeout, service_name="backend"):
+    """POST *payload* as JSON and return the decoded JSON response.
+
+    The service name is used only for safe, generic diagnostics; backend detail
+    text is still not displayed because it may contain prompt fragments.
+    """
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raise BackendError(_friendly_http_message(exc.code, service_name))
+    except urllib.error.URLError as exc:
+        raise BackendError(
+            "Could not reach the translation backend. Please check your "
+            "connection and try again. ({})".format(_reason_text(exc))
+        )
+    except (TimeoutError, OSError):
+        raise BackendError(
+            "The translation backend did not respond in time. Please try again."
+        )
+    try:
+        return json.loads(body)
+    except ValueError:
+        raise BackendError("The backend returned a response that could not be read.")
+```
+
+```python
+def _friendly_http_message(code, service_name="backend") -> str:
+    """Return a safe user-facing message for a backend HTTP status."""
+    if code in (401, 403):
+        return "{} rejected the request. Please check its credentials or settings.".format(
+            service_name
+        )
+    if code == 404:
+        return (
+            "The requested model or endpoint was not found. Please check the "
+            "model name in Settings."
+        )
+    if code == 429:
+        return "{} is rate limiting requests. Please wait and retry.".format(service_name)
+    if 500 <= code < 600:
+        return "The translation service reported a temporary error. Please retry."
+    return "The request failed (HTTP {}). Please try again.".format(code)
+```
+
+Call-site updates:
+
+```python
+data = _http_post_json(
+    ANTHROPIC_URL, payload, headers, ANTHROPIC_TIMEOUT, service_name="Claude API"
+)
+```
+
+```python
+data = _http_post_json(
+    url, payload, headers, OLLAMA_TIMEOUT, service_name="Ollama"
+)
+```
+
+Suggested tests:
+
+- Mock urllib.request.urlopen to raise HTTPError(429) through call_ollama(), and assert the message mentions Ollama rather than Claude.
+- Keep the existing prompt-fragment privacy test.
+
+
+6. Minor - The max-input error points to a Settings control that does not exist
+-------------------------------------------------------------------------------
+Location:
+
+- C:\Plume\plume.py:209
+- C:\Plume\plume.py:294-298
+- C:\Plume\plume.py:546-556
+- C:\Plume\plume.py:1269-1506
+
+Problem:
+
+validate_source_size() tells users to "raise the limit in Settings", but Settings currently exposes backend, model/key, TTS, privacy, placeholder protection, and history toggles only. max_input_chars exists in config and load_config() coerces it, but there is no Settings field to change it.
+
+Impact:
+
+- The recovery instruction is not actionable from the UI.
+- Users must hand-edit plume_config.json despite being told to use Settings.
+
+Targeted fix:
+
+Expose a small numeric "Maximum message length" field in Settings and reuse the same coercion rule as load_config().
+
+Insertion points:
+
+- Add coerce_positive_int() near normalise_backend() at about line 229.
+- Replace the inline max_input_chars coercion in load_config() with this helper.
+- Add a CTkEntry in SettingsDialog.__init__ after the history checkbox at about line 1400.
+- Save the field in SettingsDialog._save() around line 1472.
+
+Proposed code:
+
+```python
+def coerce_positive_int(value, default: int) -> int:
+    """Return *value* as a positive integer, or *default* if it is invalid."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+```
+
+Use it in load_config():
+
+```python
+config["max_input_chars"] = coerce_positive_int(
+    config.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS
+)
+```
+
+Add to SettingsDialog.__init__ after the local-history checkbox:
+
+```python
+ctk.CTkLabel(self, text="Maximum message length").grid(
+    row=row, column=0, sticky="w", padx=16
+)
+row += 1
+self.max_input_entry = ctk.CTkEntry(self)
+self.max_input_entry.insert(
+    0, str(coerce_positive_int(
+        self._config.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS
+    ))
+)
+self.max_input_entry.grid(row=row, column=0, sticky="ew", **pad)
+row += 1
+```
+
+Add to SettingsDialog._save():
+
+```python
+self._config["max_input_chars"] = coerce_positive_int(
+    self.max_input_entry.get().strip(), DEFAULT_MAX_INPUT_CHARS
+)
+```
+
+Suggested tests:
+
+- coerce_positive_int("5000", DEFAULT_MAX_INPUT_CHARS) returns 5000.
+- coerce_positive_int("banana", DEFAULT_MAX_INPUT_CHARS) returns the default.
+- load_config() continues to pass existing bad-value tests.
+
+
+7. Minor - README and example config are stale relative to landed features
+--------------------------------------------------------------------------
+Location:
+
+- C:\Plume\README.md:105
+- C:\Plume\README.md:166-167
+- C:\Plume\ROADMAP.md:56-84
+- C:\Plume\plume_config.example.json
+
+Problem:
+
+The roadmap says Local History, Favourites, Reopen, and ElevenLabs TTS have landed, and plume.py implements them. The README still says:
+
+- "Local history is off by default and is not stored in version 1."
+- "No speech input/output"
+- "No persistent history"
+
+The example config is also missing five DEFAULT_CONFIG keys:
+
+- default_french_speaker_gender
+- default_french_recipient_gender
+- elevenlabs_api_key
+- elevenlabs_voice_id
+- elevenlabs_privacy_ack
+
+Impact:
+
+- New users may think shipped features are unavailable.
+- The example config no longer documents the live config shape.
+- Future manual config edits are more error-prone.
+
+Targeted fix:
+
+Update documentation only. No runtime change needed.
+
+Insertion points:
+
+- Update the Privacy and Version-1 limitations sections in C:\Plume\README.md.
+- Add the missing keys to C:\Plume\plume_config.example.json.
+
+Proposed example-config replacement:
+
+```json
+{
+  "backend": "anthropic",
+  "anthropic_api_key": "",
+  "anthropic_model": "claude-sonnet-4-6",
+  "ollama_model": "llama3.1:8b",
+  "privacy_ack": false,
+  "default_direction": "Auto-detect",
+  "default_french_formality": "Informal (tu)",
+  "default_french_variant": "Neutral international French",
+  "default_french_speaker_gender": "Feminine",
+  "default_french_recipient_gender": "Feminine",
+  "protect_placeholders": true,
+  "save_local_history": false,
+  "max_input_chars": 2000,
+  "elevenlabs_api_key": "",
+  "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",
+  "elevenlabs_privacy_ack": false
+}
+```
+
+Suggested tests/checks:
+
+- Add a small documentation-shape test that imports DEFAULT_CONFIG and asserts plume_config.example.json has exactly the same keys.
+
+
+Additional observations
+=======================
+
+Strengths
+---------
+- The response contract is strict and well defended. parse_translation_result() rejects malformed JSON, wrong top-level type, empty primary text, wrong variation count, duplicate alternatives, invalid language pairs, and forced-direction mismatch.
+- Placeholder protection and restoration are privacy-conscious. The warning intentionally avoids echoing protected values.
+- Config and history saves use atomic temp-file replacement and malformed-file protection.
+- Translation worker delivery has a stale-request guard, protecting Clear/later requests/window close from late background callbacks.
+- Backend diagnostics intentionally avoid source-text leakage.
+- The test suite is compact but broad for deterministic logic.
+
+Coverage gaps worth closing
+---------------------------
+- Advisory rendering when save_local_history is false.
+- GUI state for overlapping Speak requests.
+- History loading/reopen behaviour for older or malformed entries.
+- Service-aware HTTP error wording for Ollama.
+- Example-config shape drift against DEFAULT_CONFIG.
+- Settings save behaviour for max_input_chars once exposed.
+
+Up to five lightweight feature candidates
+=========================================
+
+1. Situation presets
+--------------------
+Add a small option menu beside the Situation entry with local-only presets such as "Close friend", "Formal work email", "Neighbour", "Appointment", and "Dating/chat". Selecting one fills the existing Situation field. This reuses the existing prompt pathway and avoids new backend complexity.
+
+Suggested insertion:
+
+- Add a SITUATION_PRESETS tuple near the formality/gender constants.
+- Add a CTkOptionMenu in PlumeApp._build_left() next to situation_entry.
+- Add _apply_situation_preset() as a small PlumeApp helper.
+
+
+2. Copy source
+--------------
+Add a "Copy source" button beside Paste/Clear. It is a tiny workflow improvement for chat back-and-forth and does not alter translation, history, or backend logic.
+
+Suggested insertion:
+
+- Add the button in PlumeApp._build_left() beside Clear.
+- Add _copy_source() near _copy_main().
+
+
+3. Stop speech button
+---------------------
+Add a "Stop" button next to Speak on the primary card. The code already has _stop_speech(); exposing it would make TTS feel controllable without adding a new service dependency.
+
+Suggested insertion:
+
+- Add stop_speech_btn in PlumeApp._build_right().
+- Enable it when playback is requested; disable on Clear/Close if desired.
+
+
+4. Favourite current result from the main panel
+-----------------------------------------------
+History favourites currently live only in the History window. Add a star button to the current main translation that saves the current result as a favourite when local history is enabled, or prompts to enable local history when it is not.
+
+Suggested insertion:
+
+- Add a helper make_favourite_history_entry() or extend make_history_entry(..., favourite=False).
+- Add a star button in the primary card's button row.
+- Keep the storage path identical to existing history JSON.
+
+
+5. Re-translate using current output as input
+--------------------------------------------
+Add a small "Use as input" button for the main translation. This helps real conversations where the user alternates direction. It should copy the current main translation into the input box, swap the fixed direction if applicable, clear results, and leave Auto-detect unchanged.
+
+Suggested insertion:
+
+- Add _use_main_as_input() near _use_as_main().
+- Add the button beside Copy main translation / Speak.
+- Reuse swap_direction() and _clear_results().
+
+Priority recommendation
+=======================
+
+Fix order:
+
+1. Decouple advisory rendering from history saving.
+2. Preserve history metadata and normalise loaded history entries.
+3. Add stale guards and cleanup for Speak/TTS.
+4. Make backend HTTP diagnostics service-aware.
+5. Expose max_input_chars in Settings.
+6. Update README and plume_config.example.json.
+
+The first fix is the highest value because it affects the default user path and can hide safety-relevant placeholder warnings. The next two are state/data-consistency hardening for features that landed after the older pure-logic test surface was established.
+
+
+Implementation record - v1.8
+============================
+
+Status: implemented locally on 31 August 2026. GitHub push remains pending
+until explicit push approval and authentication are available.
+
+Files updated:
+
+- C:\Plume\plume.py
+- C:\Plume\tests\test_translator_logic.py
+- C:\Plume\README.md
+- C:\Plume\ROADMAP.md
+- C:\Plume\plume_config.example.json
+- C:\Plume\notes\01_Active\notes_008.txt
+
+Implemented fixes:
+
+1. Result advisories are now rendered independently of local-history saving.
+   The new advisory_text_from_result() helper collects language notes,
+   placeholder-preservation warnings and optional UI warnings, so default
+   users still see safety-relevant notes while history remains off.
+
+2. History entries now preserve language_confidence, language_note and notes.
+   Reopened entries no longer need to invent a low-confidence fallback for new
+   records.
+
+3. load_history() now normalises entry shape via normalise_history_entry().
+   Unusable local records are skipped during load rather than being allowed to
+   crash the Reopen path later.
+
+4. Speak/TTS requests now use a dedicated _speech_request_id stale guard.
+   A slower old speech request can no longer interrupt or replace the audio
+   from a newer Speak click. Temporary TTS files are also cleaned up on
+   replacement, Clear and window close.
+
+5. Backend HTTP messages are service-aware. The shared POST helper now receives
+   a service_name so Ollama HTTP errors do not mention Claude.
+
+6. Settings now exposes the existing max_input_chars value as "Maximum message
+   length", backed by the shared coerce_positive_int() helper.
+
+7. Documentation was refreshed: README now describes local history, Reopen and
+   ElevenLabs Speak accurately, and plume_config.example.json matches
+   DEFAULT_CONFIG.
+
+Tests added:
+
+- advisory_text_from_result() coverage for language notes, result notes, blank
+  values and extra UI warnings.
+- coerce_positive_int() and positive max_input_chars config coverage.
+- Ollama HTTP error wording coverage.
+- history metadata preservation and malformed-entry dropping coverage.
+- plume_config.example.json key parity against DEFAULT_CONFIG.
+
+Manual verification still recommended after tests:
+
+- Launch Plume and open Settings to confirm the extra Maximum message length
+  field fits the dialog and saves correctly.
+- Translate with a forced placeholder warning or low-confidence language note
+  while history is disabled, and confirm the advisory appears.
+- Start two Speak requests quickly and confirm the newest click wins.

@@ -30,7 +30,11 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   French → English never invents gender in the English.
 - Placeholder protection for names, links, dates and `[Name]` / `{amount}`
   style markers, so they survive translation unchanged.
-- A copy button on every result, with a prominent **Copy main translation**.
+- A copy button on every result, with a prominent **Copy main translation**;
+  alternatives can be promoted with **Use this**.
+- Optional local history with favourites, per-entry **Copy** / **Reopen** /
+  **Delete**, and "clear history" preserving favourited entries.
+- Optional ElevenLabs **Speak** buttons for pronunciation help.
 
 ---
 
@@ -67,8 +71,12 @@ switch to Ollama.
 Keyboard and mouse:
 
 - **Ctrl+Enter** — translate the current input.
-- **Paste** / **Clear** buttons, plus a per-row **Copy**.
-- Reverse the direction before translating if auto-detection guesses wrong.
+- **Paste** / **Clear** buttons, plus per-row **Use this**, **Copy** and
+  **Speak**.
+- Use **Swap** to reverse a fixed direction before translating if
+  auto-detection guesses wrong.
+- Open **History** to revisit, favourite, copy, delete or reopen saved local
+  translations when history is enabled.
 
 ---
 
@@ -99,10 +107,13 @@ via `/api/tags`.
 
 - **Claude** processes text in the cloud: what you submit is sent to Anthropic.
 - **Ollama** keeps everything on this machine, subject to your own Ollama setup.
-- Your API key is stored only if you deliberately enter it; otherwise Plume
-  prefers `ANTHROPIC_API_KEY`. Settings shows the key **masked**.
+- **ElevenLabs Speak** sends only the selected text to ElevenLabs when you use
+  a Speak button and have configured an ElevenLabs key.
+- API keys are stored only if you deliberately enter them; otherwise Plume
+  prefers `ANTHROPIC_API_KEY` for Claude. Settings shows stored keys **masked**.
 - Plume does **not** log source messages, translated messages, headers or keys.
-- Local history is **off** by default and is not stored in version 1.
+- Local history is **off** by default. When enabled, it is stored only on this
+  device in `plume_history.json`.
 - The status line, window title and error messages never contain your phrase.
 
 ---
@@ -120,6 +131,9 @@ live file — it may contain an API key.
 Saving is atomic (temp file → flush → replace). If an existing file is damaged,
 an automatic save will **refuse to overwrite it**; use the Settings window's
 recovery prompt to replace it deliberately.
+
+Settings also controls placeholder protection, local history, maximum message
+length, and optional ElevenLabs voice configuration.
 
 ---
 
@@ -156,6 +170,7 @@ python -m unittest discover -s tests -v
 | "The Claude API rejected the request" | Wrong or expired key — check Settings. |
 | "The requested model was not found" | Fix the model name in Settings. |
 | "Could not reach Ollama … Is it running?" | Start the Ollama app; try **Detect**. |
+| "No ElevenLabs API key is set" | Add an ElevenLabs key in Settings before using **Speak**. |
 | "did not contain exactly five alternatives" | A model slip — press Translate again, or switch backend. |
 | Result shows "Generated for an earlier message" | You edited the input while a translation was in flight; the result is kept but flagged. |
 
@@ -163,8 +178,8 @@ python -m unittest discover -s tests -v
 
 ## Version-1 limitations (deliberately deferred)
 
-- No speech input/output, no messaging-service integration.
-- No persistent history or cloud sync.
+- No speech input, messaging-service integration or live voice agent.
+- No cloud sync; local history remains device-only and opt-in.
 - French ↔ English only; other language pairs come later.
 - Only *Neutral international French*; regional presets (France, Belgium,
   Quebec) come after native-speaker review.

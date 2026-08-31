@@ -7,7 +7,12 @@
   "default_direction": "Auto-detect",
   "default_french_formality": "Informal (tu)",
   "default_french_variant": "Neutral international French",
+  "default_french_speaker_gender": "Feminine",
+  "default_french_recipient_gender": "Feminine",
   "protect_placeholders": true,
   "save_local_history": false,
-  "max_input_chars": 2000
+  "max_input_chars": 2000,
+  "elevenlabs_api_key": "",
+  "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",
+  "elevenlabs_privacy_ack": false
 }

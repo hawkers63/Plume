@@ -97,19 +97,25 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
   working translator with no network request, reusing `_render_result`
   exactly as it already exists. One accepted cosmetic quirk (flagged in
   notes_007): a reopened entry always shows "detected with low confidence"
-  since `language_confidence` isn't stored in history — the translation
-  itself is exact.
+  since `language_confidence` isn't stored in history — fixed in v1.8.
 
-## v1.8 — Hardening pass (bug detection & repair)
+## v1.8 — Hardening pass (bug detection & repair)  ✅ landed locally
 
-- No new user-facing features. A dedicated audit of the codebase as it
-  stands after five feature releases in a row (v1.3–v1.7): re-read
-  `plume.py` in full end to end, check every backend/parsing edge case
-  against the strict JSON contract, verify config/history migration paths
-  for users updating from earlier versions, and confirm the test suite's
-  coverage has kept pace with the surface area added since v1.1. Findings
-  get their own note before any fix lands, matching this project's existing
-  read-only-ideation-first convention.
+- No new feature surface. Implemented the hardening findings from
+  notes_008: result advisories now render independently of opt-in history
+  saving, so low-confidence language notes and placeholder-preservation
+  warnings are visible for default users.
+- History entries now preserve `language_confidence`, `language_note` and
+  `notes`, and history loading normalises entry shape so malformed local
+  records cannot crash Reopen.
+- Speak/TTS delivery now has its own stale-request guard and temp-file cleanup,
+  mirroring the existing translation worker protection.
+- Shared HTTP diagnostics are service-aware, so Ollama HTTP failures no longer
+  show Claude-specific wording.
+- Settings exposes the existing `max_input_chars` limit, and
+  `plume_config.example.json` is kept in parity with `DEFAULT_CONFIG`.
+- README text was brought up to date for local history, Reopen, and
+  ElevenLabs Speak.
 
 ---
 

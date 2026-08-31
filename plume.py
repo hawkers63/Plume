@@ -235,6 +235,15 @@ def normalise_backend(value) -> str:
     return "ollama" if str(value or "").strip().lower() == "ollama" else "anthropic"
 
 
+def coerce_positive_int(value, default: int) -> int:
+    """Return *value* as a positive integer, or *default* if it is invalid."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+
+
 def _is_existing_file_malformed(path: str, expected_type=dict) -> bool:
     """True if a file exists at *path* but does not parse as *expected_type*."""
     if not os.path.exists(path):
@@ -290,12 +299,9 @@ def load_config():
     config["protect_placeholders"] = bool(config.get("protect_placeholders"))
     config["privacy_ack"] = bool(config.get("privacy_ack"))
     config["save_local_history"] = bool(config.get("save_local_history"))
-    try:
-        config["max_input_chars"] = int(config.get("max_input_chars"))
-        if config["max_input_chars"] < 1:
-            raise ValueError
-    except (TypeError, ValueError):
-        config["max_input_chars"] = DEFAULT_MAX_INPUT_CHARS
+    config["max_input_chars"] = coerce_positive_int(
+        config.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS
+    )
     config["elevenlabs_voice_id"] = (
         str(config.get("elevenlabs_voice_id") or "").strip() or DEFAULT_ELEVENLABS_VOICE_ID
     )
@@ -360,7 +366,12 @@ def load_history() -> list:
         return []
     if not isinstance(data, list):
         return []
-    return [entry for entry in data if isinstance(entry, dict)]
+    entries = []
+    for entry in data:
+        clean = normalise_history_entry(entry)
+        if clean is not None:
+            entries.append(clean)
+    return entries
 
 
 def save_history(entries, force: bool = False) -> None:
@@ -388,17 +399,80 @@ def save_history(entries, force: bool = False) -> None:
 
 
 def make_history_entry(source_text, result, situation="") -> dict:
-    """Build a new history entry from a completed translation result."""
+    """Build a new history entry from a completed translation result.
+
+    History entries preserve every field needed to render the saved result
+    later without inventing fallback metadata. Older history files may still
+    lack these keys; the existing render helpers already tolerate that.
+    """
     return {
         "id": uuid.uuid4().hex,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "source_language": result.get("source_language", ""),
         "target_language": result.get("target_language", ""),
+        "language_confidence": result.get("language_confidence", "low"),
+        "language_note": result.get("language_note", ""),
         "source_text": source_text,
         "situation": situation,
         "main_translation": result.get("main_translation", ""),
         "variations": result.get("variations", []),
+        "notes": result.get("notes", []),
         "favourite": False,
+    }
+
+
+def normalise_history_entry(entry) -> dict | None:
+    """Return a renderable history entry, or None if the entry is unusable.
+
+    The history file is user-local and may have been edited or produced by an
+    older Plume version. This keeps the History window resilient without
+    rewriting the file during load.
+    """
+    if not isinstance(entry, dict):
+        return None
+
+    main = entry.get("main_translation")
+    variations = entry.get("variations")
+    if not isinstance(main, str) or not main.strip():
+        return None
+    if not isinstance(variations, list):
+        return None
+
+    clean_variations = []
+    for item in variations:
+        if not isinstance(item, dict):
+            continue
+        translation = item.get("translation")
+        meaning = item.get("english_meaning_check")
+        if (
+            isinstance(translation, str)
+            and translation.strip()
+            and isinstance(meaning, str)
+            and meaning.strip()
+        ):
+            clean_variations.append(
+                {
+                    "translation": translation.strip(),
+                    "english_meaning_check": meaning.strip(),
+                }
+            )
+
+    if len(clean_variations) != VARIATION_COUNT:
+        return None
+
+    return {
+        "id": str(entry.get("id") or uuid.uuid4().hex),
+        "timestamp": str(entry.get("timestamp") or ""),
+        "source_language": entry.get("source_language", ""),
+        "target_language": entry.get("target_language", ""),
+        "language_confidence": entry.get("language_confidence", "low"),
+        "language_note": _safe_short_string(entry.get("language_note", "")),
+        "source_text": entry.get("source_text", ""),
+        "situation": _safe_short_string(entry.get("situation", "")),
+        "main_translation": main.strip(),
+        "variations": clean_variations,
+        "notes": _safe_string_list(entry.get("notes", [])),
+        "favourite": bool(entry.get("favourite")),
     }
 
 
@@ -905,20 +979,19 @@ class BackendError(Exception):
     """
 
 
-def _http_post_json(url, payload, headers, timeout):
-    """POST *payload* as JSON and return the decoded JSON response."""
+def _http_post_json(url, payload, headers, timeout, service_name="backend"):
+    """POST *payload* as JSON and return the decoded JSON response.
+
+    The service name is used only for safe, generic diagnostics; backend detail
+    text is still not displayed because it may contain prompt fragments.
+    """
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", "replace")
-        except Exception:
-            detail = ""
-        raise BackendError(_friendly_http_message(exc.code, detail))
+        raise BackendError(_friendly_http_message(exc.code, service_name))
     except urllib.error.URLError as exc:
         raise BackendError(
             "Could not reach the translation backend. Please check your "
@@ -939,19 +1012,22 @@ def _reason_text(exc) -> str:
     return str(reason) if reason is not None else exc.__class__.__name__
 
 
-def _friendly_http_message(code, detail) -> str:
+def _friendly_http_message(code, service_name="backend") -> str:
+    """Return a safe user-facing message for a backend HTTP status."""
     if code in (401, 403):
         return (
-            "The Claude API rejected the request. Please check your API key in "
-            "Settings."
+            "{} rejected the request. Please check its credentials or "
+            "settings.".format(service_name)
         )
     if code == 404:
         return (
-            "The requested model was not found. Please check the model name in "
-            "Settings."
+            "The requested model or endpoint was not found. Please check the "
+            "model name in Settings."
         )
     if code == 429:
-        return "The Claude API is rate limiting requests. Please wait and retry."
+        return "{} is rate limiting requests. Please wait and retry.".format(
+            service_name
+        )
     if 500 <= code < 600:
         return "The translation service reported a temporary error. Please retry."
     return "The request failed (HTTP {}). Please try again.".format(code)
@@ -979,7 +1055,10 @@ def call_anthropic(config_snapshot, system_prompt, user_text):
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_text}],
     }
-    data = _http_post_json(ANTHROPIC_URL, payload, headers, ANTHROPIC_TIMEOUT)
+    data = _http_post_json(
+        ANTHROPIC_URL, payload, headers, ANTHROPIC_TIMEOUT,
+        service_name="Claude API",
+    )
     if not isinstance(data, dict):
         raise BackendError("The Claude API returned a response that could not be read.")
     if data.get("stop_reason") == "max_tokens":
@@ -1012,7 +1091,9 @@ def call_ollama(config_snapshot, system_prompt, user_text):
         ],
     }
     try:
-        data = _http_post_json(url, payload, headers, OLLAMA_TIMEOUT)
+        data = _http_post_json(
+            url, payload, headers, OLLAMA_TIMEOUT, service_name="Ollama"
+        )
     except BackendError as exc:
         # Give a more specific hint for the common "Ollama not running" case.
         message = str(exc)
@@ -1216,6 +1297,24 @@ def format_language_label(result) -> str:
     )
 
 
+def advisory_text_from_result(result: dict, extra_notes=None) -> str:
+    """Return advisory text that should be shown for a translation result.
+
+    Language notes and placeholder-preservation warnings are display concerns,
+    not history-persistence concerns. *extra_notes* lets the UI append state
+    warnings such as "input changed" without hiding model advisories.
+    """
+    notes = [result.get("language_note", "")]
+    notes.extend(result.get("notes", []))
+    if extra_notes:
+        notes.extend(extra_notes)
+    return "  \u2022  ".join(
+        note.strip()
+        for note in notes
+        if isinstance(note, str) and note.strip()
+    )
+
+
 def mask_api_key(key) -> str:
     """Return a masked form of an API key for display in Settings."""
     if not key:
@@ -1274,8 +1373,8 @@ if GUI_AVAILABLE:
             self._on_save = on_save
             self._config = dict(config)
             self.title("{} \u2014 Settings".format(APP_NAME))
-            self.geometry("560x820")
-            self.minsize(520, 760)
+            self.geometry("560x860")
+            self.minsize(520, 800)
             self.transient(master)
             self.grid_columnconfigure(0, weight=1)
 
@@ -1407,6 +1506,19 @@ if GUI_AVAILABLE:
             ).grid(row=row, column=0, sticky="w", **pad)
             row += 1
 
+            ctk.CTkLabel(self, text="Maximum message length").grid(
+                row=row, column=0, sticky="w", padx=16
+            )
+            row += 1
+            self.max_input_entry = ctk.CTkEntry(self)
+            self.max_input_entry.insert(
+                0, str(coerce_positive_int(
+                    self._config.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS
+                ))
+            )
+            self.max_input_entry.grid(row=row, column=0, sticky="ew", **pad)
+            row += 1
+
             self.elevenlabs_privacy_var = ctk.BooleanVar(
                 value=bool(self._config.get("elevenlabs_privacy_ack", False))
             )
@@ -1470,6 +1582,9 @@ if GUI_AVAILABLE:
             self._config["protect_placeholders"] = bool(self.protect_var.get())
             self._config["privacy_ack"] = bool(self.privacy_var.get())
             self._config["save_local_history"] = bool(self.history_var.get())
+            self._config["max_input_chars"] = coerce_positive_int(
+                self.max_input_entry.get().strip(), DEFAULT_MAX_INPUT_CHARS
+            )
             self._config["elevenlabs_api_key"] = self.elevenlabs_key_entry.get().strip()
             self._config["elevenlabs_voice_id"] = (
                 self.elevenlabs_voice_entry.get().strip() or DEFAULT_ELEVENLABS_VOICE_ID
@@ -1676,6 +1791,7 @@ if GUI_AVAILABLE:
             config, load_error = load_config()
             self.config_data = config
             self._request_id = 0
+            self._speech_request_id = 0
             self._settings = None
             self._variation_cards = []
             self._tts_temp_path = None
@@ -2036,6 +2152,7 @@ if GUI_AVAILABLE:
             # Bump the request id so any in-flight worker result is treated as
             # stale, honouring the spec's "Clear supersedes a pending request".
             self._request_id += 1
+            self._speech_request_id += 1
             self.translate_btn.configure(state="normal", text="Translate")
             self.input_box.delete("1.0", "end")
             self._clear_results()
@@ -2043,8 +2160,11 @@ if GUI_AVAILABLE:
             self._refresh_status(state="ready")
 
         def _on_close(self):
-            """Invalidate any in-flight worker, then destroy the window."""
+            """Invalidate in-flight work, stop playback, then destroy the window."""
             self._request_id += 1
+            self._speech_request_id += 1
+            self._stop_speech()
+            self._cleanup_tts_file()
             self.destroy()
 
         def _clear_results(self):
@@ -2052,6 +2172,7 @@ if GUI_AVAILABLE:
             self.copy_main_btn.configure(state="disabled")
             self.speak_main_btn.configure(state="disabled")
             self._stop_speech()
+            self._cleanup_tts_file()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
             self.language_label.configure(text="")
             self._current_main = ""
@@ -2098,6 +2219,7 @@ if GUI_AVAILABLE:
             self.advisory.grid_remove()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
             self._render_result(entry)
+            self._show_result_advisories(entry)
 
         def _speak(self, text):
             """Synthesise and play *text* aloud via ElevenLabs.
@@ -2111,6 +2233,8 @@ if GUI_AVAILABLE:
             text = (text or "").strip()
             if not text:
                 return
+            self._speech_request_id += 1
+            speech_request_id = self._speech_request_id
             snapshot = dict(self.config_data)
             if not snapshot.get("elevenlabs_api_key"):
                 self.advisory.configure(
@@ -2148,7 +2272,7 @@ if GUI_AVAILABLE:
 
                 def _deliver_safe():
                     try:
-                        self._deliver_speech(payload)
+                        self._deliver_speech(speech_request_id, payload)
                     except tk.TclError:  # pragma: no cover - window closed
                         pass
 
@@ -2160,7 +2284,10 @@ if GUI_AVAILABLE:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def _deliver_speech(self, payload):
+        def _deliver_speech(self, speech_request_id, payload):
+            """Deliver speech audio only if it belongs to the latest request."""
+            if result_is_stale(speech_request_id, self._speech_request_id):
+                return
             kind, data = payload
             if kind == "error":
                 self.advisory.configure(text=data)
@@ -2176,6 +2303,16 @@ if GUI_AVAILABLE:
             except Exception:  # pragma: no cover - non-Windows / no audio device
                 pass
 
+        def _cleanup_tts_file(self):
+            """Remove Plume's temporary TTS file if one is currently tracked."""
+            if not self._tts_temp_path:
+                return
+            try:
+                os.remove(self._tts_temp_path)
+            except OSError:
+                pass
+            self._tts_temp_path = None
+
         def _play_wav_bytes(self, wav_bytes):
             try:
                 import winsound
@@ -2184,12 +2321,7 @@ if GUI_AVAILABLE:
                 self.advisory.grid()
                 return
             self._stop_speech()
-            if self._tts_temp_path:
-                try:
-                    os.remove(self._tts_temp_path)
-                except OSError:
-                    pass
-                self._tts_temp_path = None
+            self._cleanup_tts_file()
             try:
                 fd, path = tempfile.mkstemp(suffix=".wav", prefix="plume_tts_")
                 with os.fdopen(fd, "wb") as fh:
@@ -2253,7 +2385,9 @@ if GUI_AVAILABLE:
 
             text = self._input_text()
             situation = self._situation_text()
-            limit = int(self.config_data.get("max_input_chars", DEFAULT_MAX_INPUT_CHARS))
+            limit = coerce_positive_int(
+                self.config_data.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS
+            )
             ok, message = validate_source_size(text, limit)
             if not ok:
                 self.advisory.configure(text=message)
@@ -2343,16 +2477,17 @@ if GUI_AVAILABLE:
                 return
 
             self._render_result(data)
+            self._show_result_advisories(data)
             self._save_to_history(snap_text, situation, data)
 
             # If the input changed since this request began, keep the result but
             # flag it clearly rather than overwriting the source text.
             if self._input_text() != snap_text:
-                self.advisory.configure(
-                    text="Generated for an earlier message. Your input has "
-                         "changed since this translation was requested."
+                warning = (
+                    "Generated for an earlier message. Your input has changed "
+                    "since this translation was requested."
                 )
-                self.advisory.grid()
+                self._show_result_advisories(data, extra_notes=[warning])
             self._refresh_status(state="ready")
 
         def _build_variation_card(self, index, variation):
@@ -2413,6 +2548,15 @@ if GUI_AVAILABLE:
                 card = self._build_variation_card(index, variation)
                 self._variation_cards.append(card)
 
+        def _show_result_advisories(self, result, extra_notes=None):
+            """Display language and preservation advisories for a result."""
+            text = advisory_text_from_result(result, extra_notes=extra_notes)
+            if text:
+                self.advisory.configure(text=text)
+                self.advisory.grid()
+            else:
+                self.advisory.grid_remove()
+
         def _save_to_history(self, source_text, situation, result):
             """Best-effort, opt-in local save of a completed translation.
 
@@ -2431,15 +2575,6 @@ if GUI_AVAILABLE:
                 save_history(entries)
             except HistoryError:
                 pass
-
-            notes = result.get("language_note", "")
-            extra = result.get("notes", [])
-            advisory_bits = [n for n in ([notes] + extra) if n]
-            if advisory_bits:
-                self.advisory.configure(text="  \u2022  ".join(advisory_bits))
-                self.advisory.grid()
-            else:
-                self.advisory.grid_remove()
 
 
 # ===========================================================================
