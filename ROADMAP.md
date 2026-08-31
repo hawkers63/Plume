@@ -147,7 +147,7 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
   `always_on_top` config key and the Tk `-topmost` attribute. Applied
   at start-up and immediately on Settings save, no restart required.
 
-## v1.10 — Keep as-is (notes_009 §2)
+## v1.10 — Keep as-is (notes_009 §2)  ✅ landed locally
 
 - A short local list of names/terms (max 20, 40 characters each) that
   the existing placeholder-protection pipeline masks before sending
@@ -159,6 +159,21 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
   dedicated tests notes_009 sets out (mask/restore, longest-term-wins,
   no over-matching, normalisation/cap/dedupe), unlike the two
   Settings-only, no-parsing additions in v1.9.
+- `protect_text()` gained an `extra_terms` parameter, applied
+  longest-first ahead of the built-in URL/date/handle patterns via a
+  new `keep_as_is_pattern()` (case-sensitive, `\w`-boundary match) so a
+  user term cannot be swallowed by a later built-in match. Existing
+  callers that omit `extra_terms` are unaffected.
+  `normalise_keep_as_is_terms()` sanitises both the Settings textbox
+  (newline/comma/semicolon-separated) and a hand-edited config list:
+  strips, drops empty/oversized/case-insensitive-duplicate entries,
+  caps at 20. `translate()` passes the config snapshot's terms through
+  it before masking; when `protect_placeholders` is off, extra terms
+  are skipped too, since it remains one privacy/protection switch.
+- Settings gained a "Keep as-is" textbox (one term per line) beside
+  the other privacy controls, reusing the existing dialog's pack/grid
+  pattern; `plume_config.example.json` stays in parity with
+  `DEFAULT_CONFIG`.
 
 ## v1.11 — Live-loop polish (notes_008 backlog)
 

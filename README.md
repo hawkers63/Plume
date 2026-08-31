@@ -29,7 +29,10 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   default (Feminine / Feminine); explicit gender in the source always wins, and
   French → English never invents gender in the English.
 - Placeholder protection for names, links, dates and `[Name]` / `{amount}`
-  style markers, so they survive translation unchanged.
+  style markers, so they survive translation unchanged. A **Keep as-is** list
+  in Settings extends this to your own names or terms (up to 20, 40
+  characters each), matched longest-first so e.g. "Marie-Claire" is not
+  swallowed by "Marie".
 - A copy button on every result, with a prominent **Copy main translation**;
   alternatives can be promoted with **Use this**.
 - Optional local history with favourites, per-entry **Copy** / **Reopen** /
@@ -136,9 +139,9 @@ Saving is atomic (temp file → flush → replace). If an existing file is damag
 an automatic save will **refuse to overwrite it**; use the Settings window's
 recovery prompt to replace it deliberately.
 
-Settings also controls placeholder protection, local history, maximum message
-length, optional ElevenLabs voice configuration, and whether Plume stays on
-top of other windows.
+Settings also controls placeholder protection (including the Keep as-is
+term list), local history, maximum message length, optional ElevenLabs voice
+configuration, and whether Plume stays on top of other windows.
 
 ---
 

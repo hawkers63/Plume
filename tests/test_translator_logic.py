@@ -273,6 +273,36 @@ class TestPlaceholders(unittest.TestCase):
         self.assertTrue(warnings)
         self.assertNotIn("SecretName", " ".join(warnings))
 
+    def test_keep_as_is_masks_and_restores_a_name(self):
+        masked, mapping = plume.protect_text(
+            "Tell Kes I am on my way.", extra_terms=["Kes"]
+        )
+        self.assertNotIn("Kes", masked)
+        self.assertEqual(
+            plume.restore_tokens(masked, mapping), "Tell Kes I am on my way."
+        )
+
+    def test_keep_as_is_longest_term_wins(self):
+        masked, mapping = plume.protect_text(
+            "Marie-Claire called.", extra_terms=["Marie", "Marie-Claire"]
+        )
+        restored = plume.restore_tokens(masked, mapping)
+        self.assertEqual(restored, "Marie-Claire called.")
+        self.assertEqual(len(mapping), 1)
+
+    def test_keep_as_is_does_not_eat_longer_word(self):
+        masked, mapping = plume.protect_text(
+            "Anne is arriving.", extra_terms=["Ann"]
+        )
+        self.assertEqual(masked, "Anne is arriving.")
+        self.assertEqual(mapping, {})
+
+    def test_normalise_keep_as_is_terms_caps_and_dedupes(self):
+        got = plume.normalise_keep_as_is_terms(
+            ["Kes", "kes", "  ", "A" * 41, "Hawkeye"]
+        )
+        self.assertEqual(got, ["Kes", "Hawkeye"])
+
 
 class TestPromptConstruction(unittest.TestCase):
     def test_prompt_mentions_key_constraints(self):
@@ -455,6 +485,12 @@ class TestConfigCoercion(unittest.TestCase):
     def test_always_on_top_coerced_to_bool(self):
         config, _ = self._load_with({"always_on_top": "yes"})
         self.assertIs(config["always_on_top"], True)
+
+    def test_keep_as_is_terms_normalised_on_load(self):
+        config, _ = self._load_with(
+            {"keep_as_is_terms": ["Kes", "kes", "  ", "A" * 41]}
+        )
+        self.assertEqual(config["keep_as_is_terms"], ["Kes"])
 
 
 class TestBackendHardening(unittest.TestCase):

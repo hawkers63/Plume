@@ -140,6 +140,8 @@ VARIATION_COUNT = 5
 DEFAULT_MAX_INPUT_CHARS = 2000
 MAX_NOTE_CHARS = 240
 MAX_NOTES = 6
+KEEP_AS_IS_MAX_TERMS = 20
+KEEP_AS_IS_MAX_CHARS = 40
 
 # Placeholder token format, e.g. the first protected item becomes the token
 # below with 0 substituted for its index.
@@ -205,6 +207,7 @@ DEFAULT_CONFIG = {
     "default_french_speaker_gender": GENDER_FEMININE,
     "default_french_recipient_gender": GENDER_FEMININE,
     "protect_placeholders": True,
+    "keep_as_is_terms": [],
     "save_local_history": False,
     "max_input_chars": DEFAULT_MAX_INPUT_CHARS,
     "elevenlabs_api_key": "",
@@ -298,6 +301,9 @@ def load_config():
     config["default_french_recipient_gender"] = _coerce_choice(
         config.get("default_french_recipient_gender"), FRENCH_GENDERS, GENDER_FEMININE)
     config["protect_placeholders"] = bool(config.get("protect_placeholders"))
+    config["keep_as_is_terms"] = normalise_keep_as_is_terms(
+        config.get("keep_as_is_terms")
+    )
     config["privacy_ack"] = bool(config.get("privacy_ack"))
     config["save_local_history"] = bool(config.get("save_local_history"))
     config["max_input_chars"] = coerce_positive_int(
@@ -552,12 +558,49 @@ _PROTECT_PATTERNS = [
 ]
 
 
-def protect_text(text: str, enabled: bool = True):
+def normalise_keep_as_is_terms(value) -> list:
+    """Return a short, de-duplicated list of keep-as-is terms.
+
+    Accepts a list or a comma/newline-separated string so a hand-edited
+    config and the Settings box share one sanitiser. Empty entries,
+    oversized entries and case-insensitive duplicates are dropped.
+    """
+    if isinstance(value, str):
+        parts = []
+        for line in value.replace(";", "\n").splitlines():
+            parts.extend(line.split(","))
+        value = parts
+    if not isinstance(value, list):
+        return []
+    seen = set()
+    out = []
+    for item in value:
+        term = str(item or "").strip()
+        if not term or len(term) > KEEP_AS_IS_MAX_CHARS:
+            continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(term)
+        if len(out) >= KEEP_AS_IS_MAX_TERMS:
+            break
+    return out
+
+
+def keep_as_is_pattern(term: str):
+    """Compile a case-sensitive, token-bounded pattern for *term*."""
+    return re.compile(r"(?<!\w)" + re.escape(term) + r"(?!\w)")
+
+
+def protect_text(text: str, enabled: bool = True, extra_terms=None):
     """Replace protected material with ordered tokens.
 
     Returns (masked_text, mapping) where *mapping* maps each token to the exact
     original substring it replaced. When *enabled* is False the text is returned
-    unchanged with an empty mapping.
+    unchanged with an empty mapping. *extra_terms* is an optional sequence of
+    keep-as-is names, applied longest-first before the built-in placeholder
+    patterns so a user term cannot be swallowed by a later URL or date match.
     """
     if not enabled or not text:
         return text, {}
@@ -571,6 +614,13 @@ def protect_text(text: str, enabled: bool = True):
         return token
 
     masked = text
+    terms = sorted(
+        [t for t in (extra_terms or []) if t],
+        key=len,
+        reverse=True,
+    )
+    for term in terms:
+        masked = keep_as_is_pattern(term).sub(_sub, masked)
     for pattern in _PROTECT_PATTERNS:
         masked = pattern.sub(_sub, masked)
     return masked, mapping
@@ -1170,7 +1220,13 @@ def translate(config_snapshot, text, situation=""):
     recipient_gender = config_snapshot.get("default_french_recipient_gender", GENDER_FEMININE)
     protect = bool(config_snapshot.get("protect_placeholders", True))
 
-    masked, mapping = protect_text(text, enabled=protect)
+    masked, mapping = protect_text(
+        text,
+        enabled=protect,
+        extra_terms=normalise_keep_as_is_terms(
+            config_snapshot.get("keep_as_is_terms")
+        ),
+    )
     system_prompt = build_translation_prompt(
         direction, formality, variant, protect, speaker_gender, recipient_gender
     )
@@ -1541,6 +1597,18 @@ if GUI_AVAILABLE:
             ).grid(row=row, column=0, sticky="w", **pad)
             row += 1
 
+            ctk.CTkLabel(
+                self, text="Keep as-is (one name or term per line; proper "
+                            "names work best)",
+            ).grid(row=row, column=0, sticky="w", padx=16)
+            row += 1
+            self.keep_as_is_box = ctk.CTkTextbox(self, height=80)
+            self.keep_as_is_box.grid(row=row, column=0, sticky="ew", **pad)
+            existing_terms = self._config.get("keep_as_is_terms") or []
+            if existing_terms:
+                self.keep_as_is_box.insert("1.0", "\n".join(existing_terms))
+            row += 1
+
             self.status_label = ctk.CTkLabel(self, text="", text_color="gray70")
             self.status_label.grid(row=row, column=0, sticky="w", padx=16)
             row += 1
@@ -1603,6 +1671,9 @@ if GUI_AVAILABLE:
             )
             self._config["elevenlabs_privacy_ack"] = bool(self.elevenlabs_privacy_var.get())
             self._config["always_on_top"] = bool(self.always_on_top_var.get())
+            self._config["keep_as_is_terms"] = normalise_keep_as_is_terms(
+                self.keep_as_is_box.get("1.0", "end")
+            )
 
             # Carry the live toolbar selections forward so a deliberate change
             # made this session is persisted rather than reset to the file
