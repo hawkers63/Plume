@@ -14,5 +14,6 @@
   "max_input_chars": 2000,
   "elevenlabs_api_key": "",
   "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",
-  "elevenlabs_privacy_ack": false
+  "elevenlabs_privacy_ack": false,
+  "always_on_top": false
 }

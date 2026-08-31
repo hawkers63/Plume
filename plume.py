@@ -210,6 +210,7 @@ DEFAULT_CONFIG = {
     "elevenlabs_api_key": "",
     "elevenlabs_voice_id": DEFAULT_ELEVENLABS_VOICE_ID,
     "elevenlabs_privacy_ack": False,
+    "always_on_top": False,
 }
 
 
@@ -306,6 +307,7 @@ def load_config():
         str(config.get("elevenlabs_voice_id") or "").strip() or DEFAULT_ELEVENLABS_VOICE_ID
     )
     config["elevenlabs_privacy_ack"] = bool(config.get("elevenlabs_privacy_ack"))
+    config["always_on_top"] = bool(config.get("always_on_top"))
 
     return config, None
 
@@ -1506,6 +1508,16 @@ if GUI_AVAILABLE:
             ).grid(row=row, column=0, sticky="w", **pad)
             row += 1
 
+            self.always_on_top_var = ctk.BooleanVar(
+                value=bool(self._config.get("always_on_top", False))
+            )
+            ctk.CTkCheckBox(
+                self,
+                text="Keep Plume on top of other windows",
+                variable=self.always_on_top_var,
+            ).grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+
             ctk.CTkLabel(self, text="Maximum message length").grid(
                 row=row, column=0, sticky="w", padx=16
             )
@@ -1590,6 +1602,7 @@ if GUI_AVAILABLE:
                 self.elevenlabs_voice_entry.get().strip() or DEFAULT_ELEVENLABS_VOICE_ID
             )
             self._config["elevenlabs_privacy_ack"] = bool(self.elevenlabs_privacy_var.get())
+            self._config["always_on_top"] = bool(self.always_on_top_var.get())
 
             # Carry the live toolbar selections forward so a deliberate change
             # made this session is persisted rather than reset to the file
@@ -1811,6 +1824,7 @@ if GUI_AVAILABLE:
             self._build_body()
             self._build_status_bar()
             self._bind_shortcuts()
+            self._apply_always_on_top()
 
             # Invalidate any in-flight worker when the window is closed so a
             # late callback cannot run against a destroyed widget tree.
@@ -1840,6 +1854,13 @@ if GUI_AVAILABLE:
             try:
                 if os.path.exists(icon_path):
                     self.iconbitmap(icon_path)
+            except Exception:  # pragma: no cover - platform dependent
+                pass
+
+        def _apply_always_on_top(self):
+            """Honour the Settings flag. Safe to call before or after mapping."""
+            try:
+                self.attributes("-topmost", bool(self.config_data.get("always_on_top")))
             except Exception:  # pragma: no cover - platform dependent
                 pass
 
@@ -1979,6 +2000,11 @@ if GUI_AVAILABLE:
                           fg_color="gray30").grid(row=0, column=0, padx=(0, 8))
             ctk.CTkButton(buttons, text="Clear", width=90, command=self._clear,
                           fg_color="gray30").grid(row=0, column=1, padx=(0, 8))
+            self.reply_btn = ctk.CTkButton(
+                buttons, text="Reply", width=90, command=self._reply,
+                fg_color="gray30",
+            )
+            self.reply_btn.grid(row=0, column=2, padx=(0, 8))
             self.translate_btn = ctk.CTkButton(
                 buttons, text="Translate", width=140, command=self._translate
             )
@@ -2131,6 +2157,24 @@ if GUI_AVAILABLE:
             self.direction_var.set(swap_direction(self.direction_var.get()))
             self._on_toolbar_change()
 
+        def _reply(self):
+            """Copy the working translation, invert direction, clear the input.
+
+            One click for "my turn is over": the composed reply is on the
+            clipboard, direction is flipped ready for the incoming message
+            (a no-op on Auto-detect, matching swap_direction()), and the input
+            is empty and focused. The right-hand result stays visible so the
+            user can still see what they just sent. No network request is
+            made, and Situation is left untouched (notes_009/notes_010,
+            v1.9): it is a persistent scene descriptor, not a per-turn note.
+            """
+            if self._current_main:
+                self._copy_main()
+            self._swap_direction()
+            self.input_box.delete("1.0", "end")
+            self._on_input_change()
+            self.input_box.focus_set()
+
         def _on_input_change(self, _event=None):
             self.char_label.configure(text="{} characters".format(len(self._input_text())))
             self._refresh_status()
@@ -2154,6 +2198,7 @@ if GUI_AVAILABLE:
             self._request_id += 1
             self._speech_request_id += 1
             self.translate_btn.configure(state="normal", text="Translate")
+            self.reply_btn.configure(state="normal")
             self.input_box.delete("1.0", "end")
             self._clear_results()
             self._on_input_change()
@@ -2368,6 +2413,7 @@ if GUI_AVAILABLE:
             self.recipient_gender_var.set(
                 new_config.get("default_french_recipient_gender", GENDER_FEMININE))
             self.backend_var.set(normalise_backend(new_config.get("backend")))
+            self._apply_always_on_top()
             self._refresh_status()
 
         # --- translation lifecycle ---------------------------------------
@@ -2428,6 +2474,7 @@ if GUI_AVAILABLE:
             rid = self._request_id
 
             self.translate_btn.configure(state="disabled", text="Translating\u2026")
+            self.reply_btn.configure(state="disabled")
             self.advisory.grid_remove()
             self._refresh_status(state="translating\u2026")
 
@@ -2468,6 +2515,7 @@ if GUI_AVAILABLE:
             if result_is_stale(rid, self._request_id):
                 return
             self.translate_btn.configure(state="normal", text="Translate")
+            self.reply_btn.configure(state="normal")
 
             kind, data = payload
             if kind == "error":

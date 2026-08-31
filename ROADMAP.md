@@ -117,6 +117,107 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
 - README text was brought up to date for local history, Reopen, and
   ElevenLabs Speak.
 
+## v1.9 — Reply loop + Always on top (notes_009, notes_010)  ✅ landed locally
+
+- **Reply** (notes_009 §1 and notes_010 Feature 1, merged): both notes
+  proposed the same "end your turn" button independently, which is
+  itself a good sign, but their designs disagree on two points and
+  this scope has to pick one rather than build both. Mechanism follows
+  notes_009 throughout: reuses the existing `swap_direction()` helper
+  rather than notes_010's hard-coded English → French, so it stays
+  correct when Auto-detect is selected and for either direction of a
+  reply chain; and the right-hand result stays visible rather than
+  being cleared, since the point of the button is to keep what was
+  just sent on screen while the incoming reply is pasted. The working
+  main translation (if any) is copied exactly as `Copy main
+  translation` already does, and the input box is cleared and
+  focused — the one piece both notes agreed on. notes_010's other
+  idea, auto-filling Situation with a quoted "In reply to: …" snippet,
+  is deliberately **not** adopted: Situation is a persistent scene/
+  register descriptor ("formal work email") that v1.4 designed to
+  survive across a thread, and notes_009 argued for leaving it alone
+  for exactly that reason. Overwriting it every Reply click would
+  destroy that context each turn, which is a regression rather than
+  an improvement — a per-turn quoted snippet and a persistent scene
+  description are two different kinds of information and do not
+  belong in the same field. Disabled alongside `translate_btn` while
+  a request is in flight.
+- **Always on top** (notes_009 §3): a "Keep Plume on top of other
+  windows" Settings checkbox, off by default, backed by a new
+  `always_on_top` config key and the Tk `-topmost` attribute. Applied
+  at start-up and immediately on Settings save, no restart required.
+
+## v1.10 — Keep as-is (notes_009 §2)
+
+- A short local list of names/terms (max 20, 40 characters each) that
+  the existing placeholder-protection pipeline masks before sending
+  text to the model and restores afterwards, applied longest-first so
+  "Marie-Claire" is not swallowed by "Marie". Stored as
+  `keep_as_is_terms` in `plume_config.json` (local only, already
+  gitignored). Scoped as its own version rather than folded into
+  v1.9: it changes `protect_text()`'s signature and needs the four
+  dedicated tests notes_009 sets out (mask/restore, longest-term-wins,
+  no over-matching, normalisation/cap/dedupe), unlike the two
+  Settings-only, no-parsing additions in v1.9.
+
+## v1.11 — Live-loop polish (notes_008 backlog)
+
+Three of the five lightweight feature candidates notes_008 raised
+alongside its hardening findings, not picked up by v1.8 because that
+release was fixes-only. Grouped together as small, self-contained
+button/menu additions that reuse existing helpers with no config
+schema impact beyond one constants tuple:
+
+- **Situation presets:** an option menu beside the Situation field
+  with local-only presets (Close friend, Formal work email,
+  Neighbour, Appointment, Dating/chat) that fill the existing field.
+- **Copy source:** a "Copy source" button beside Paste/Clear, for
+  chat back-and-forth.
+- **Re-translate using current output as input:** a "Use as input"
+  button that copies the main translation into the input box, swaps
+  the fixed direction if applicable (reusing `swap_direction()`), and
+  clears results — the sibling case to v1.9's Reply for when the
+  reply arrives as spoken/typed French rather than being pasted.
+
+## v1.12 — Voice extensions (notes_008 backlog, notes_010 Feature 2)
+
+- **Stop speech button** (notes_008 candidate #3): exposes the
+  existing `_stop_speech()` next to Speak on the primary card.
+- **Slow pronunciation mode** (notes_010 Feature 2): a "Slow" toggle
+  that scales the WAV header's sample rate (e.g. ×0.75) before
+  playback — no extra ElevenLabs call, reuses the already-synthesised
+  PCM. Scoping note: this also drops the pitch, the way a slowed
+  record does, since it is a playback-rate trick rather than true
+  time-stretching. Accept that trade-off for v1.12 (it is still a
+  genuine pronunciation aid and stays zero-dependency); the UI label
+  and any README mention should say "slow" rather than implying
+  studio-quality time-stretch, so it is not read as a bug later.
+
+## v1.13 — History & study export (notes_008 backlog, notes_010 Feature 3)
+
+- **Favourite current result from the main panel** (notes_008
+  candidate #4): a star button on the primary card that favourites
+  the current result when local history is enabled, or prompts to
+  enable it when it is not — today favouriting only exists inside the
+  History window.
+- **Export favourites** (notes_010 Feature 3): an "Export favourites"
+  action in the History window, writing an Anki-style TSV deck and a
+  Markdown study sheet from favourited entries, local file only
+  (`tkinter.filedialog`), no new dependency.
+
+## v1.14 — Casual sign-off / slang finishing touches (notes_004, revisited)
+
+- The second finishing-touch phase notes_004 originally proposed
+  alongside v1.2's emote group (tkt, grave, and similar slang), held
+  back deliberately until the emote group had been "lived with" —
+  notes_009 confirmed as recently as this note round that it judged
+  the group "not due yet". With v1.3 through v1.8 now shipped and in
+  use, this is the natural point to schedule it rather than leave it
+  permanently deferred. Unlike the Emotes & Reactions group, slang
+  terms change register and meaning, not just tone, so this needs its
+  own review of prompt-safety wording before landing, not a copy of
+  the v1.2 mechanism.
+
 ---
 
 ### Notes on sequencing
@@ -125,5 +226,11 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
   that v1.3's "Use this" and the picker's touch-aware Copy do not collide in a
   shared loop body — both now extend `_build_variation_card` in one place.
 - Finishing touches deliberately ship only the safe "Emotes & Reactions" group.
-  A "Casual sign-off / slang" group (tkt, grave, …) can follow in a later phase
-  after the first experience proves satisfactory.
+  A "Casual sign-off / slang" group (tkt, grave, …) was left for a later phase
+  after the first experience proves satisfactory; that phase is now scheduled
+  as v1.14.
+- notes_009 and notes_010 both proposed an end-of-turn "Reply" button
+  independently; v1.9 merges them into one feature rather than shipping two,
+  following notes_009's mechanism throughout and declining notes_010's
+  Situation auto-fill as a regression against v1.4's design — see v1.9 above
+  for the reasoning.

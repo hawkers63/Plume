@@ -75,6 +75,10 @@ Keyboard and mouse:
   **Speak**.
 - Use **Swap** to reverse a fixed direction before translating if
   auto-detection guesses wrong.
+- **Reply** copies the main translation, swaps direction and clears the
+  input in one click, ready for the incoming message — the previous
+  result stays visible for reference. Situation is left untouched, since
+  it describes the scene, not the last message.
 - Open **History** to revisit, favourite, copy, delete or reopen saved local
   translations when history is enabled.
 
@@ -133,7 +137,8 @@ an automatic save will **refuse to overwrite it**; use the Settings window's
 recovery prompt to replace it deliberately.
 
 Settings also controls placeholder protection, local history, maximum message
-length, and optional ElevenLabs voice configuration.
+length, optional ElevenLabs voice configuration, and whether Plume stays on
+top of other windows.
 
 ---
 

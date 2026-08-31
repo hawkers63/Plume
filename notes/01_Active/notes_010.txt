@@ -1,0 +1,97 @@
+Plume - Codebase Review & Feature Proposal
+===========================================
+Scope  : C:\Plume (comprehensive read-only review of all project files)
+Date   : 31 August 2026
+Report : C:\Plume\notes\01_Active\notes_010.txt
+Mode   : Read-only review and feature enhancement proposal. No core project files were modified.
+
+------------------------------------------------------------------------
+1. Executive Summary & Codebase Review
+------------------------------------------------------------------------
+A comprehensive review of all files within C:\Plume was conducted, covering:
+- Core application: C:\Plume\plume.py (2,598 lines)
+- Test suite: C:\Plume\tests\test_translator_logic.py (1,048 lines)
+- Configuration & build: C:\Plume\plume_config.json, plume_config.example.json, plume.spec, Plume.bat, requirements.txt
+- Documentation & guidelines: C:\Plume\README.md, ROADMAP.md, AGENTS.md, bug_hunter.md, enhancement_agent.md, environment_admin.md
+- Notes & reference: C:\Plume\notes\04_Random\Essential Shortcuts.txt, notes\04_Random\Plume — Enhancement Ideas & Feature Roadmap.txt, and active notes notes_004.txt through notes_008.txt.
+
+Verification:
+The test suite was executed:
+    python -B -m unittest discover -s tests -v
+- Ran: 107 tests across all logic modules.
+- Result: 107 passed (0 failures, 0 errors in 0.220s).
+
+Codebase Health Assessment:
+1. Architecture & Design: Plume maintains high modularity within a single, well-sectioned module (plume.py). Sections 1-5 (constants, config, input protection, parsing, and backends) are strictly decoupled from Tkinter/CustomTkinter, enabling pure headless unit testing.
+2. Privacy Guarantees: Text submitted to Claude or ElevenLabs is protected with explicit user acknowledgement; local Ollama execution sends zero outbound network requests. No user text is logged or leaked into status bars, error strings, or window titles.
+3. Resilience & State Management: Background operations (translation and TTS synthesis) are protected against stale callbacks (_request_id and _speech_request_id), preventing race conditions when input changes or Clear is pressed mid-flight.
+4. Dependency Adherence: The codebase strictly honours the standard-library-only rule (urllib.request, json, wave, tempfile, winsound) with no third-party HTTP or vendor SDK dependencies.
+
+------------------------------------------------------------------------
+2. Proposed New Features
+------------------------------------------------------------------------
+To enhance Plume's usability as a live, daily conversation companion and pronunciation tool without compromising its lightweight, single-purpose focus, the following three features are proposed:
+
+========================================================================
+FEATURE 1: "Reply to This" Conversational Turn Bridge
+========================================================================
+Summary:
+In real-world conversation, users paste an incoming French message to understand it in English (French -> English). Once understood, their next action is invariably to draft an English response back into French (English -> French).
+
+Currently, this requires manual steps: clearing the input, clicking "Swap" (or selecting direction), drafting the English text, and manually typing the context into "Situation (optional)".
+
+Proposal:
+Add a "Reply" button on the translation pane (visible when translating French -> English). Clicking "Reply":
+1. Automatically sets the Direction to "English -> French".
+2. Populates the "Situation (optional)" entry with context: In reply to: "<source French snippet>".
+3. Clears the input box and focuses it, ready for immediate typing of the English reply.
+4. Clears previous translation cards to prepare for the new response.
+
+Benefits:
+- Eliminates friction in back-and-forth messaging.
+- Automatically supplies contextual prompting to Claude/Ollama so the model generates answers tailored to what was asked.
+
+Insertion Points:
+- PlumeApp._build_right (approx line 2040): Add CTkButton for "Reply" in main_buttons row.
+- PlumeApp._reply_to_translation: Capture current source text snippet, set direction to DIR_EN_FR, populate situation_entry, and focus input_box.
+
+========================================================================
+FEATURE 2: Slower Pronunciation Mode for Voice (TTS Speed Control)
+========================================================================
+Summary:
+Spoken conversational French is fast and rich with liaisons and elisions. While ElevenLabs TTS provides accurate pronunciation, users benefit greatly from hearing phrases at a measured pace (e.g. 0.75x or 0.8x speed).
+
+Proposal:
+Add a "Slow" audio playback toggle or secondary speed button on the translation cards.
+
+Pure Standard-Library Architecture:
+ElevenLabs returns raw 16-bit mono PCM at 16,000 Hz. Plume already wraps this in a WAV container via pcm_to_wav_bytes(pcm_data, sample_rate). By simply adjusting the playback sample rate in the WAV header (e.g., sample_rate = int(ELEVENLABS_SAMPLE_RATE * 0.75) -> 12,000 Hz), the audio plays at 0.75x speed natively through Windows winsound with zero extra API calls, zero bandwidth overhead, and zero third-party packages.
+
+Benefits:
+- Immediate pronunciation training for subtle phonetic differences.
+- Zero network cost: reuses the synthesised PCM data in-memory.
+- 100% standard library compliance (wave, winsound).
+
+Insertion Points:
+- pcm_to_wav_bytes (approx line 1250): Add optional speed_factor parameter (defaults to 1.0) to scale the WAV frame rate.
+- PlumeApp._speak / _build_variation_card: Support standard vs slow playback trigger.
+
+========================================================================
+FEATURE 3: Export Favourites to Study Deck (Anki TSV & Markdown Export)
+========================================================================
+Summary:
+Users frequently star/favourite translations in Plume's local history for ongoing language acquisition. However, favourited entries currently remain locked inside plume_history.json on that machine.
+
+Proposal:
+Add an "Export Favourites" button inside the HistoryDialog window. It provides one-click export into:
+1. Anki Flashcard Deck (TSV format): Front (Source phrase + Situation) and Back (Main translation + Meaning check + 5 Alternatives).
+2. Markdown Study Sheet: Formatted revision document structured with dates, situations, and idioms.
+
+Benefits:
+- Seamless bridge between daily chat and spaced-repetition revision.
+- Pure Python standard library implementation (csv, io, tkinter.filedialog).
+- Respects privacy: exports locally only upon explicit user request.
+
+Insertion Points:
+- Section 2 (History persistence helpers): Add export_history_to_tsv(entries) and export_history_to_markdown(entries).
+- HistoryDialog (approx line 1658): Add "Export favourites" button with file-save dialogue.

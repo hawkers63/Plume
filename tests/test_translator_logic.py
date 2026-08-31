@@ -448,6 +448,14 @@ class TestConfigCoercion(unittest.TestCase):
         self.assertEqual(plume.normalise_backend(None), "anthropic")
         self.assertEqual(plume.normalise_backend(""), "anthropic")
 
+    def test_always_on_top_defaults_false(self):
+        config, _ = self._load_with({})
+        self.assertIs(config["always_on_top"], False)
+
+    def test_always_on_top_coerced_to_bool(self):
+        config, _ = self._load_with({"always_on_top": "yes"})
+        self.assertIs(config["always_on_top"], True)
+
 
 class TestBackendHardening(unittest.TestCase):
     KEY_CONFIG = {"anthropic_api_key": "sk-test", "anthropic_model": "m"}
