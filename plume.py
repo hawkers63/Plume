@@ -99,6 +99,20 @@ GENDER_MASCULINE = "Masculine"
 GENDER_AVOID = "Avoid where possible"
 FRENCH_GENDERS = (GENDER_FEMININE, GENDER_MASCULINE, GENDER_AVOID)
 
+# --- Finishing-touch catalogue (notes_004) ---------------------------------
+# A small, curated set of end-of-message emotes the user may optionally append
+# to a copied translation. Deliberately NOT read from Essential Shortcuts.txt
+# at runtime: that reference file mixes greetings (slt, bjr), in-sentence
+# abbreviations (bcp, rdv) and standalone replies (tkt, jsp) that would read
+# unnaturally when tacked onto a finished sentence. This ships only the safe
+# "Emotes & Reactions" group. The touch is applied AFTER translation, at copy
+# time, and is never sent to the model, so the translation itself keeps its
+# faithful tone. A "Casual sign-off / slang" group can follow in a later phase.
+FINISHING_TOUCH_NONE = "None"
+FINISHING_TOUCHES = (
+    FINISHING_TOUCH_NONE, ":)", ":p", ";)", "xD", "mdr", "ptdr", "jpp",
+)
+
 # Confidence values the model may report for language detection.
 CONFIDENCE_VALUES = ("high", "medium", "low")
 
@@ -960,6 +974,22 @@ def result_is_stale(result_request_id, current_request_id) -> bool:
     return result_request_id != current_request_id
 
 
+def append_finishing_touch(text, touch) -> str:
+    """Compose *text* with an optional finishing touch, one space between.
+
+    Deterministic and import-safe so it can be unit-tested without Tk. The
+    "None" sentinel (FINISHING_TOUCH_NONE), an empty value, or a whitespace-only
+    value all leave the text unchanged. Trailing whitespace on *text* is trimmed
+    first so exactly one space precedes the touch. This only builds a display /
+    clipboard string; the stored translation is never mutated.
+    """
+    base = (text or "").rstrip()
+    mark = (touch or "").strip()
+    if not base or not mark or mark == FINISHING_TOUCH_NONE:
+        return base
+    return "{} {}".format(base, mark)
+
+
 # ===========================================================================
 # 6. Settings dialogue
 # ===========================================================================
@@ -1334,12 +1364,30 @@ if GUI_AVAILABLE:
             )
             self.primary_text.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
             self._set_primary_text("Your main translation will appear here.")
+
+            # Finishing-touch picker (notes_004). A curated emote appended to
+            # copied text and shown composed in the card. Applied only after
+            # translation, never sent to the model, so the translation keeps its
+            # faithful tone. Changing it needs no network request.
+            touch_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
+            touch_row.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
+            touch_row.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(touch_row, text="Add a finishing touch").grid(
+                row=0, column=0, sticky="w", padx=(0, 8)
+            )
+            self.finishing_touch_var = ctk.StringVar(value=FINISHING_TOUCH_NONE)
+            ctk.CTkOptionMenu(
+                touch_row, values=list(FINISHING_TOUCHES),
+                variable=self.finishing_touch_var, width=110,
+                command=self._on_finishing_touch_change,
+            ).grid(row=0, column=1, sticky="w")
+
             self.copy_main_btn = ctk.CTkButton(
                 self.primary_card, text="Copy main translation",
-                command=lambda: self._copy(self._current_main),
+                command=self._copy_main,
                 state="disabled",
             )
-            self.copy_main_btn.grid(row=1, column=0, sticky="ew", padx=12, pady=(4, 12))
+            self.copy_main_btn.grid(row=2, column=0, sticky="ew", padx=12, pady=(4, 12))
 
             self.language_label = ctk.CTkLabel(right, text="", text_color="gray70")
             self.language_label.grid(row=2, column=0, sticky="w", padx=12)
@@ -1381,6 +1429,37 @@ if GUI_AVAILABLE:
             self.primary_text.delete("1.0", "end")
             self.primary_text.insert("1.0", text)
             self.primary_text.configure(state="disabled")
+
+        # --- finishing touch (notes_004) ---------------------------------
+
+        def _current_touch(self):
+            """The selected finishing touch, or "" when the picker is on None."""
+            touch = self.finishing_touch_var.get()
+            return "" if touch == FINISHING_TOUCH_NONE else touch
+
+        def _refresh_primary_display(self):
+            """Show the main translation with the finishing touch composed in.
+
+            self._current_main stays the raw translation; only the visible text
+            and the copy target carry the touch. Does nothing while the card
+            still holds its placeholder (no translation yet).
+            """
+            if not self._current_main:
+                return
+            self._set_primary_text(
+                append_finishing_touch(self._current_main, self._current_touch())
+            )
+
+        def _on_finishing_touch_change(self, _value=None):
+            self._refresh_primary_display()
+
+        def _copy_main(self):
+            """Copy the main translation with the current finishing touch."""
+            self._copy(append_finishing_touch(self._current_main, self._current_touch()))
+
+        def _copy_variation(self, text):
+            """Copy an alternative with the current finishing touch."""
+            self._copy(append_finishing_touch(text, self._current_touch()))
 
         def _on_toolbar_change(self, _value=None):
             # Mirror the live toolbar selections into the in-memory config so the
@@ -1426,6 +1505,7 @@ if GUI_AVAILABLE:
         def _clear_results(self):
             self._set_primary_text("Your main translation will appear here.")
             self.copy_main_btn.configure(state="disabled")
+            self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
             self.language_label.configure(text="")
             self._current_main = ""
             for card in self._variation_cards:
@@ -1578,9 +1658,40 @@ if GUI_AVAILABLE:
                 self.advisory.grid()
             self._refresh_status(state="ready")
 
+        def _build_variation_card(self, index, variation):
+            """Build and grid one alternative card; return the frame.
+
+            Isolated from the loop in _render_result (notes_006 refactor) so a
+            future change to the card's buttons (see notes_005 "Use this") has a
+            single place to land rather than a shared loop body. The Copy button
+            appends the currently selected finishing touch (notes_004), composing
+            the copied text without altering the stored translation.
+            """
+            card = ctk.CTkFrame(self.alts_frame, border_width=1)
+            card.grid(row=index, column=0, sticky="ew", pady=4, padx=4)
+            card.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                card, text="{}. {}".format(index, variation["translation"]),
+                justify="left", anchor="w", wraplength=430,
+                font=ctk.CTkFont(size=14),
+            ).grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 0))
+
+            ctk.CTkLabel(
+                card, text="[{}]".format(variation["english_meaning_check"]),
+                justify="left", anchor="w", wraplength=430, text_color="gray65",
+            ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 3))
+
+            ctk.CTkButton(
+                card, text="Copy", width=80,
+                command=lambda t=variation["translation"]: self._copy_variation(t),
+            ).grid(row=0, column=1, rowspan=2, padx=8, pady=8)
+
+            return card
+
         def _render_result(self, result):
             self._current_main = result["main_translation"]
-            self._set_primary_text(self._current_main)
+            self._refresh_primary_display()
             self.copy_main_btn.configure(state="normal")
             self.language_label.configure(text=format_language_label(result))
 
@@ -1589,26 +1700,7 @@ if GUI_AVAILABLE:
             self._variation_cards = []
 
             for index, variation in enumerate(result["variations"], start=1):
-                card = ctk.CTkFrame(self.alts_frame, border_width=1)
-                card.grid(row=index, column=0, sticky="ew", pady=4, padx=4)
-                card.grid_columnconfigure(0, weight=1)
-
-                ctk.CTkLabel(
-                    card, text="{}. {}".format(index, variation["translation"]),
-                    justify="left", anchor="w", wraplength=430,
-                    font=ctk.CTkFont(size=14),
-                ).grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 0))
-
-                ctk.CTkLabel(
-                    card, text="[{}]".format(variation["english_meaning_check"]),
-                    justify="left", anchor="w", wraplength=430, text_color="gray65",
-                ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 3))
-
-                ctk.CTkButton(
-                    card, text="Copy", width=80,
-                    command=lambda t=variation["translation"]: self._copy(t),
-                ).grid(row=0, column=1, rowspan=2, padx=8, pady=8)
-
+                card = self._build_variation_card(index, variation)
                 self._variation_cards.append(card)
 
             notes = result.get("language_note", "")

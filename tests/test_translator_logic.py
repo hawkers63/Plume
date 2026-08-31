@@ -491,5 +491,42 @@ class TestStaleRequest(unittest.TestCase):
         self.assertTrue(plume.result_is_stale(3, 5))
 
 
+class TestFinishingTouch(unittest.TestCase):
+    def test_appends_with_single_space(self):
+        self.assertEqual(
+            plume.append_finishing_touch("J'espère que tu vas bien !", ":p"),
+            "J'espère que tu vas bien ! :p",
+        )
+
+    def test_trims_trailing_space_before_touch(self):
+        self.assertEqual(plume.append_finishing_touch("Salut   ", ":)"), "Salut :)")
+
+    def test_none_sentinel_leaves_text_unchanged(self):
+        self.assertEqual(
+            plume.append_finishing_touch("À bientôt", plume.FINISHING_TOUCH_NONE),
+            "À bientôt",
+        )
+
+    def test_blank_or_missing_touch_leaves_text_unchanged(self):
+        self.assertEqual(plume.append_finishing_touch("À bientôt", ""), "À bientôt")
+        self.assertEqual(plume.append_finishing_touch("À bientôt", "   "), "À bientôt")
+        self.assertEqual(plume.append_finishing_touch("À bientôt", None), "À bientôt")
+
+    def test_empty_base_returns_empty(self):
+        self.assertEqual(plume.append_finishing_touch("", ":p"), "")
+        self.assertEqual(plume.append_finishing_touch(None, ":p"), "")
+
+    def test_catalogue_starts_with_none_and_holds_emotes(self):
+        self.assertEqual(plume.FINISHING_TOUCHES[0], plume.FINISHING_TOUCH_NONE)
+        for mark in (":)", ":p", ";)", "xD", "mdr", "ptdr", "jpp"):
+            self.assertIn(mark, plume.FINISHING_TOUCHES)
+
+    def test_catalogue_excludes_greetings_and_in_sentence_abbreviations(self):
+        # Curation guard: greetings, in-sentence abbreviations and standalone
+        # replies must never be offered as an appendable finishing touch.
+        for banned in ("slt", "bjr", "rdv", "bcp", "mtn", "wesh", "meuf"):
+            self.assertNotIn(banned, plume.FINISHING_TOUCHES)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
