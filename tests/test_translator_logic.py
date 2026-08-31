@@ -649,6 +649,14 @@ class TestHistoryEntries(unittest.TestCase):
         b = plume.make_history_entry("hello", valid_result())
         self.assertNotEqual(a["id"], b["id"])
 
+    def test_make_history_entry_includes_situation_when_given(self):
+        entry = plume.make_history_entry("hi", valid_result(), situation="a work email")
+        self.assertEqual(entry["situation"], "a work email")
+
+    def test_make_history_entry_situation_defaults_to_blank(self):
+        entry = plume.make_history_entry("hi", valid_result())
+        self.assertEqual(entry["situation"], "")
+
     def test_prune_history_keeps_favourites_beyond_limit(self):
         entries = [{"id": str(i), "favourite": (i == 0)} for i in range(5)]
         pruned = plume.prune_history(entries, limit=2)

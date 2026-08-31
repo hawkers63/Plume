@@ -387,7 +387,7 @@ def save_history(entries, force: bool = False) -> None:
     os.replace(tmp_path, path)
 
 
-def make_history_entry(source_text, result) -> dict:
+def make_history_entry(source_text, result, situation="") -> dict:
     """Build a new history entry from a completed translation result."""
     return {
         "id": uuid.uuid4().hex,
@@ -395,6 +395,7 @@ def make_history_entry(source_text, result) -> dict:
         "source_language": result.get("source_language", ""),
         "target_language": result.get("target_language", ""),
         "source_text": source_text,
+        "situation": situation,
         "main_translation": result.get("main_translation", ""),
         "variations": result.get("variations", []),
         "favourite": False,
@@ -1582,13 +1583,23 @@ if GUI_AVAILABLE:
                 wraplength=420,
             ).grid(row=1, column=0, sticky="ew", padx=10, pady=(2, 0))
 
+            situation = entry.get("situation", "")
+            translation_row = 2
+            if situation:
+                ctk.CTkLabel(
+                    card, text="Situation: {}".format(situation), justify="left",
+                    anchor="w", wraplength=420, text_color="gray55",
+                    font=ctk.CTkFont(slant="italic"),
+                ).grid(row=2, column=0, sticky="ew", padx=10, pady=(2, 0))
+                translation_row = 3
+
             ctk.CTkLabel(
                 card, text=entry.get("main_translation", ""), justify="left", anchor="w",
                 wraplength=420, font=ctk.CTkFont(weight="bold"),
-            ).grid(row=2, column=0, sticky="ew", padx=10, pady=(2, 6))
+            ).grid(row=translation_row, column=0, sticky="ew", padx=10, pady=(2, 6))
 
             buttons = ctk.CTkFrame(card, fg_color="transparent")
-            buttons.grid(row=0, column=1, rowspan=3, padx=8, pady=8)
+            buttons.grid(row=0, column=1, rowspan=translation_row + 1, padx=8, pady=8)
             star_text = "★ Unfavourite" if entry.get("favourite") else "☆ Favourite"
             entry_id = entry.get("id")
             ctk.CTkButton(
@@ -1600,9 +1611,13 @@ if GUI_AVAILABLE:
                 command=lambda t=entry.get("main_translation", ""): self._copy(t),
             ).grid(row=1, column=0, pady=(0, 4))
             ctk.CTkButton(
+                buttons, text="Reopen", width=120,
+                command=lambda e=entry: self._reopen(e),
+            ).grid(row=2, column=0, pady=(0, 4))
+            ctk.CTkButton(
                 buttons, text="Delete", width=120, fg_color="gray30",
                 command=lambda eid=entry_id: self._delete_entry(eid),
-            ).grid(row=2, column=0)
+            ).grid(row=3, column=0)
 
         def _copy(self, text):
             if not text:
@@ -1622,6 +1637,10 @@ if GUI_AVAILABLE:
             self._entries = remove_history_entry(self._entries, entry_id)
             self._persist()
             self._refresh_list()
+
+        def _reopen(self, entry):
+            self.master._reopen_history_entry(entry)
+            self.destroy()
 
         def _clear_history(self):
             if not messagebox.askyesno(
@@ -1713,39 +1732,53 @@ if GUI_AVAILABLE:
             bar.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
             bar.grid_columnconfigure(0, weight=1)
 
-            # Row 0: Direction and Backend on the left, Settings pinned to the right.
+            # Row 0: Direction and Backend on the left, Settings pinned to the
+            # right. Columns are assigned by a running counter rather than
+            # literal numbers, so the next control inserted here (three-for-
+            # three needing a manual renumber: Backend/v1.3, Swap/v1.4,
+            # History/v1.5) only touches its own insertion point.
             top = ctk.CTkFrame(bar, fg_color="transparent")
             top.grid(row=0, column=0, sticky="ew")
-            top.grid_columnconfigure(5, weight=1)
+
+            col = 0
 
             self.direction_var = ctk.StringVar(
                 value=self.config_data.get("default_direction", DIR_AUTO)
             )
-            ctk.CTkLabel(top, text="Direction").grid(row=0, column=0, padx=(10, 6), pady=6)
+            ctk.CTkLabel(top, text="Direction").grid(row=0, column=col, padx=(10, 6), pady=6)
+            col += 1
             ctk.CTkSegmentedButton(
                 top, values=list(DIRECTIONS), variable=self.direction_var,
                 command=self._on_toolbar_change,
-            ).grid(row=0, column=1, padx=6, pady=6)
+            ).grid(row=0, column=col, padx=6, pady=6)
+            col += 1
             ctk.CTkButton(
                 top, text="Swap", width=60, command=self._swap_direction,
-            ).grid(row=0, column=2, padx=(0, 6), pady=6)
+            ).grid(row=0, column=col, padx=(0, 6), pady=6)
+            col += 1
 
             self.backend_var = ctk.StringVar(
                 value=normalise_backend(self.config_data.get("backend"))
             )
-            ctk.CTkLabel(top, text="Backend").grid(row=0, column=3, padx=(16, 6), pady=6)
+            ctk.CTkLabel(top, text="Backend").grid(row=0, column=col, padx=(16, 6), pady=6)
+            col += 1
             ctk.CTkSegmentedButton(
                 top, values=["anthropic", "ollama"], variable=self.backend_var,
                 command=self._on_toolbar_change,
-            ).grid(row=0, column=4, padx=6, pady=6)
+            ).grid(row=0, column=col, padx=6, pady=6)
+            col += 1
+
+            top.grid_columnconfigure(col, weight=1)  # spacer: always the next free column
+            col += 1
 
             ctk.CTkButton(
                 top, text="History", width=90, command=self._open_history
-            ).grid(row=0, column=6, sticky="e", padx=(10, 0))
+            ).grid(row=0, column=col, sticky="e", padx=(10, 0))
+            col += 1
 
             ctk.CTkButton(
                 top, text="Settings", width=110, command=self._open_settings
-            ).grid(row=0, column=7, sticky="e", padx=10)
+            ).grid(row=0, column=col, sticky="e", padx=10)
 
             # Row 1: French form and the Me/You gender-agreement controls.
             bottom = ctk.CTkFrame(bar, fg_color="transparent")
@@ -2050,6 +2083,22 @@ if GUI_AVAILABLE:
             self.copy_main_btn.configure(state="normal")
             self.speak_main_btn.configure(state="normal")
 
+        def _reopen_history_entry(self, entry):
+            """Load a saved history entry back into the working translator.
+
+            No network request is made: _render_result already accepts any
+            dict with "main_translation" and "variations", which is exactly
+            the shape make_history_entry() produces.
+            """
+            self.input_box.delete("1.0", "end")
+            self.input_box.insert("1.0", entry.get("source_text", ""))
+            self.situation_entry.delete(0, "end")
+            self.situation_entry.insert(0, entry.get("situation", ""))
+            self._on_input_change()
+            self.advisory.grid_remove()
+            self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
+            self._render_result(entry)
+
         def _speak(self, text):
             """Synthesise and play *text* aloud via ElevenLabs.
 
@@ -2260,7 +2309,7 @@ if GUI_AVAILABLE:
 
                 def _deliver_safe():
                     try:
-                        self._deliver(rid, text, payload)
+                        self._deliver(rid, text, situation, payload)
                     except tk.TclError:  # pragma: no cover - window closed
                         pass
 
@@ -2273,7 +2322,7 @@ if GUI_AVAILABLE:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def _deliver(self, rid, snap_text, payload):
+        def _deliver(self, rid, snap_text, situation, payload):
             # The window may have been destroyed between scheduling and running.
             try:
                 if not self.winfo_exists():
@@ -2294,7 +2343,7 @@ if GUI_AVAILABLE:
                 return
 
             self._render_result(data)
-            self._save_to_history(snap_text, data)
+            self._save_to_history(snap_text, situation, data)
 
             # If the input changed since this request began, keep the result but
             # flag it clearly rather than overwriting the source text.
@@ -2364,7 +2413,7 @@ if GUI_AVAILABLE:
                 card = self._build_variation_card(index, variation)
                 self._variation_cards.append(card)
 
-        def _save_to_history(self, source_text, result):
+        def _save_to_history(self, source_text, situation, result):
             """Best-effort, opt-in local save of a completed translation.
 
             Reads and writes fresh from disk each time rather than caching, so
@@ -2376,7 +2425,7 @@ if GUI_AVAILABLE:
             if not self.config_data.get("save_local_history"):
                 return
             entries = load_history()
-            entries.insert(0, make_history_entry(source_text, result))
+            entries.insert(0, make_history_entry(source_text, result, situation))
             entries = prune_history(entries)
             try:
                 save_history(entries)

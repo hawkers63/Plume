@@ -71,7 +71,7 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
   Favourite/Copy/Delete, a "Favourites only" filter, and "Clear history
   (keeps favourites)" with a confirmation prompt.
 
-## v1.6 — Voice (TTS via ElevenLabs)
+## v1.6 — Voice (TTS via ElevenLabs)  ✅ landed and pushed
 
 - Spoken output for translations, via a "Speak" button on the primary card
   and each of the five alternatives — a pronunciation aid, not a chat
@@ -81,20 +81,24 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
   Off by default (no API key configured) and gated behind the same
   privacy-notice pattern already used for the Claude cloud backend.
 
-## v1.7 — History polish (notes_007)
+## v1.7 — History polish (notes_007)  ✅ landed and pushed
 
-- **Toolbar refactor:** replace the toolbar's hand-counted literal column
+- **Toolbar refactor:** replaced the toolbar's hand-counted literal column
   numbers with a running counter, so future controls (already three-for-three
   on needing a renumber: Backend in v1.3, Swap in v1.4, History in v1.5)
-  stop taxing every unrelated widget after the insertion point.
-- **Situation on history entries:** `situation` is already threaded through
-  `translate()` and the prompt (v1.4) but never reaches
-  `make_history_entry()` — a favourited entry currently loses the one piece
-  of context that usually explains an unusual register choice.
+  stop taxing every unrelated widget after the insertion point. Verified
+  pixel-identical to the pre-refactor layout.
+- **Situation on history entries:** `make_history_entry()` now takes and
+  stores `situation`, threaded through `_translate`/`_deliver`/
+  `_save_to_history`; the History card shows an italicised "Situation: …"
+  line only when one was given, so pre-existing entries render unchanged.
 - **Reopen from History:** a "Reopen" button per history card loads a past
   source phrase, its situation and its five alternatives back into the
   working translator with no network request, reusing `_render_result`
-  exactly as it already exists.
+  exactly as it already exists. One accepted cosmetic quirk (flagged in
+  notes_007): a reopened entry always shows "detected with low confidence"
+  since `language_confidence` isn't stored in history — the translation
+  itself is exact.
 
 ## v1.8 — Hardening pass (bug detection & repair)
 
