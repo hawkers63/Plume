@@ -568,5 +568,89 @@ class TestUseAsMain(unittest.TestCase):
         self.assertEqual(plume.adopt_main_translation("Bonjour.", None), "Bonjour.")
 
 
+class TestHistoryEntries(unittest.TestCase):
+    def test_make_history_entry_captures_source_and_result(self):
+        entry = plume.make_history_entry("hello", valid_result())
+        self.assertEqual(entry["source_text"], "hello")
+        self.assertEqual(entry["main_translation"], "Bonjour tout le monde")
+        self.assertEqual(entry["source_language"], "English")
+        self.assertEqual(entry["target_language"], "French")
+        self.assertEqual(len(entry["variations"]), 5)
+        self.assertFalse(entry["favourite"])
+        self.assertTrue(entry["id"])
+        self.assertTrue(entry["timestamp"])
+
+    def test_make_history_entry_ids_are_unique(self):
+        a = plume.make_history_entry("hello", valid_result())
+        b = plume.make_history_entry("hello", valid_result())
+        self.assertNotEqual(a["id"], b["id"])
+
+    def test_prune_history_keeps_favourites_beyond_limit(self):
+        entries = [{"id": str(i), "favourite": (i == 0)} for i in range(5)]
+        pruned = plume.prune_history(entries, limit=2)
+        ids = [e["id"] for e in pruned]
+        self.assertIn("0", ids)  # favourite always kept
+        self.assertEqual(len(ids), 3)  # 1 favourite + 2 most-recent non-favourites
+
+    def test_set_favourite_toggles_matching_entry_only(self):
+        entries = [{"id": "a", "favourite": False}, {"id": "b", "favourite": False}]
+        plume.set_favourite(entries, "b", True)
+        self.assertFalse(entries[0]["favourite"])
+        self.assertTrue(entries[1]["favourite"])
+
+    def test_remove_history_entry_drops_only_matching_id(self):
+        entries = [{"id": "a"}, {"id": "b"}]
+        remaining = plume.remove_history_entry(entries, "a")
+        self.assertEqual([e["id"] for e in remaining], ["b"])
+
+    def test_clear_history_keeps_only_favourites(self):
+        entries = [{"id": "a", "favourite": True}, {"id": "b", "favourite": False}]
+        remaining = plume.clear_history(entries)
+        self.assertEqual([e["id"] for e in remaining], ["a"])
+
+
+class TestHistoryPersistence(unittest.TestCase):
+    def test_atomic_save_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, plume.HISTORY_FILENAME)
+            with mock.patch.object(plume, "history_path", return_value=path):
+                entries = [plume.make_history_entry("hello", valid_result())]
+                plume.save_history(entries)
+                loaded = plume.load_history()
+                self.assertEqual(len(loaded), 1)
+                self.assertEqual(loaded[0]["source_text"], "hello")
+
+    def test_load_history_missing_file_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, plume.HISTORY_FILENAME)
+            with mock.patch.object(plume, "history_path", return_value=path):
+                self.assertEqual(plume.load_history(), [])
+
+    def test_malformed_history_not_overwritten_by_automatic_save(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, plume.HISTORY_FILENAME)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("{ this is not valid json ")
+            with mock.patch.object(plume, "history_path", return_value=path):
+                with self.assertRaises(plume.HistoryError):
+                    plume.save_history([], force=False)
+                with open(path, "r", encoding="utf-8") as fh:
+                    self.assertIn("not valid json", fh.read())
+                # An explicit recovery save replaces it.
+                plume.save_history([], force=True)
+                with open(path, "r", encoding="utf-8") as fh:
+                    self.assertEqual(json.load(fh), [])
+
+    def test_load_history_malformed_file_returns_empty_list_without_repair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, plume.HISTORY_FILENAME)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("not json")
+            with mock.patch.object(plume, "history_path", return_value=path):
+                self.assertEqual(plume.load_history(), [])
+            with open(path, "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "not json")  # untouched
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

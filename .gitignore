@@ -1,6 +1,10 @@
 # Live config — contains a personal Anthropic API key
 plume_config.json
 
+# Local translation history — opt-in, on-disk only, never sent anywhere,
+# but still real conversation content that must never be committed.
+plume_history.json
+
 # Python
 __pycache__/
 *.pyc

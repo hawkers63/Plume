@@ -37,6 +37,8 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+import uuid
+from datetime import datetime
 
 # --- Defensive GUI import ---------------------------------------------------
 # CustomTkinter/Tkinter are only needed to actually run the window. Importing
@@ -62,6 +64,8 @@ except Exception:  # pragma: no cover
 APP_NAME = "Plume"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 CONFIG_FILENAME = "plume_config.json"
+HISTORY_FILENAME = "plume_history.json"
+MAX_HISTORY_ENTRIES = 200
 
 # Allowed language identifiers used throughout the data contract.
 ENGLISH = "English"
@@ -216,8 +220,8 @@ def normalise_backend(value) -> str:
     return "ollama" if str(value or "").strip().lower() == "ollama" else "anthropic"
 
 
-def _is_existing_file_malformed(path: str) -> bool:
-    """True if a file exists at *path* but does not parse as a JSON object."""
+def _is_existing_file_malformed(path: str, expected_type=dict) -> bool:
+    """True if a file exists at *path* but does not parse as *expected_type*."""
     if not os.path.exists(path):
         return False
     try:
@@ -225,7 +229,7 @@ def _is_existing_file_malformed(path: str) -> bool:
             data = json.load(fh)
     except (OSError, ValueError):
         return True
-    return not isinstance(data, dict)
+    return not isinstance(data, expected_type)
 
 
 def load_config():
@@ -304,6 +308,114 @@ def save_config(config, force: bool = False) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp_path, path)
+
+
+# ---------------------------------------------------------------------------
+# Local history and favourites persistence (opt-in, on-disk only; nothing
+# here is ever sent anywhere). Off by default via "save_local_history".
+# ---------------------------------------------------------------------------
+
+
+class HistoryError(Exception):
+    """Raised when local history cannot be saved safely."""
+
+
+def history_path() -> str:
+    return os.path.join(config_dir(), HISTORY_FILENAME)
+
+
+def load_history() -> list:
+    """Load local history, newest first. Returns [] if none exists or unreadable.
+
+    A read failure returns an empty list rather than raising: browsing history
+    is best-effort, and a corrupt file is handled defensively by save_history
+    instead, so a failed read here can never cause data loss on the next save.
+    """
+    path = history_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [entry for entry in data if isinstance(entry, dict)]
+
+
+def save_history(entries, force: bool = False) -> None:
+    """Atomically write *entries* to disk, mirroring save_config's pattern.
+
+    Refuses to overwrite an existing file that fails to parse as a JSON list
+    unless *force* is True, so a corrupt file can never be silently replaced
+    by a single new entry, quietly discarding any existing favourites.
+    """
+    path = history_path()
+    if not force and _is_existing_file_malformed(path, expected_type=list):
+        raise HistoryError(
+            "The existing history file appears to be damaged. It was not "
+            "overwritten. Use Clear history in the History window to replace it."
+        )
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    tmp_path = path + ".tmp"
+    payload = json.dumps(entries, indent=2, ensure_ascii=False)
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_path, path)
+
+
+def make_history_entry(source_text, result) -> dict:
+    """Build a new history entry from a completed translation result."""
+    return {
+        "id": uuid.uuid4().hex,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "source_language": result.get("source_language", ""),
+        "target_language": result.get("target_language", ""),
+        "source_text": source_text,
+        "main_translation": result.get("main_translation", ""),
+        "variations": result.get("variations", []),
+        "favourite": False,
+    }
+
+
+def prune_history(entries, limit: int = MAX_HISTORY_ENTRIES) -> list:
+    """Keep every favourite, plus the most recent non-favourites up to *limit*.
+
+    *entries* must already be newest-first. Favourites never count against the
+    cap and are never dropped, so favouriting an entry is a durable action.
+    """
+    kept = []
+    non_favourite_count = 0
+    for entry in entries:
+        if entry.get("favourite"):
+            kept.append(entry)
+        elif non_favourite_count < limit:
+            kept.append(entry)
+            non_favourite_count += 1
+    return kept
+
+
+def set_favourite(entries, entry_id, favourite: bool) -> list:
+    """Set the favourite flag on the entry with *entry_id*, in place."""
+    for entry in entries:
+        if entry.get("id") == entry_id:
+            entry["favourite"] = bool(favourite)
+            break
+    return entries
+
+
+def remove_history_entry(entries, entry_id) -> list:
+    """Return *entries* with the entry matching *entry_id* removed."""
+    return [entry for entry in entries if entry.get("id") != entry_id]
+
+
+def clear_history(entries) -> list:
+    """Return only the favourited entries from *entries* ("clear" keeps stars)."""
+    return [entry for entry in entries if entry.get("favourite")]
 
 
 # ===========================================================================
@@ -1064,8 +1176,8 @@ if GUI_AVAILABLE:
             self._on_save = on_save
             self._config = dict(config)
             self.title("{} \u2014 Settings".format(APP_NAME))
-            self.geometry("560x620")
-            self.minsize(520, 560)
+            self.geometry("560x660")
+            self.minsize(520, 600)
             self.transient(master)
             self.grid_columnconfigure(0, weight=1)
 
@@ -1160,6 +1272,16 @@ if GUI_AVAILABLE:
             ).grid(row=row, column=0, sticky="w", **pad)
             row += 1
 
+            self.history_var = ctk.BooleanVar(
+                value=bool(self._config.get("save_local_history", False))
+            )
+            ctk.CTkCheckBox(
+                self,
+                text="Save translations to local history (stored on this device only)",
+                variable=self.history_var,
+            ).grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+
             self.status_label = ctk.CTkLabel(self, text="", text_color="gray70")
             self.status_label.grid(row=row, column=0, sticky="w", padx=16)
             row += 1
@@ -1212,6 +1334,7 @@ if GUI_AVAILABLE:
             self._config["ollama_model"] = self.ollama_entry.get().strip() or DEFAULT_OLLAMA_MODEL
             self._config["protect_placeholders"] = bool(self.protect_var.get())
             self._config["privacy_ack"] = bool(self.privacy_var.get())
+            self._config["save_local_history"] = bool(self.history_var.get())
 
             # Carry the live toolbar selections forward so a deliberate change
             # made this session is persisted rather than reset to the file
@@ -1241,6 +1364,146 @@ if GUI_AVAILABLE:
                     return
             self._on_save(self._config)
             self.destroy()
+
+
+    class HistoryDialog(ctk.CTkToplevel):
+        """Browse, favourite and delete locally stored translation history.
+
+        Entries are loaded fresh from disk on open and re-persisted after each
+        mutation, so this window and the automatic per-translation save in
+        PlumeApp never need to share in-memory state.
+        """
+
+        def __init__(self, master):
+            super().__init__(master)
+            self.title("{} — History".format(APP_NAME))
+            self.geometry("640x680")
+            self.minsize(560, 480)
+            self.transient(master)
+            self.grid_columnconfigure(0, weight=1)
+            self.grid_rowconfigure(2, weight=1)
+
+            self._entries = load_history()
+            self._favourites_only = ctk.BooleanVar(value=False)
+
+            header = ctk.CTkFrame(self, fg_color="transparent")
+            header.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 4))
+            header.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(
+                header, text="History", font=ctk.CTkFont(size=18, weight="bold"),
+            ).grid(row=0, column=0, sticky="w")
+            ctk.CTkCheckBox(
+                header, text="Favourites only", variable=self._favourites_only,
+                command=self._refresh_list,
+            ).grid(row=0, column=2, sticky="e")
+
+            ctk.CTkButton(
+                self, text="Clear history (keeps favourites)", width=220,
+                command=self._clear_history, fg_color="gray30",
+            ).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
+
+            self.list_frame = ctk.CTkScrollableFrame(self)
+            self.list_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
+            self.list_frame.grid_columnconfigure(0, weight=1)
+
+            self._refresh_list()
+
+        def _visible_entries(self):
+            if self._favourites_only.get():
+                return [e for e in self._entries if e.get("favourite")]
+            return self._entries
+
+        def _refresh_list(self):
+            for child in self.list_frame.winfo_children():
+                child.destroy()
+            visible = self._visible_entries()
+            if not visible:
+                ctk.CTkLabel(
+                    self.list_frame, text="No history yet.", text_color="gray60",
+                ).grid(row=0, column=0, sticky="w", padx=8, pady=8)
+                return
+            for index, entry in enumerate(visible):
+                self._build_entry_card(index, entry)
+
+        def _build_entry_card(self, index, entry):
+            card = ctk.CTkFrame(self.list_frame, border_width=1)
+            card.grid(row=index, column=0, sticky="ew", pady=4, padx=4)
+            card.grid_columnconfigure(0, weight=1)
+
+            header_text = "{} → {}  ·  {}".format(
+                entry.get("source_language", "?"), entry.get("target_language", "?"),
+                entry.get("timestamp", ""),
+            )
+            ctk.CTkLabel(
+                card, text=header_text, justify="left", anchor="w", text_color="gray60",
+            ).grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 0))
+
+            ctk.CTkLabel(
+                card, text=entry.get("source_text", ""), justify="left", anchor="w",
+                wraplength=420,
+            ).grid(row=1, column=0, sticky="ew", padx=10, pady=(2, 0))
+
+            ctk.CTkLabel(
+                card, text=entry.get("main_translation", ""), justify="left", anchor="w",
+                wraplength=420, font=ctk.CTkFont(weight="bold"),
+            ).grid(row=2, column=0, sticky="ew", padx=10, pady=(2, 6))
+
+            buttons = ctk.CTkFrame(card, fg_color="transparent")
+            buttons.grid(row=0, column=1, rowspan=3, padx=8, pady=8)
+            star_text = "★ Unfavourite" if entry.get("favourite") else "☆ Favourite"
+            entry_id = entry.get("id")
+            ctk.CTkButton(
+                buttons, text=star_text, width=120,
+                command=lambda eid=entry_id: self._toggle_favourite(eid),
+            ).grid(row=0, column=0, pady=(0, 4))
+            ctk.CTkButton(
+                buttons, text="Copy", width=120,
+                command=lambda t=entry.get("main_translation", ""): self._copy(t),
+            ).grid(row=1, column=0, pady=(0, 4))
+            ctk.CTkButton(
+                buttons, text="Delete", width=120, fg_color="gray30",
+                command=lambda eid=entry_id: self._delete_entry(eid),
+            ).grid(row=2, column=0)
+
+        def _copy(self, text):
+            if not text:
+                return
+            self.clipboard_clear()
+            self.clipboard_append(text)
+
+        def _toggle_favourite(self, entry_id):
+            current = next((e for e in self._entries if e.get("id") == entry_id), None)
+            if current is None:
+                return
+            set_favourite(self._entries, entry_id, not current.get("favourite"))
+            self._persist()
+            self._refresh_list()
+
+        def _delete_entry(self, entry_id):
+            self._entries = remove_history_entry(self._entries, entry_id)
+            self._persist()
+            self._refresh_list()
+
+        def _clear_history(self):
+            if not messagebox.askyesno(
+                "Clear history",
+                "Remove all non-favourited history entries from this device? "
+                "Favourited entries are kept.",
+            ):
+                return
+            self._entries = clear_history(self._entries)
+            self._persist()
+            self._refresh_list()
+
+        def _persist(self):
+            try:
+                save_history(self._entries)
+            except HistoryError as exc:
+                answer = messagebox.askyesno(
+                    "Damaged history file", str(exc) + "\n\nReplace the damaged file now?",
+                )
+                if answer:
+                    save_history(self._entries, force=True)
 
 
 # ===========================================================================
@@ -1337,8 +1600,12 @@ if GUI_AVAILABLE:
             ).grid(row=0, column=4, padx=6, pady=6)
 
             ctk.CTkButton(
+                top, text="History", width=90, command=self._open_history
+            ).grid(row=0, column=6, sticky="e", padx=(10, 0))
+
+            ctk.CTkButton(
                 top, text="Settings", width=110, command=self._open_settings
-            ).grid(row=0, column=6, sticky="e", padx=10)
+            ).grid(row=0, column=7, sticky="e", padx=10)
 
             # Row 1: French form and the Me/You gender-agreement controls.
             bottom = ctk.CTkFrame(bar, fg_color="transparent")
@@ -1644,6 +1911,19 @@ if GUI_AVAILABLE:
                     pass
             self._settings = SettingsDialog(self, self.config_data, self._apply_settings)
 
+        def _open_history(self):
+            # Reuse a single History window rather than stacking new ones.
+            existing = getattr(self, "_history", None)
+            if existing is not None:
+                try:
+                    if existing.winfo_exists():
+                        existing.lift()
+                        existing.focus()
+                        return
+                except tk.TclError:
+                    pass
+            self._history = HistoryDialog(self)
+
         def _apply_settings(self, new_config):
             # Applies to the next request; a request already in flight keeps its snapshot.
             self.config_data = new_config
@@ -1761,6 +2041,7 @@ if GUI_AVAILABLE:
                 return
 
             self._render_result(data)
+            self._save_to_history(snap_text, data)
 
             # If the input changed since this request began, keep the result but
             # flag it clearly rather than overwriting the source text.
@@ -1822,6 +2103,25 @@ if GUI_AVAILABLE:
             for index, variation in enumerate(result["variations"], start=1):
                 card = self._build_variation_card(index, variation)
                 self._variation_cards.append(card)
+
+        def _save_to_history(self, source_text, result):
+            """Best-effort, opt-in local save of a completed translation.
+
+            Reads and writes fresh from disk each time rather than caching, so
+            this stays consistent with an open History window editing the same
+            file. A damaged file is left for the History window to resolve
+            (Clear history there replaces it) rather than interrupting the
+            translation flow with a blocking prompt here.
+            """
+            if not self.config_data.get("save_local_history"):
+                return
+            entries = load_history()
+            entries.insert(0, make_history_entry(source_text, result))
+            entries = prune_history(entries)
+            try:
+                save_history(entries)
+            except HistoryError:
+                pass
 
             notes = result.get("language_note", "")
             extra = result.get("notes", [])

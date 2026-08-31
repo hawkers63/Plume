@@ -56,10 +56,20 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
   output shape, add or remove fields, override the requested direction, or
   outrank the source text's own faithful meaning.
 
-## v1.5 — Local History & Favourites
+## v1.5 — Local History & Favourites  ✅ landed and pushed
 
-- Opt-in, on-disk history and favourites UI, behind explicit consent. Off by
-  default, honouring the version-1 privacy stance.
+- **Storage:** `plume_history.json`, atomic-write (mirrors `save_config`),
+  malformed-file protection via `HistoryError`; gitignored alongside
+  `plume_config.json` since it holds real conversation content.
+- **Opt-in, automatic save:** every successful translation is saved via
+  `_save_to_history`, gated on a new "Save translations to local history
+  (stored on this device only)" checkbox in Settings — off by default.
+- **Favourites:** `prune_history` keeps every favourite exempt from the
+  200-entry rolling cap; "Clear history" removes only non-favourited entries.
+- **History window:** a new toolbar button opens a separate dialog (same
+  pattern as Settings) — scrollable list newest-first, per-entry
+  Favourite/Copy/Delete, a "Favourites only" filter, and "Clear history
+  (keeps favourites)" with a confirmation prompt.
 
 ## v1.6 — Voice (TTS via ElevenLabs)
 
