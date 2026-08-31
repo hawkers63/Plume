@@ -10,11 +10,14 @@ Run from the project root:
     python -m unittest discover -s tests -v
 """
 
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
+import urllib.error
+import wave
 from unittest import mock
 
 # Make the parent directory importable so `import plume` works from tests/.
@@ -460,6 +463,67 @@ class TestBackendHardening(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", return_value=_Resp()):
             with self.assertRaises(plume.BackendError):
                 plume.list_ollama_models()
+
+
+class TestElevenLabsTTS(unittest.TestCase):
+    def test_missing_key_raises_without_network_call(self):
+        with self.assertRaises(plume.BackendError):
+            plume.call_elevenlabs_tts({"elevenlabs_api_key": ""}, "Bonjour")
+
+    def test_success_returns_raw_audio_bytes(self):
+        class _Resp:
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *a):
+                return False
+            def read(self_inner):
+                return b"\x01\x02\x03\x04"  # stand-in for raw PCM audio
+
+        with mock.patch("urllib.request.urlopen", return_value=_Resp()):
+            audio = plume.call_elevenlabs_tts(
+                {"elevenlabs_api_key": "sk_test"}, "Bonjour"
+            )
+        self.assertEqual(audio, b"\x01\x02\x03\x04")
+
+    def test_401_maps_to_api_key_hint(self):
+        with mock.patch("urllib.request.urlopen", side_effect=self._http_error(401)):
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume.call_elevenlabs_tts({"elevenlabs_api_key": "bad"}, "hi")
+            self.assertIn("API key", str(ctx.exception))
+
+    def test_error_message_never_contains_spoken_text(self):
+        secret = "meet me at the old bridge"
+        with mock.patch("urllib.request.urlopen", side_effect=self._http_error(500)):
+            try:
+                plume.call_elevenlabs_tts({"elevenlabs_api_key": "k"}, secret)
+            except plume.BackendError as exc:
+                self.assertNotIn(secret, str(exc))
+            else:
+                self.fail("expected BackendError")
+
+    @staticmethod
+    def _http_error(code):
+        def _raise(*args, **kwargs):
+            raise urllib.error.HTTPError(
+                "https://api.elevenlabs.io/v1/text-to-speech/x", code, "err",
+                {}, io.BytesIO(b"detail"),
+            )
+        return _raise
+
+
+class TestPcmToWav(unittest.TestCase):
+    def test_round_trip_preserves_pcm_and_format(self):
+        pcm = b"\x00\x01\x02\x03" * 100
+        wav_bytes = plume.pcm_to_wav_bytes(pcm, sample_rate=16000, sample_width=2, channels=1)
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+            self.assertEqual(wav_file.getnchannels(), 1)
+            self.assertEqual(wav_file.getsampwidth(), 2)
+            self.assertEqual(wav_file.getframerate(), 16000)
+            self.assertEqual(wav_file.readframes(wav_file.getnframes()), pcm)
+
+    def test_output_starts_with_riff_header(self):
+        wav_bytes = plume.pcm_to_wav_bytes(b"\x00\x01", sample_rate=16000)
+        self.assertTrue(wav_bytes.startswith(b"RIFF"))
 
 
 class TestPrivacyOfDiagnostics(unittest.TestCase):

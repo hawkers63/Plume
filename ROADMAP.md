@@ -73,8 +73,39 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
 
 ## v1.6 — Voice (TTS via ElevenLabs)
 
-- Spoken output for translations. Deferred last, once the typed workflow is
-  thoroughly dependable, as the project spec advises.
+- Spoken output for translations, via a "Speak" button on the primary card
+  and each of the five alternatives — a pronunciation aid, not a chat
+  feature. `urllib`-only REST call to ElevenLabs' one-shot Text-to-Speech
+  endpoint (`POST /v1/text-to-speech/{voice_id}`), not the Conversational-AI
+  SDK: this is "read this exact text aloud", never a live voice agent.
+  Off by default (no API key configured) and gated behind the same
+  privacy-notice pattern already used for the Claude cloud backend.
+
+## v1.7 — History polish (notes_007)
+
+- **Toolbar refactor:** replace the toolbar's hand-counted literal column
+  numbers with a running counter, so future controls (already three-for-three
+  on needing a renumber: Backend in v1.3, Swap in v1.4, History in v1.5)
+  stop taxing every unrelated widget after the insertion point.
+- **Situation on history entries:** `situation` is already threaded through
+  `translate()` and the prompt (v1.4) but never reaches
+  `make_history_entry()` — a favourited entry currently loses the one piece
+  of context that usually explains an unusual register choice.
+- **Reopen from History:** a "Reopen" button per history card loads a past
+  source phrase, its situation and its five alternatives back into the
+  working translator with no network request, reusing `_render_result`
+  exactly as it already exists.
+
+## v1.8 — Hardening pass (bug detection & repair)
+
+- No new user-facing features. A dedicated audit of the codebase as it
+  stands after five feature releases in a row (v1.3–v1.7): re-read
+  `plume.py` in full end to end, check every backend/parsing edge case
+  against the strict JSON contract, verify config/history migration paths
+  for users updating from earlier versions, and confirm the test suite's
+  coverage has kept pace with the surface area added since v1.1. Findings
+  get their own note before any fix lands, matching this project's existing
+  read-only-ideation-first convention.
 
 ---
 

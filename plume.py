@@ -30,14 +30,17 @@ module and exercise the logic without a display or CustomTkinter installed.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.request
 import uuid
+import wave
 from datetime import datetime
 
 # --- Defensive GUI import ---------------------------------------------------
@@ -156,6 +159,15 @@ OLLAMA_TAGS_PATH = "/api/tags"
 DEFAULT_OLLAMA_MODEL = "llama3.1:8b"
 OLLAMA_TIMEOUT = 120
 
+# One-shot Text-to-Speech only (not the Conversational-AI agent API): "read
+# this exact text aloud", nothing more.
+ELEVENLABS_BASE_URL = "https://api.elevenlabs.io"
+DEFAULT_ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # "Rachel", a stable premade voice
+DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2"
+ELEVENLABS_OUTPUT_FORMAT = "pcm_16000"
+ELEVENLABS_SAMPLE_RATE = 16000
+ELEVENLABS_TIMEOUT = 30
+
 APPEARANCE_MODE = "dark"
 COLOR_THEME = "blue"
 
@@ -195,6 +207,9 @@ DEFAULT_CONFIG = {
     "protect_placeholders": True,
     "save_local_history": False,
     "max_input_chars": DEFAULT_MAX_INPUT_CHARS,
+    "elevenlabs_api_key": "",
+    "elevenlabs_voice_id": DEFAULT_ELEVENLABS_VOICE_ID,
+    "elevenlabs_privacy_ack": False,
 }
 
 
@@ -281,6 +296,10 @@ def load_config():
             raise ValueError
     except (TypeError, ValueError):
         config["max_input_chars"] = DEFAULT_MAX_INPUT_CHARS
+    config["elevenlabs_voice_id"] = (
+        str(config.get("elevenlabs_voice_id") or "").strip() or DEFAULT_ELEVENLABS_VOICE_ID
+    )
+    config["elevenlabs_privacy_ack"] = bool(config.get("elevenlabs_privacy_ack"))
 
     return config, None
 
@@ -1084,6 +1103,84 @@ def translate(config_snapshot, text, situation=""):
     return result
 
 
+# ---------------------------------------------------------------------------
+# ElevenLabs text-to-speech (one-shot "read this text aloud", not the
+# Conversational-AI agent API). Off by default: the Speak button is disabled
+# until an API key is configured, matching the local-history opt-in pattern.
+# ---------------------------------------------------------------------------
+
+
+def _elevenlabs_friendly_message(code, detail) -> str:
+    if code in (401, 403):
+        return "ElevenLabs rejected the request. Please check your API key in Settings."
+    if code == 404:
+        return (
+            "The configured ElevenLabs voice was not found. Please check the "
+            "voice ID in Settings."
+        )
+    if code == 429:
+        return "ElevenLabs is rate limiting requests. Please wait and retry."
+    if 500 <= code < 600:
+        return "ElevenLabs reported a temporary error. Please retry."
+    return "The speech request failed (HTTP {}). Please try again.".format(code)
+
+
+def call_elevenlabs_tts(config_snapshot, text: str) -> bytes:
+    """Synthesise *text* and return raw 16-bit mono PCM audio at 16 kHz.
+
+    Raises BackendError on any failure. The message never contains the
+    spoken text, matching the existing backend-error privacy guarantee.
+    """
+    api_key = (config_snapshot.get("elevenlabs_api_key") or "").strip()
+    if not api_key:
+        raise BackendError("No ElevenLabs API key is set. Add one in Settings.")
+    voice_id = config_snapshot.get("elevenlabs_voice_id") or DEFAULT_ELEVENLABS_VOICE_ID
+    url = "{}/v1/text-to-speech/{}?output_format={}".format(
+        ELEVENLABS_BASE_URL, voice_id, ELEVENLABS_OUTPUT_FORMAT
+    )
+    payload = json.dumps({"text": text, "model_id": DEFAULT_ELEVENLABS_MODEL}).encode("utf-8")
+    headers = {
+        "xi-api-key": api_key,
+        "content-type": "application/json",
+        "accept": "audio/*",
+    }
+    request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=ELEVENLABS_TIMEOUT) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")
+        except Exception:
+            detail = ""
+        raise BackendError(_elevenlabs_friendly_message(exc.code, detail))
+    except urllib.error.URLError as exc:
+        raise BackendError(
+            "Could not reach ElevenLabs. Please check your connection and try "
+            "again. ({})".format(_reason_text(exc))
+        )
+    except (TimeoutError, OSError):
+        raise BackendError("ElevenLabs did not respond in time. Please try again.")
+
+
+def pcm_to_wav_bytes(pcm_data: bytes, sample_rate: int = ELEVENLABS_SAMPLE_RATE,
+                      sample_width: int = 2, channels: int = 1) -> bytes:
+    """Wrap raw PCM samples in a minimal WAV container.
+
+    Pure and stdlib-only (`wave` + `io.BytesIO`), so playback (winsound
+    requires an actual WAV file) needs no third-party dependency. Import-safe
+    and deterministic, so it is unit-tested without an audio device.
+    """
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm_data)
+    return buffer.getvalue()
+
+
 # ===========================================================================
 # Status / label formatting (pure, tested for privacy)
 # ===========================================================================
@@ -1176,8 +1273,8 @@ if GUI_AVAILABLE:
             self._on_save = on_save
             self._config = dict(config)
             self.title("{} \u2014 Settings".format(APP_NAME))
-            self.geometry("560x660")
-            self.minsize(520, 600)
+            self.geometry("560x820")
+            self.minsize(520, 760)
             self.transient(master)
             self.grid_columnconfigure(0, weight=1)
 
@@ -1242,6 +1339,33 @@ if GUI_AVAILABLE:
             self.detect_btn.grid(row=0, column=1)
             row += 1
 
+            # ElevenLabs (Speak / text-to-speech). Optional: Speak stays
+            # disabled with no key, exactly like the other opt-in features.
+            ctk.CTkLabel(self, text="ElevenLabs API key").grid(row=row, column=0, sticky="w", padx=16)
+            row += 1
+            self.elevenlabs_key_entry = ctk.CTkEntry(self, show="•", placeholder_text="sk_...")
+            self.elevenlabs_key_entry.grid(row=row, column=0, sticky="ew", **pad)
+            existing_el_key = self._config.get("elevenlabs_api_key", "")
+            if existing_el_key:
+                self.elevenlabs_key_entry.insert(0, existing_el_key)
+            row += 1
+            self.elevenlabs_key_label = ctk.CTkLabel(
+                self,
+                text="Stored key: {}".format(mask_api_key(existing_el_key)),
+                text_color="gray70",
+            )
+            self.elevenlabs_key_label.grid(row=row, column=0, sticky="w", padx=16)
+            row += 1
+
+            ctk.CTkLabel(self, text="ElevenLabs voice ID").grid(row=row, column=0, sticky="w", padx=16)
+            row += 1
+            self.elevenlabs_voice_entry = ctk.CTkEntry(self)
+            self.elevenlabs_voice_entry.insert(
+                0, self._config.get("elevenlabs_voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
+            )
+            self.elevenlabs_voice_entry.grid(row=row, column=0, sticky="ew", **pad)
+            row += 1
+
             # The live conversational controls (direction, French form, and the
             # Me/You gender agreement) live on the main toolbar and are persisted
             # as defaults whenever these Settings are saved.
@@ -1279,6 +1403,16 @@ if GUI_AVAILABLE:
                 self,
                 text="Save translations to local history (stored on this device only)",
                 variable=self.history_var,
+            ).grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+
+            self.elevenlabs_privacy_var = ctk.BooleanVar(
+                value=bool(self._config.get("elevenlabs_privacy_ack", False))
+            )
+            ctk.CTkCheckBox(
+                self,
+                text="I understand Speak sends text to ElevenLabs",
+                variable=self.elevenlabs_privacy_var,
             ).grid(row=row, column=0, sticky="w", **pad)
             row += 1
 
@@ -1335,6 +1469,11 @@ if GUI_AVAILABLE:
             self._config["protect_placeholders"] = bool(self.protect_var.get())
             self._config["privacy_ack"] = bool(self.privacy_var.get())
             self._config["save_local_history"] = bool(self.history_var.get())
+            self._config["elevenlabs_api_key"] = self.elevenlabs_key_entry.get().strip()
+            self._config["elevenlabs_voice_id"] = (
+                self.elevenlabs_voice_entry.get().strip() or DEFAULT_ELEVENLABS_VOICE_ID
+            )
+            self._config["elevenlabs_privacy_ack"] = bool(self.elevenlabs_privacy_var.get())
 
             # Carry the live toolbar selections forward so a deliberate change
             # made this session is persisted rather than reset to the file
@@ -1520,6 +1659,7 @@ if GUI_AVAILABLE:
             self._request_id = 0
             self._settings = None
             self._variation_cards = []
+            self._tts_temp_path = None
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
@@ -1735,12 +1875,21 @@ if GUI_AVAILABLE:
                 command=self._on_finishing_touch_change,
             ).grid(row=0, column=1, sticky="w")
 
+            main_buttons = ctk.CTkFrame(self.primary_card, fg_color="transparent")
+            main_buttons.grid(row=2, column=0, sticky="ew", padx=12, pady=(4, 12))
+            main_buttons.grid_columnconfigure(0, weight=1)
             self.copy_main_btn = ctk.CTkButton(
-                self.primary_card, text="Copy main translation",
+                main_buttons, text="Copy main translation",
                 command=self._copy_main,
                 state="disabled",
             )
-            self.copy_main_btn.grid(row=2, column=0, sticky="ew", padx=12, pady=(4, 12))
+            self.copy_main_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+            self.speak_main_btn = ctk.CTkButton(
+                main_buttons, text="Speak", width=100,
+                command=lambda: self._speak(self._current_main),
+                state="disabled",
+            )
+            self.speak_main_btn.grid(row=0, column=1)
 
             self.language_label = ctk.CTkLabel(right, text="", text_color="gray70")
             self.language_label.grid(row=2, column=0, sticky="w", padx=12)
@@ -1868,6 +2017,8 @@ if GUI_AVAILABLE:
         def _clear_results(self):
             self._set_primary_text("Your main translation will appear here.")
             self.copy_main_btn.configure(state="disabled")
+            self.speak_main_btn.configure(state="disabled")
+            self._stop_speech()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
             self.language_label.configure(text="")
             self._current_main = ""
@@ -1897,6 +2048,108 @@ if GUI_AVAILABLE:
             self._current_main = adopted
             self._refresh_primary_display()
             self.copy_main_btn.configure(state="normal")
+            self.speak_main_btn.configure(state="normal")
+
+        def _speak(self, text):
+            """Synthesise and play *text* aloud via ElevenLabs.
+
+            Off the UI thread, mirroring _translate's worker pattern. Always
+            speaks the raw translation, never a finishing touch, since an
+            emote is not meant to be pronounced. A missing key or network
+            failure surfaces the same short, safe advisory used elsewhere;
+            the spoken text itself is never included in an error message.
+            """
+            text = (text or "").strip()
+            if not text:
+                return
+            snapshot = dict(self.config_data)
+            if not snapshot.get("elevenlabs_api_key"):
+                self.advisory.configure(
+                    text="No ElevenLabs API key is set. Add one in Settings to "
+                         "hear translations spoken aloud."
+                )
+                self.advisory.grid()
+                return
+            if not snapshot.get("elevenlabs_privacy_ack"):
+                proceed = messagebox.askokcancel(
+                    "Privacy notice",
+                    "Reading this aloud sends the text to ElevenLabs to "
+                    "synthesise speech.\n\nContinue?",
+                )
+                if not proceed:
+                    return
+                self.config_data["elevenlabs_privacy_ack"] = True
+                snapshot["elevenlabs_privacy_ack"] = True
+                try:
+                    save_config(self.config_data)
+                except ConfigError:
+                    # Best-effort; the notice may reappear next time, which is
+                    # safe and matches the equivalent Claude privacy flow.
+                    pass
+
+            def worker():
+                try:
+                    pcm = call_elevenlabs_tts(snapshot, text)
+                    payload = ("ok", pcm_to_wav_bytes(pcm))
+                except BackendError as exc:
+                    payload = ("error", str(exc))
+                except Exception as exc:  # pragma: no cover - defensive
+                    payload = ("error", "An unexpected error occurred: {}".format(
+                        exc.__class__.__name__))
+
+                def _deliver_safe():
+                    try:
+                        self._deliver_speech(payload)
+                    except tk.TclError:  # pragma: no cover - window closed
+                        pass
+
+                try:
+                    if self.winfo_exists():
+                        self.after(0, _deliver_safe)
+                except tk.TclError:  # pragma: no cover - window closed
+                    pass
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _deliver_speech(self, payload):
+            kind, data = payload
+            if kind == "error":
+                self.advisory.configure(text=data)
+                self.advisory.grid()
+                return
+            self._play_wav_bytes(data)
+
+        def _stop_speech(self):
+            """Stop any in-progress playback. Best-effort; safe if none plays."""
+            try:
+                import winsound
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except Exception:  # pragma: no cover - non-Windows / no audio device
+                pass
+
+        def _play_wav_bytes(self, wav_bytes):
+            try:
+                import winsound
+            except Exception:  # pragma: no cover - non-Windows
+                self.advisory.configure(text="Audio playback is not available on this device.")
+                self.advisory.grid()
+                return
+            self._stop_speech()
+            if self._tts_temp_path:
+                try:
+                    os.remove(self._tts_temp_path)
+                except OSError:
+                    pass
+                self._tts_temp_path = None
+            try:
+                fd, path = tempfile.mkstemp(suffix=".wav", prefix="plume_tts_")
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(wav_bytes)
+                self._tts_temp_path = path
+                winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            except OSError:
+                self.advisory.configure(text="Could not play the audio on this device.")
+                self.advisory.grid()
 
         def _open_settings(self):
             # Reuse a single Settings window rather than stacking new ones.
@@ -2060,7 +2313,9 @@ if GUI_AVAILABLE:
             this" promotes the alternative to the working main translation
             (notes_005) without a second API call. Copy appends the currently
             selected finishing touch (notes_004), composing the copied text
-            without altering the stored translation.
+            without altering the stored translation. Speak sends the raw
+            translation (never the finishing touch) to ElevenLabs to read
+            aloud.
             """
             card = ctk.CTkFrame(self.alts_frame, border_width=1)
             card.grid(row=index, column=0, sticky="ew", pady=4, padx=4)
@@ -2086,7 +2341,11 @@ if GUI_AVAILABLE:
             ctk.CTkButton(
                 buttons, text="Copy", width=80,
                 command=lambda t=variation["translation"]: self._copy_variation(t),
-            ).grid(row=1, column=0)
+            ).grid(row=1, column=0, pady=(0, 4))
+            ctk.CTkButton(
+                buttons, text="Speak", width=80,
+                command=lambda t=variation["translation"]: self._speak(t),
+            ).grid(row=2, column=0)
 
             return card
 
@@ -2094,6 +2353,7 @@ if GUI_AVAILABLE:
             self._current_main = result["main_translation"]
             self._refresh_primary_display()
             self.copy_main_btn.configure(state="normal")
+            self.speak_main_btn.configure(state="normal")
             self.language_label.configure(text=format_language_label(result))
 
             for card in self._variation_cards:
