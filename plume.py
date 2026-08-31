@@ -194,6 +194,15 @@ def _coerce_choice(value, allowed, default):
     return value if value in allowed else default
 
 
+def normalise_backend(value) -> str:
+    """Return 'ollama' if *value* means Ollama, else 'anthropic'.
+
+    Centralises the coercion rule so load_config() and the toolbar backend
+    toggle can never disagree about what counts as Ollama.
+    """
+    return "ollama" if str(value or "").strip().lower() == "ollama" else "anthropic"
+
+
 def _is_existing_file_malformed(path: str) -> bool:
     """True if a file exists at *path* but does not parse as a JSON object."""
     if not os.path.exists(path):
@@ -235,10 +244,7 @@ def load_config():
     # keys were already ignored above; here we coerce known ones so the UI thread
     # and the backend dispatcher can trust them. A misspelt "Ollama" must not
     # silently send text to Claude, and a non-numeric limit must not raise.
-    config["backend"] = (
-        "ollama" if str(config.get("backend") or "").strip().lower() == "ollama"
-        else "anthropic"
-    )
+    config["backend"] = normalise_backend(config.get("backend"))
     config["default_direction"] = _coerce_choice(
         config.get("default_direction"), DIRECTIONS, DIR_AUTO)
     config["default_french_formality"] = _coerce_choice(
@@ -990,6 +996,19 @@ def append_finishing_touch(text, touch) -> str:
     return "{} {}".format(base, mark)
 
 
+def adopt_main_translation(current_main, candidate):
+    """Return the adopted working translation.
+
+    The candidate is favoured when it is a non-empty string after stripping.
+    Otherwise the current main text is kept. Import-safe so the behaviour can
+    be tested without Tk.
+    """
+    text = (candidate or "").strip()
+    if text:
+        return text
+    return current_main or ""
+
+
 # ===========================================================================
 # 6. Settings dialogue
 # ===========================================================================
@@ -1156,7 +1175,7 @@ if GUI_AVAILABLE:
             # Carry the live toolbar selections forward so a deliberate change
             # made this session is persisted rather than reset to the file
             # default on next launch. The toolbar is the single source of truth
-            # for these four fields.
+            # for these five fields.
             master = self.master
             if hasattr(master, "direction_var"):
                 self._config["default_direction"] = master.direction_var.get()
@@ -1166,6 +1185,8 @@ if GUI_AVAILABLE:
                 self._config["default_french_speaker_gender"] = master.speaker_gender_var.get()
             if hasattr(master, "recipient_gender_var"):
                 self._config["default_french_recipient_gender"] = master.recipient_gender_var.get()
+            if hasattr(master, "backend_var"):
+                self._config["backend"] = master.backend_var.get()
             try:
                 save_config(self._config)
             except ConfigError as exc:
@@ -1248,10 +1269,10 @@ if GUI_AVAILABLE:
             bar.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
             bar.grid_columnconfigure(0, weight=1)
 
-            # Row 0: Direction on the left, Settings pinned to the right.
+            # Row 0: Direction and Backend on the left, Settings pinned to the right.
             top = ctk.CTkFrame(bar, fg_color="transparent")
             top.grid(row=0, column=0, sticky="ew")
-            top.grid_columnconfigure(2, weight=1)
+            top.grid_columnconfigure(4, weight=1)
 
             self.direction_var = ctk.StringVar(
                 value=self.config_data.get("default_direction", DIR_AUTO)
@@ -1262,9 +1283,18 @@ if GUI_AVAILABLE:
                 command=self._on_toolbar_change,
             ).grid(row=0, column=1, padx=6, pady=6)
 
+            self.backend_var = ctk.StringVar(
+                value=normalise_backend(self.config_data.get("backend"))
+            )
+            ctk.CTkLabel(top, text="Backend").grid(row=0, column=2, padx=(16, 6), pady=6)
+            ctk.CTkSegmentedButton(
+                top, values=["anthropic", "ollama"], variable=self.backend_var,
+                command=self._on_toolbar_change,
+            ).grid(row=0, column=3, padx=6, pady=6)
+
             ctk.CTkButton(
                 top, text="Settings", width=110, command=self._open_settings
-            ).grid(row=0, column=3, sticky="e", padx=10)
+            ).grid(row=0, column=5, sticky="e", padx=10)
 
             # Row 1: French form and the Me/You gender-agreement controls.
             bottom = ctk.CTkFrame(bar, fg_color="transparent")
@@ -1469,6 +1499,8 @@ if GUI_AVAILABLE:
             self.config_data["default_french_formality"] = self.formality_var.get()
             self.config_data["default_french_speaker_gender"] = self.speaker_gender_var.get()
             self.config_data["default_french_recipient_gender"] = self.recipient_gender_var.get()
+            self.config_data["backend"] = self.backend_var.get()
+            self._refresh_status()
 
         def _on_input_change(self, _event=None):
             self.char_label.configure(text="{} characters".format(len(self._input_text())))
@@ -1519,6 +1551,22 @@ if GUI_AVAILABLE:
             self.clipboard_clear()
             self.clipboard_append(text)
 
+        def _use_as_main(self, text):
+            """Promote an alternative to the working main translation.
+
+            The model is not contacted again. Only the displayed primary text
+            and the copy-main target are updated, so the user can adopt a
+            preferred variation without leaving the dual pane. Goes through
+            _refresh_primary_display so an active finishing touch (notes_004)
+            is re-applied to the newly adopted text.
+            """
+            adopted = adopt_main_translation(self._current_main, text)
+            if not adopted:
+                return
+            self._current_main = adopted
+            self._refresh_primary_display()
+            self.copy_main_btn.configure(state="normal")
+
         def _open_settings(self):
             # Reuse a single Settings window rather than stacking new ones.
             existing = getattr(self, "_settings", None)
@@ -1541,6 +1589,7 @@ if GUI_AVAILABLE:
                 new_config.get("default_french_speaker_gender", GENDER_FEMININE))
             self.recipient_gender_var.set(
                 new_config.get("default_french_recipient_gender", GENDER_FEMININE))
+            self.backend_var.set(normalise_backend(new_config.get("backend")))
             self._refresh_status()
 
         # --- translation lifecycle ---------------------------------------
@@ -1661,11 +1710,11 @@ if GUI_AVAILABLE:
         def _build_variation_card(self, index, variation):
             """Build and grid one alternative card; return the frame.
 
-            Isolated from the loop in _render_result (notes_006 refactor) so a
-            future change to the card's buttons (see notes_005 "Use this") has a
-            single place to land rather than a shared loop body. The Copy button
-            appends the currently selected finishing touch (notes_004), composing
-            the copied text without altering the stored translation.
+            Isolated from the loop in _render_result (notes_006 refactor). "Use
+            this" promotes the alternative to the working main translation
+            (notes_005) without a second API call. Copy appends the currently
+            selected finishing touch (notes_004), composing the copied text
+            without altering the stored translation.
             """
             card = ctk.CTkFrame(self.alts_frame, border_width=1)
             card.grid(row=index, column=0, sticky="ew", pady=4, padx=4)
@@ -1682,10 +1731,16 @@ if GUI_AVAILABLE:
                 justify="left", anchor="w", wraplength=430, text_color="gray65",
             ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 3))
 
+            buttons = ctk.CTkFrame(card, fg_color="transparent")
+            buttons.grid(row=0, column=1, rowspan=2, padx=8, pady=8)
             ctk.CTkButton(
-                card, text="Copy", width=80,
+                buttons, text="Use this", width=80,
+                command=lambda t=variation["translation"]: self._use_as_main(t),
+            ).grid(row=0, column=0, pady=(0, 4))
+            ctk.CTkButton(
+                buttons, text="Copy", width=80,
                 command=lambda t=variation["translation"]: self._copy_variation(t),
-            ).grid(row=0, column=1, rowspan=2, padx=8, pady=8)
+            ).grid(row=1, column=0)
 
             return card
 

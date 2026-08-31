@@ -32,13 +32,16 @@ protection; changes reviewed and pushed manually per `AGENTS.md` (no auto-push).
 - **.exe:** `plume.spec` already sets `console=False`, so a PyInstaller build
   suppresses the PowerShell window. Build step to be run on Windows.
 
-## v1.3 — Selection + backend toggle
+## v1.3 — Selection + backend toggle  ✅ landed and pushed
 
-- **"Use this" (notes_005):** promote an alternative to the working main
-  translation without a second API call; the five cards stay for comparison.
-  Slots cleanly into `_build_variation_card`.
-- **Toolbar backend toggle (notes_006 §2):** a Claude ⇄ Ollama segmented button
-  on the toolbar, mirroring the existing "toolbar wins at save" rule.
+- **"Use this" (notes_005):** `adopt_main_translation()` plus `_use_as_main`
+  promote an alternative to the working main translation without a second API
+  call; the five cards stay for comparison. Slotted into `_build_variation_card`
+  as a two-button column (Use this / Copy).
+- **Toolbar backend toggle (notes_006 §2):** `normalise_backend()` centralises
+  the Ollama/Anthropic coercion; a Claude ⇄ Ollama segmented button on the
+  toolbar mirrors into `config_data`, refreshes the status bar immediately, and
+  follows the existing "toolbar wins at save" rule.
 
 ## v1.4 — Quick-swap direction + contextual prompting
 

@@ -384,6 +384,12 @@ class TestConfigCoercion(unittest.TestCase):
         config, _ = self._load_with({"default_direction": "Sideways"})
         self.assertEqual(config["default_direction"], plume.DIR_AUTO)
 
+    def test_normalise_backend_accepts_only_ollama_literal(self):
+        self.assertEqual(plume.normalise_backend("ollama"), "ollama")
+        self.assertEqual(plume.normalise_backend("Ollama-typo"), "anthropic")
+        self.assertEqual(plume.normalise_backend(None), "anthropic")
+        self.assertEqual(plume.normalise_backend(""), "anthropic")
+
 
 class TestBackendHardening(unittest.TestCase):
     KEY_CONFIG = {"anthropic_api_key": "sk-test", "anthropic_model": "m"}
@@ -526,6 +532,17 @@ class TestFinishingTouch(unittest.TestCase):
         # replies must never be offered as an appendable finishing touch.
         for banned in ("slt", "bjr", "rdv", "bcp", "mtn", "wesh", "meuf"):
             self.assertNotIn(banned, plume.FINISHING_TOUCHES)
+
+
+class TestUseAsMain(unittest.TestCase):
+    def test_adopt_main_translation_favours_non_empty_candidate(self):
+        self.assertEqual(
+            plume.adopt_main_translation("Bonjour.", "Salut."), "Salut."
+        )
+
+    def test_adopt_main_translation_keeps_current_when_candidate_blank(self):
+        self.assertEqual(plume.adopt_main_translation("Bonjour.", "   "), "Bonjour.")
+        self.assertEqual(plume.adopt_main_translation("Bonjour.", None), "Bonjour.")
 
 
 if __name__ == "__main__":
