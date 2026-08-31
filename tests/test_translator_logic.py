@@ -621,6 +621,17 @@ class TestPcmToWav(unittest.TestCase):
         wav_bytes = plume.pcm_to_wav_bytes(b"\x00\x01", sample_rate=16000)
         self.assertTrue(wav_bytes.startswith(b"RIFF"))
 
+    def test_slow_speech_rate_scales_frame_rate(self):
+        # Pins the v1.12 "Slow" mechanism: no extra synthesis call, just a
+        # lower WAV frame rate on the same PCM data.
+        pcm = b"\x00\x01\x02\x03" * 50
+        slow_rate = int(plume.ELEVENLABS_SAMPLE_RATE * plume.SLOW_SPEECH_RATE_FACTOR)
+        wav_bytes = plume.pcm_to_wav_bytes(pcm, sample_rate=slow_rate)
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+            self.assertEqual(wav_file.getframerate(), slow_rate)
+            self.assertLess(wav_file.getframerate(), plume.ELEVENLABS_SAMPLE_RATE)
+            self.assertEqual(wav_file.readframes(wav_file.getnframes()), pcm)
+
 
 class TestPrivacyOfDiagnostics(unittest.TestCase):
     SECRET = "please meet me at the old bridge at midnight"

@@ -201,19 +201,25 @@ schema impact beyond one constants tuple:
   alongside Translate/Reply while a request is in flight, guarding
   against a stale delivery landing on top of the fresh input.
 
-## v1.12 — Voice extensions (notes_008 backlog, notes_010 Feature 2)
+## v1.12 — Voice extensions (notes_008 backlog, notes_010 Feature 2)  ✅ landed locally
 
-- **Stop speech button** (notes_008 candidate #3): exposes the
-  existing `_stop_speech()` next to Speak on the primary card.
-- **Slow pronunciation mode** (notes_010 Feature 2): a "Slow" toggle
-  that scales the WAV header's sample rate (e.g. ×0.75) before
-  playback — no extra ElevenLabs call, reuses the already-synthesised
-  PCM. Scoping note: this also drops the pitch, the way a slowed
-  record does, since it is a playback-rate trick rather than true
-  time-stretching. Accept that trade-off for v1.12 (it is still a
-  genuine pronunciation aid and stays zero-dependency); the UI label
-  and any README mention should say "slow" rather than implying
-  studio-quality time-stretch, so it is not read as a bug later.
+- **Stop speech button** (notes_008 candidate #3): a "Stop" button next
+  to Speak on the primary card, wired to the existing `_stop_speech()`.
+  Left always enabled rather than tracked against playback state, since
+  `winsound.PlaySound(None, SND_PURGE)` is already a safe no-op when
+  nothing is playing.
+- **Slow pronunciation mode** (notes_010 Feature 2): a "Slow" checkbox
+  beside the finishing-touch picker. `SLOW_SPEECH_RATE_FACTOR = 0.75`
+  scales `pcm_to_wav_bytes()`'s `sample_rate` argument at Speak time —
+  no extra ElevenLabs call, reuses the already-synthesised PCM. Read
+  once per Speak click, so it applies uniformly whether Speak was
+  clicked on the main card or an alternative. Scoping note: this also
+  drops the pitch, the way a slowed record does, since it is a
+  playback-rate trick rather than true time-stretching. Accepted for
+  v1.12 (it is still a genuine pronunciation aid and stays
+  zero-dependency); the UI label and README say "slow" rather than
+  implying studio-quality time-stretch, so it is not read as a bug
+  later.
 
 ## v1.13 — History & study export (notes_008 backlog, notes_010 Feature 3)
 

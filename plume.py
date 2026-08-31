@@ -179,6 +179,12 @@ ELEVENLABS_OUTPUT_FORMAT = "pcm_16000"
 ELEVENLABS_SAMPLE_RATE = 16000
 ELEVENLABS_TIMEOUT = 30
 
+# Slow pronunciation mode (notes_010 Feature 2): a playback-rate trick, not
+# true time-stretching, so it drops pitch the way a slowed record does. No
+# extra ElevenLabs call: the already-synthesised PCM is simply wrapped with a
+# lower WAV frame rate before playback.
+SLOW_SPEECH_RATE_FACTOR = 0.75
+
 APPEARANCE_MODE = "dark"
 COLOR_THEME = "blue"
 
@@ -2140,6 +2146,10 @@ if GUI_AVAILABLE:
                 variable=self.finishing_touch_var, width=110,
                 command=self._on_finishing_touch_change,
             ).grid(row=0, column=1, sticky="w")
+            self.slow_speech_var = ctk.BooleanVar(value=False)
+            ctk.CTkCheckBox(
+                touch_row, text="Slow", variable=self.slow_speech_var, width=70,
+            ).grid(row=0, column=2, padx=(8, 0))
 
             main_buttons = ctk.CTkFrame(self.primary_card, fg_color="transparent")
             main_buttons.grid(row=2, column=0, sticky="ew", padx=12, pady=(4, 12))
@@ -2156,12 +2166,19 @@ if GUI_AVAILABLE:
                 state="disabled",
             )
             self.speak_main_btn.grid(row=0, column=1, padx=(0, 8))
+            # Stop is always enabled: winsound.PlaySound(None, SND_PURGE) is a
+            # safe no-op when nothing is currently playing, so there is no
+            # extra state to track.
+            ctk.CTkButton(
+                main_buttons, text="Stop", width=70, command=self._stop_speech,
+                fg_color="gray30",
+            ).grid(row=0, column=2, padx=(0, 8))
             self.use_as_input_btn = ctk.CTkButton(
                 main_buttons, text="Use as input", width=110,
                 command=self._use_main_as_input,
                 state="disabled",
             )
-            self.use_as_input_btn.grid(row=0, column=2)
+            self.use_as_input_btn.grid(row=0, column=3)
 
             self.language_label = ctk.CTkLabel(right, text="", text_color="gray70")
             self.language_label.grid(row=2, column=0, sticky="w", padx=12)
@@ -2412,6 +2429,7 @@ if GUI_AVAILABLE:
             self._speech_request_id += 1
             speech_request_id = self._speech_request_id
             snapshot = dict(self.config_data)
+            slow = bool(self.slow_speech_var.get())
             if not snapshot.get("elevenlabs_api_key"):
                 self.advisory.configure(
                     text="No ElevenLabs API key is set. Add one in Settings to "
@@ -2439,7 +2457,11 @@ if GUI_AVAILABLE:
             def worker():
                 try:
                     pcm = call_elevenlabs_tts(snapshot, text)
-                    payload = ("ok", pcm_to_wav_bytes(pcm))
+                    rate = (
+                        int(ELEVENLABS_SAMPLE_RATE * SLOW_SPEECH_RATE_FACTOR)
+                        if slow else ELEVENLABS_SAMPLE_RATE
+                    )
+                    payload = ("ok", pcm_to_wav_bytes(pcm, sample_rate=rate))
                 except BackendError as exc:
                     payload = ("error", str(exc))
                 except Exception as exc:  # pragma: no cover - defensive

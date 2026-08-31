@@ -37,7 +37,10 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   alternatives can be promoted with **Use this**.
 - Optional local history with favourites, per-entry **Copy** / **Reopen** /
   **Delete**, and "clear history" preserving favourited entries.
-- Optional ElevenLabs **Speak** buttons for pronunciation help.
+- Optional ElevenLabs **Speak** buttons for pronunciation help, with a
+  **Stop** button and a **Slow** playback toggle (a slower, lower-pitched
+  playback rate — not studio-quality time-stretching, but a genuine aid
+  for catching liaisons and elisions).
 
 ---
 
