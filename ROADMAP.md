@@ -221,17 +221,41 @@ schema impact beyond one constants tuple:
   implying studio-quality time-stretch, so it is not read as a bug
   later.
 
-## v1.13 — History & study export (notes_008 backlog, notes_010 Feature 3)
+## v1.13 — History & study export (notes_008 backlog, notes_010 Feature 3)  ✅ landed locally
 
 - **Favourite current result from the main panel** (notes_008
-  candidate #4): a star button on the primary card that favourites
-  the current result when local history is enabled, or prompts to
-  enable it when it is not — today favouriting only exists inside the
-  History window.
+  candidate #4): a "☆ Favourite" button on the primary card. Builds a
+  fresh history entry via `make_history_entry(..., favourite=True)`
+  from the last rendered result rather than searching for one
+  `_save_to_history` may already have written, so it works whether
+  local history was on or off when the translation ran; if it was
+  off, a prompt offers to turn it on first (declining changes
+  nothing). Uses the currently displayed main translation (honouring
+  a "Use this" promotion) with the alternatives/metadata from the
+  last full result. Resets to un-starred whenever the working main
+  translation changes, so a stale favourite can never silently apply
+  to different text; reopening an already-favourited history entry
+  shows "★ Favourited" (disabled) immediately, rather than allowing a
+  duplicate entry.
 - **Export favourites** (notes_010 Feature 3): an "Export favourites"
-  action in the History window, writing an Anki-style TSV deck and a
-  Markdown study sheet from favourited entries, local file only
-  (`tkinter.filedialog`), no new dependency.
+  button in the History window. `export_history_to_tsv()` builds an
+  Anki-style deck (Front: source + situation, Back: main translation
+  + all five alternatives, joined with `<br>` so each note stays on
+  one physical line — a hard requirement for Anki's TSV importer) and
+  `export_history_to_markdown()` builds a dated study sheet; a single
+  save dialogue picks the format from the chosen file extension
+  (`.tsv` vs `.md`). Local file only (`tkinter.filedialog`), no new
+  dependency.
+- **Settings dialog bug fix, found while testing this release:**
+  `SettingsDialog` had grown to 27 stacked controls (most recently the
+  v1.10 Keep as-is box) on a fixed-height, non-scrolling window;
+  launching it now clipped the status line and Cancel/Save below the
+  window's bottom edge with no way to reach them. Fixed by moving the
+  form into a `CTkScrollableFrame` — the same pattern already used for
+  the alternatives list and the History window — with the status label
+  and Cancel/Save pinned as a fixed footer outside the scroll area, so
+  they stay visible without scrolling and the dialog no longer needs a
+  pixel-perfect height retuned every time a future control is added.
 
 ## v1.14 — Casual sign-off / slang finishing touches (notes_004, revisited)
 

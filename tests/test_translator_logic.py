@@ -770,6 +770,14 @@ class TestHistoryEntries(unittest.TestCase):
         entry = plume.make_history_entry("hi", valid_result())
         self.assertEqual(entry["situation"], "")
 
+    def test_make_history_entry_favourite_defaults_to_false(self):
+        entry = plume.make_history_entry("hi", valid_result())
+        self.assertFalse(entry["favourite"])
+
+    def test_make_history_entry_accepts_favourite_true(self):
+        entry = plume.make_history_entry("hi", valid_result(), favourite=True)
+        self.assertTrue(entry["favourite"])
+
     def test_prune_history_keeps_favourites_beyond_limit(self):
         entries = [{"id": str(i), "favourite": (i == 0)} for i in range(5)]
         pruned = plume.prune_history(entries, limit=2)
@@ -806,6 +814,53 @@ class TestHistoryEntries(unittest.TestCase):
     def test_normalise_history_entry_drops_unusable_entry(self):
         self.assertIsNone(plume.normalise_history_entry({"main_translation": "Bonjour"}))
         self.assertIsNone(plume.normalise_history_entry({"variations": []}))
+
+
+class TestExportFavourites(unittest.TestCase):
+    def _entry(self, **overrides):
+        entry = plume.make_history_entry(
+            "Bonjour", valid_result(), situation="a close friend", favourite=True
+        )
+        entry.update(overrides)
+        return entry
+
+    def test_tsv_export_has_one_line_per_entry(self):
+        tsv = plume.export_history_to_tsv([self._entry(), self._entry()])
+        self.assertEqual(len(tsv.splitlines()), 2)
+
+    def test_tsv_export_front_has_source_and_situation(self):
+        tsv = plume.export_history_to_tsv([self._entry()])
+        front, _, back = tsv.partition("\t")
+        self.assertIn("Bonjour", front)
+        self.assertIn("a close friend", front)
+        self.assertIn("Bonjour tout le monde", back)
+
+    def test_tsv_export_back_lists_all_five_alternatives(self):
+        tsv = plume.export_history_to_tsv([self._entry()])
+        _, _, back = tsv.partition("\t")
+        for variation in valid_result()["variations"]:
+            self.assertIn(variation["translation"], back)
+
+    def test_tsv_export_strips_embedded_tabs_and_newlines(self):
+        entry = self._entry(source_text="Line one\twith a tab\nand a newline")
+        tsv = plume.export_history_to_tsv([entry])
+        self.assertEqual(len(tsv.splitlines()), 1)
+        self.assertEqual(tsv.count("\t"), 1)  # only the front/back separator
+
+    def test_tsv_export_empty_list_is_empty_string(self):
+        self.assertEqual(plume.export_history_to_tsv([]), "")
+
+    def test_markdown_export_includes_source_and_alternatives(self):
+        md = plume.export_history_to_markdown([self._entry()])
+        self.assertIn("Bonjour", md)
+        self.assertIn("Situation:", md)
+        self.assertIn("Bonjour tout le monde", md)
+        for variation in valid_result()["variations"]:
+            self.assertIn(variation["translation"], md)
+
+    def test_markdown_export_one_section_per_entry(self):
+        md = plume.export_history_to_markdown([self._entry(), self._entry()])
+        self.assertEqual(md.count("## Bonjour"), 2)
 
 
 class TestHistoryPersistence(unittest.TestCase):

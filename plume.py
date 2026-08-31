@@ -49,12 +49,13 @@ from datetime import datetime
 # environment. On Mark's Windows machine customtkinter is a hard requirement.
 try:  # pragma: no cover - exercised only when the GUI is present
     import tkinter as tk
-    from tkinter import messagebox
+    from tkinter import filedialog, messagebox
     import customtkinter as ctk
 
     GUI_AVAILABLE = True
 except Exception:  # pragma: no cover
     tk = None
+    filedialog = None
     messagebox = None
     ctk = None
     GUI_AVAILABLE = False
@@ -421,12 +422,14 @@ def save_history(entries, force: bool = False) -> None:
     os.replace(tmp_path, path)
 
 
-def make_history_entry(source_text, result, situation="") -> dict:
+def make_history_entry(source_text, result, situation="", favourite=False) -> dict:
     """Build a new history entry from a completed translation result.
 
     History entries preserve every field needed to render the saved result
     later without inventing fallback metadata. Older history files may still
     lack these keys; the existing render helpers already tolerate that.
+    *favourite* lets the main-panel Favourite button (v1.13) save a starred
+    entry directly, rather than saving then toggling it in a second step.
     """
     return {
         "id": uuid.uuid4().hex,
@@ -440,7 +443,7 @@ def make_history_entry(source_text, result, situation="") -> dict:
         "main_translation": result.get("main_translation", ""),
         "variations": result.get("variations", []),
         "notes": result.get("notes", []),
-        "favourite": False,
+        "favourite": bool(favourite),
     }
 
 
@@ -533,6 +536,80 @@ def remove_history_entry(entries, entry_id) -> list:
 def clear_history(entries) -> list:
     """Return only the favourited entries from *entries* ("clear" keeps stars)."""
     return [entry for entry in entries if entry.get("favourite")]
+
+
+def _export_field(value) -> str:
+    """Flatten a field for a single-line export row: no raw tabs or newlines."""
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def export_history_to_tsv(entries) -> str:
+    """Build an Anki-style TSV deck from *entries* (notes_010 Feature 3).
+
+    One note per line: Front is the source phrase plus the situation when one
+    was recorded; Back is the main translation and the five alternatives
+    (each with its English meaning check). Multi-part fields are joined with
+    "<br>" rather than a real newline, since Anki's TSV importer treats a
+    newline as the boundary between notes. *entries* is expected to already
+    be filtered to favourites only; the caller decides that, this function
+    does not filter.
+    """
+    lines = []
+    for entry in entries:
+        front_parts = [_export_field(entry.get("source_text"))]
+        situation = _export_field(entry.get("situation"))
+        if situation:
+            front_parts.append("Situation: {}".format(situation))
+        front = "<br>".join(p for p in front_parts if p)
+
+        back_parts = [_export_field(entry.get("main_translation"))]
+        for variation in entry.get("variations", []):
+            translation = _export_field(variation.get("translation"))
+            meaning = _export_field(variation.get("english_meaning_check"))
+            if not translation:
+                continue
+            back_parts.append(
+                "{} ({})".format(translation, meaning) if meaning else translation
+            )
+        back = "<br>".join(p for p in back_parts if p)
+
+        lines.append("{}\t{}".format(front, back))
+    return "\n".join(lines)
+
+
+def export_history_to_markdown(entries) -> str:
+    """Build a Markdown study sheet from *entries* (notes_010 Feature 3).
+
+    One section per entry, in the order given, with the date, the situation
+    (when recorded), the main translation and the five alternatives.
+    *entries* is expected to already be filtered to favourites only.
+    """
+    lines = ["# Plume — favourite translations", ""]
+    for entry in entries:
+        source = entry.get("source_text", "").strip() or "(no source text)"
+        lines.append("## {}".format(source))
+        timestamp = entry.get("timestamp", "")
+        if timestamp:
+            lines.append("*{}*".format(timestamp))
+        situation = entry.get("situation", "").strip()
+        if situation:
+            lines.append("**Situation:** {}".format(situation))
+        lines.append("")
+        lines.append("**Main translation:** {}".format(entry.get("main_translation", "")))
+        variations = entry.get("variations", [])
+        if variations:
+            lines.append("")
+            lines.append("**Alternatives:**")
+            lines.append("")
+            for variation in variations:
+                translation = variation.get("translation", "")
+                meaning = variation.get("english_meaning_check", "")
+                if meaning:
+                    lines.append("- {} — *{}*".format(translation, meaning))
+                else:
+                    lines.append("- {}".format(translation))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 # ===========================================================================
@@ -1446,26 +1523,38 @@ if GUI_AVAILABLE:
             self._on_save = on_save
             self._config = dict(config)
             self.title("{} \u2014 Settings".format(APP_NAME))
-            self.geometry("560x860")
-            self.minsize(520, 800)
+            self.geometry("560x780")
+            self.minsize(480, 480)
             self.transient(master)
             self.grid_columnconfigure(0, weight=1)
+            # Row 0 (the scrollable body) grows; the status label and
+            # Cancel/Save stay pinned as a fixed footer below it, always
+            # visible with no scrolling. A plain fixed-height layout stopped
+            # fitting once the Keep as-is box (v1.10) pushed the content past
+            # a typical window height; a scrollable body, already used for
+            # the alternatives list and History, fixes that without
+            # hand-tuning pixels every time a future control is added.
+            self.grid_rowconfigure(0, weight=1)
+
+            body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+            body.grid(row=0, column=0, sticky="nsew")
+            body.grid_columnconfigure(0, weight=1)
 
             pad = {"padx": 16, "pady": 8}
             row = 0
 
             heading = ctk.CTkLabel(
-                self, text="Settings", font=ctk.CTkFont(size=18, weight="bold")
+                body, text="Settings", font=ctk.CTkFont(size=18, weight="bold")
             )
             heading.grid(row=row, column=0, sticky="w", **pad)
             row += 1
 
             # Backend selector
-            ctk.CTkLabel(self, text="Backend").grid(row=row, column=0, sticky="w", padx=16)
+            ctk.CTkLabel(body, text="Backend").grid(row=row, column=0, sticky="w", padx=16)
             row += 1
             self.backend_var = ctk.StringVar(value=self._config.get("backend", "anthropic"))
             backend_row = ctk.CTkSegmentedButton(
-                self,
+                body,
                 values=["anthropic", "ollama"],
                 variable=self.backend_var,
             )
@@ -1473,16 +1562,16 @@ if GUI_AVAILABLE:
             row += 1
 
             # Claude key
-            ctk.CTkLabel(self, text="Claude API key").grid(row=row, column=0, sticky="w", padx=16)
+            ctk.CTkLabel(body, text="Claude API key").grid(row=row, column=0, sticky="w", padx=16)
             row += 1
-            self.key_entry = ctk.CTkEntry(self, show="\u2022", placeholder_text="sk-ant-...")
+            self.key_entry = ctk.CTkEntry(body, show="\u2022", placeholder_text="sk-ant-...")
             self.key_entry.grid(row=row, column=0, sticky="ew", **pad)
             existing_key = self._config.get("anthropic_api_key", "")
             if existing_key:
                 self.key_entry.insert(0, existing_key)
             row += 1
             self.key_label = ctk.CTkLabel(
-                self,
+                body,
                 text="Stored key: {}".format(mask_api_key(existing_key)),
                 text_color="gray70",
             )
@@ -1490,17 +1579,17 @@ if GUI_AVAILABLE:
             row += 1
 
             # Claude model
-            ctk.CTkLabel(self, text="Claude model").grid(row=row, column=0, sticky="w", padx=16)
+            ctk.CTkLabel(body, text="Claude model").grid(row=row, column=0, sticky="w", padx=16)
             row += 1
-            self.model_entry = ctk.CTkEntry(self)
+            self.model_entry = ctk.CTkEntry(body)
             self.model_entry.insert(0, self._config.get("anthropic_model", DEFAULT_ANTHROPIC_MODEL))
             self.model_entry.grid(row=row, column=0, sticky="ew", **pad)
             row += 1
 
             # Ollama model + detect
-            ctk.CTkLabel(self, text="Ollama model").grid(row=row, column=0, sticky="w", padx=16)
+            ctk.CTkLabel(body, text="Ollama model").grid(row=row, column=0, sticky="w", padx=16)
             row += 1
-            ollama_frame = ctk.CTkFrame(self, fg_color="transparent")
+            ollama_frame = ctk.CTkFrame(body, fg_color="transparent")
             ollama_frame.grid(row=row, column=0, sticky="ew", **pad)
             ollama_frame.grid_columnconfigure(0, weight=1)
             self.ollama_entry = ctk.CTkEntry(ollama_frame)
@@ -1514,25 +1603,25 @@ if GUI_AVAILABLE:
 
             # ElevenLabs (Speak / text-to-speech). Optional: Speak stays
             # disabled with no key, exactly like the other opt-in features.
-            ctk.CTkLabel(self, text="ElevenLabs API key").grid(row=row, column=0, sticky="w", padx=16)
+            ctk.CTkLabel(body, text="ElevenLabs API key").grid(row=row, column=0, sticky="w", padx=16)
             row += 1
-            self.elevenlabs_key_entry = ctk.CTkEntry(self, show="•", placeholder_text="sk_...")
+            self.elevenlabs_key_entry = ctk.CTkEntry(body, show="•", placeholder_text="sk_...")
             self.elevenlabs_key_entry.grid(row=row, column=0, sticky="ew", **pad)
             existing_el_key = self._config.get("elevenlabs_api_key", "")
             if existing_el_key:
                 self.elevenlabs_key_entry.insert(0, existing_el_key)
             row += 1
             self.elevenlabs_key_label = ctk.CTkLabel(
-                self,
+                body,
                 text="Stored key: {}".format(mask_api_key(existing_el_key)),
                 text_color="gray70",
             )
             self.elevenlabs_key_label.grid(row=row, column=0, sticky="w", padx=16)
             row += 1
 
-            ctk.CTkLabel(self, text="ElevenLabs voice ID").grid(row=row, column=0, sticky="w", padx=16)
+            ctk.CTkLabel(body, text="ElevenLabs voice ID").grid(row=row, column=0, sticky="w", padx=16)
             row += 1
-            self.elevenlabs_voice_entry = ctk.CTkEntry(self)
+            self.elevenlabs_voice_entry = ctk.CTkEntry(body)
             self.elevenlabs_voice_entry.insert(
                 0, self._config.get("elevenlabs_voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
             )
@@ -1543,7 +1632,7 @@ if GUI_AVAILABLE:
             # Me/You gender agreement) live on the main toolbar and are persisted
             # as defaults whenever these Settings are saved.
             ctk.CTkLabel(
-                self,
+                body,
                 text="Direction, French form and Me/You gender agreement are set "
                      "on the toolbar and saved as defaults here.",
                 text_color="gray60", justify="left", anchor="w", wraplength=500,
@@ -1555,7 +1644,7 @@ if GUI_AVAILABLE:
                 value=bool(self._config.get("protect_placeholders", True))
             )
             ctk.CTkCheckBox(
-                self, text="Protect names, links and placeholders", variable=self.protect_var
+                body, text="Protect names, links and placeholders", variable=self.protect_var
             ).grid(row=row, column=0, sticky="w", **pad)
             row += 1
 
@@ -1563,7 +1652,7 @@ if GUI_AVAILABLE:
                 value=bool(self._config.get("privacy_ack", False))
             )
             ctk.CTkCheckBox(
-                self,
+                body,
                 text="I understand Claude sends text to Anthropic",
                 variable=self.privacy_var,
             ).grid(row=row, column=0, sticky="w", **pad)
@@ -1573,7 +1662,7 @@ if GUI_AVAILABLE:
                 value=bool(self._config.get("save_local_history", False))
             )
             ctk.CTkCheckBox(
-                self,
+                body,
                 text="Save translations to local history (stored on this device only)",
                 variable=self.history_var,
             ).grid(row=row, column=0, sticky="w", **pad)
@@ -1583,17 +1672,17 @@ if GUI_AVAILABLE:
                 value=bool(self._config.get("always_on_top", False))
             )
             ctk.CTkCheckBox(
-                self,
+                body,
                 text="Keep Plume on top of other windows",
                 variable=self.always_on_top_var,
             ).grid(row=row, column=0, sticky="w", **pad)
             row += 1
 
-            ctk.CTkLabel(self, text="Maximum message length").grid(
+            ctk.CTkLabel(body, text="Maximum message length").grid(
                 row=row, column=0, sticky="w", padx=16
             )
             row += 1
-            self.max_input_entry = ctk.CTkEntry(self)
+            self.max_input_entry = ctk.CTkEntry(body)
             self.max_input_entry.insert(
                 0, str(coerce_positive_int(
                     self._config.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS
@@ -1606,30 +1695,31 @@ if GUI_AVAILABLE:
                 value=bool(self._config.get("elevenlabs_privacy_ack", False))
             )
             ctk.CTkCheckBox(
-                self,
+                body,
                 text="I understand Speak sends text to ElevenLabs",
                 variable=self.elevenlabs_privacy_var,
             ).grid(row=row, column=0, sticky="w", **pad)
             row += 1
 
             ctk.CTkLabel(
-                self, text="Keep as-is (one name or term per line; proper "
+                body, text="Keep as-is (one name or term per line; proper "
                             "names work best)",
             ).grid(row=row, column=0, sticky="w", padx=16)
             row += 1
-            self.keep_as_is_box = ctk.CTkTextbox(self, height=80)
+            self.keep_as_is_box = ctk.CTkTextbox(body, height=80)
             self.keep_as_is_box.grid(row=row, column=0, sticky="ew", **pad)
             existing_terms = self._config.get("keep_as_is_terms") or []
             if existing_terms:
                 self.keep_as_is_box.insert("1.0", "\n".join(existing_terms))
             row += 1
 
+            # Footer: outside the scrollable body, so status feedback and
+            # Cancel/Save are always visible without scrolling.
             self.status_label = ctk.CTkLabel(self, text="", text_color="gray70")
-            self.status_label.grid(row=row, column=0, sticky="w", padx=16)
-            row += 1
+            self.status_label.grid(row=1, column=0, sticky="w", padx=16, pady=(4, 0))
 
             button_row = ctk.CTkFrame(self, fg_color="transparent")
-            button_row.grid(row=row, column=0, sticky="ew", **pad)
+            button_row.grid(row=2, column=0, sticky="ew", **pad)
             button_row.grid_columnconfigure(0, weight=1)
             ctk.CTkButton(button_row, text="Cancel", command=self.destroy,
                           fg_color="gray30").grid(row=0, column=1, padx=(0, 8))
@@ -1751,10 +1841,16 @@ if GUI_AVAILABLE:
                 command=self._refresh_list,
             ).grid(row=0, column=2, sticky="e")
 
+            actions = ctk.CTkFrame(self, fg_color="transparent")
+            actions.grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
             ctk.CTkButton(
-                self, text="Clear history (keeps favourites)", width=220,
+                actions, text="Clear history (keeps favourites)", width=220,
                 command=self._clear_history, fg_color="gray30",
-            ).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
+            ).grid(row=0, column=0, padx=(0, 8))
+            ctk.CTkButton(
+                actions, text="Export favourites", width=160,
+                command=self._export_favourites, fg_color="gray30",
+            ).grid(row=0, column=1)
 
             self.list_frame = ctk.CTkScrollableFrame(self)
             self.list_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
@@ -1867,6 +1963,48 @@ if GUI_AVAILABLE:
             self._persist()
             self._refresh_list()
 
+        def _export_favourites(self):
+            """Write favourited entries to an Anki TSV deck or Markdown sheet.
+
+            The chosen file extension selects the format so one button (and
+            one save dialogue) covers both exports (notes_010 Feature 3).
+            Local file only, written via tkinter.filedialog; nothing is sent
+            anywhere.
+            """
+            favourites = [e for e in self._entries if e.get("favourite")]
+            if not favourites:
+                messagebox.showinfo(
+                    "Export favourites",
+                    "You have no favourited translations to export yet.",
+                )
+                return
+            path = filedialog.asksaveasfilename(
+                title="Export favourites",
+                defaultextension=".tsv",
+                filetypes=[
+                    ("Anki TSV deck", "*.tsv"),
+                    ("Markdown study sheet", "*.md"),
+                ],
+            )
+            if not path:
+                return
+            if path.lower().endswith(".md"):
+                content = export_history_to_markdown(favourites)
+            else:
+                content = export_history_to_tsv(favourites)
+            try:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+            except OSError:
+                messagebox.showerror(
+                    "Export favourites", "Could not write the export file."
+                )
+                return
+            messagebox.showinfo(
+                "Export favourites",
+                "Exported {} favourite(s) to {}".format(len(favourites), path),
+            )
+
         def _persist(self):
             try:
                 save_history(self._entries)
@@ -1894,6 +2032,8 @@ if GUI_AVAILABLE:
             self._settings = None
             self._variation_cards = []
             self._tts_temp_path = None
+            self._current_result = None
+            self._current_favourited = False
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
@@ -2180,6 +2320,15 @@ if GUI_AVAILABLE:
             )
             self.use_as_input_btn.grid(row=0, column=3)
 
+            favourite_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
+            favourite_row.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+            self.favourite_btn = ctk.CTkButton(
+                favourite_row, text="☆ Favourite", width=140,
+                command=self._favourite_current_result,
+                state="disabled",
+            )
+            self.favourite_btn.grid(row=0, column=0, sticky="w")
+
             self.language_label = ctk.CTkLabel(right, text="", text_color="gray70")
             self.language_label.grid(row=2, column=0, sticky="w", padx=12)
 
@@ -2342,15 +2491,30 @@ if GUI_AVAILABLE:
             self.copy_main_btn.configure(state="disabled")
             self.speak_main_btn.configure(state="disabled")
             self.use_as_input_btn.configure(state="disabled")
+            self._reset_favourite_button(enabled=False)
             self._stop_speech()
             self._cleanup_tts_file()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
             self.language_label.configure(text="")
             self._current_main = ""
+            self._current_result = None
             for card in self._variation_cards:
                 card.destroy()
             self._variation_cards = []
             self.advisory.grid_remove()
+
+        def _reset_favourite_button(self, enabled: bool):
+            """Reset the primary card's Favourite button to its un-starred state.
+
+            Called whenever the working main translation changes (a new
+            result, or "Use this" promoting an alternative) so a previous
+            favourite does not silently apply to different text, and on
+            Clear, where it is left disabled with nothing to favourite yet.
+            """
+            self._current_favourited = False
+            self.favourite_btn.configure(
+                text="☆ Favourite", state="normal" if enabled else "disabled"
+            )
 
         def _copy(self, text):
             if not text:
@@ -2375,6 +2539,7 @@ if GUI_AVAILABLE:
             self.copy_main_btn.configure(state="normal")
             self.speak_main_btn.configure(state="normal")
             self.use_as_input_btn.configure(state="normal")
+            self._reset_favourite_button(enabled=True)
 
         def _use_main_as_input(self):
             """Re-translate using the current main translation as new input.
@@ -2412,6 +2577,11 @@ if GUI_AVAILABLE:
             self.advisory.grid_remove()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
             self._render_result(entry)
+            if entry.get("favourite"):
+                # Already starred in history: reflect that instead of letting
+                # a second Favourite click write a duplicate entry.
+                self._current_favourited = True
+                self.favourite_btn.configure(text="★ Favourited", state="disabled")
             self._show_result_advisories(entry)
 
         def _speak(self, text):
@@ -2738,10 +2908,12 @@ if GUI_AVAILABLE:
 
         def _render_result(self, result):
             self._current_main = result["main_translation"]
+            self._current_result = result
             self._refresh_primary_display()
             self.copy_main_btn.configure(state="normal")
             self.speak_main_btn.configure(state="normal")
             self.use_as_input_btn.configure(state="normal")
+            self._reset_favourite_button(enabled=True)
             self.language_label.configure(text=format_language_label(result))
 
             for card in self._variation_cards:
@@ -2779,6 +2951,55 @@ if GUI_AVAILABLE:
                 save_history(entries)
             except HistoryError:
                 pass
+
+        def _favourite_current_result(self):
+            """Favourite the current main translation from the primary card.
+
+            Builds a fresh history entry from the last rendered result rather
+            than searching for one _save_to_history may already have written
+            (notes_008 candidate #4), so this works whether local history was
+            on or off when the translation ran. The main translation is taken
+            from self._current_main rather than self._current_result, so a
+            "Use this" promotion is honoured. Prompts to turn local history on
+            first if it is off, since a favourite has nowhere to live without
+            it; declining leaves everything unchanged.
+            """
+            if not self._current_main or self._current_result is None:
+                return
+            if self._current_favourited:
+                return
+            if not self.config_data.get("save_local_history"):
+                proceed = messagebox.askyesno(
+                    "Enable local history?",
+                    "Favouriting a translation needs local history to be "
+                    "turned on first (stored on this device only).\n\n"
+                    "Enable it now and save this translation as a favourite?",
+                )
+                if not proceed:
+                    return
+                self.config_data["save_local_history"] = True
+                try:
+                    save_config(self.config_data)
+                except ConfigError:
+                    # Best-effort; the entry below is still saved to history
+                    # this session even if the setting itself did not persist.
+                    pass
+
+            result_for_entry = dict(self._current_result)
+            result_for_entry["main_translation"] = self._current_main
+            entry = make_history_entry(
+                self._input_text(), result_for_entry, self._situation_text(),
+                favourite=True,
+            )
+            entries = load_history()
+            entries.insert(0, entry)
+            entries = prune_history(entries)
+            try:
+                save_history(entries)
+            except HistoryError:
+                return
+            self._current_favourited = True
+            self.favourite_btn.configure(text="★ Favourited", state="disabled")
 
 
 # ===========================================================================

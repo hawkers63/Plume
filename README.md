@@ -34,9 +34,14 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   characters each), matched longest-first so e.g. "Marie-Claire" is not
   swallowed by "Marie".
 - A copy button on every result, with a prominent **Copy main translation**;
-  alternatives can be promoted with **Use this**.
-- Optional local history with favourites, per-entry **Copy** / **Reopen** /
-  **Delete**, and "clear history" preserving favourited entries.
+  alternatives can be promoted with **Use this**, and the current result can
+  be re-sent as new input with **Use as input**.
+- **Copy source** and **Situation presets** (Close friend, Formal work
+  email, Neighbour, Appointment, Dating/chat) for faster back-and-forth.
+- Optional local history with favourites — including a one-click
+  **☆ Favourite** on the main panel — per-entry **Copy** / **Reopen** /
+  **Delete**, "clear history" preserving favourited entries, and
+  **Export favourites** to an Anki TSV deck or Markdown study sheet.
 - Optional ElevenLabs **Speak** buttons for pronunciation help, with a
   **Stop** button and a **Slow** playback toggle (a slower, lower-pitched
   playback rate — not studio-quality time-stretching, but a genuine aid
