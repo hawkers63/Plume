@@ -36,6 +36,11 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
 - A copy button on every result, with a prominent **Copy main translation**;
   alternatives can be promoted with **Use this**, and the current result can
   be re-sent as new input with **Use as input**.
+- Two optional, independent **finishing touches** appended only at copy
+  time — never sent to the model, so the translation itself stays faithful:
+  an **Emotes & Reactions** picker (`:)` `:p` `;)` `xD` `mdr` `ptdr` `jpp`)
+  and a separate **Casual sign-off** picker (`tkt`, `grave`) labelled as
+  changing register and meaning, not just tone.
 - **Copy source** and **Situation presets** (Close friend, Formal work
   email, Neighbour, Appointment, Dating/chat) for faster back-and-forth.
 - Optional local history with favourites — including a one-click

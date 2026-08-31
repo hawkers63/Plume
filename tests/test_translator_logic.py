@@ -728,6 +728,62 @@ class TestFinishingTouch(unittest.TestCase):
             self.assertNotIn(banned, plume.FINISHING_TOUCHES)
 
 
+class TestCasualSignoff(unittest.TestCase):
+    def test_catalogue_starts_with_none_and_holds_curated_terms(self):
+        self.assertEqual(plume.CASUAL_SIGNOFFS[0], plume.CASUAL_SIGNOFF_NONE)
+        self.assertIn("tkt", plume.CASUAL_SIGNOFFS)
+        self.assertIn("grave", plume.CASUAL_SIGNOFFS)
+
+    def test_catalogue_excludes_wider_slang_and_greetings(self):
+        # Curation guard: v1.14 ships only the two terms notes_004 named as
+        # safe examples. Greetings, in-sentence abbreviations, nouns, and
+        # harsher or more culturally loaded slang must never appear here,
+        # even though several are listed in Essential Shortcuts.txt.
+        banned = (
+            "slt", "bjr", "rdv", "bcp", "mtn", "jsp", "oklm",
+            "wesh", "meuf", "keuf", "boloss", "bg", "sah", "askip", "frr",
+            "s/o", "chelou", "ouf", "relou", "stylé", "kiffer", "chanmé",
+        )
+        for term in banned:
+            self.assertNotIn(term, plume.CASUAL_SIGNOFFS)
+
+    def test_catalogue_disjoint_from_emote_group(self):
+        # The two pickers are independent controls (v1.14 is not a copy of
+        # the v1.2 mechanism): no actionable term should appear in both
+        # catalogues (both legitimately share their own "None" sentinel).
+        signoffs = set(plume.CASUAL_SIGNOFFS) - {plume.CASUAL_SIGNOFF_NONE}
+        emotes = set(plume.FINISHING_TOUCHES) - {plume.FINISHING_TOUCH_NONE}
+        self.assertFalse(signoffs & emotes)
+
+    def test_compose_joins_emote_and_signoff(self):
+        self.assertEqual(plume.compose_finishing_touch(":)", "tkt"), ":) tkt")
+
+    def test_compose_emote_only(self):
+        self.assertEqual(
+            plume.compose_finishing_touch(":)", plume.CASUAL_SIGNOFF_NONE), ":)"
+        )
+
+    def test_compose_signoff_only(self):
+        self.assertEqual(
+            plume.compose_finishing_touch(plume.FINISHING_TOUCH_NONE, "grave"), "grave"
+        )
+
+    def test_compose_both_none_is_empty(self):
+        self.assertEqual(
+            plume.compose_finishing_touch(
+                plume.FINISHING_TOUCH_NONE, plume.CASUAL_SIGNOFF_NONE
+            ),
+            "",
+        )
+
+    def test_compose_feeds_append_finishing_touch(self):
+        composed = plume.compose_finishing_touch(":)", "tkt")
+        self.assertEqual(
+            plume.append_finishing_touch("On se voit demain", composed),
+            "On se voit demain :) tkt",
+        )
+
+
 class TestUseAsMain(unittest.TestCase):
     def test_adopt_main_translation_favours_non_empty_candidate(self):
         self.assertEqual(

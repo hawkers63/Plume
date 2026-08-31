@@ -257,7 +257,7 @@ schema impact beyond one constants tuple:
   they stay visible without scrolling and the dialog no longer needs a
   pixel-perfect height retuned every time a future control is added.
 
-## v1.14 — Casual sign-off / slang finishing touches (notes_004, revisited)
+## v1.14 — Casual sign-off / slang finishing touches (notes_004, revisited)  ✅ landed locally
 
 - The second finishing-touch phase notes_004 originally proposed
   alongside v1.2's emote group (tkt, grave, and similar slang), held
@@ -269,6 +269,26 @@ schema impact beyond one constants tuple:
   terms change register and meaning, not just tone, so this needs its
   own review of prompt-safety wording before landing, not a copy of
   the v1.2 mechanism.
+- **Not a copy of the v1.2 mechanism, concretely:** a new
+  `CASUAL_SIGNOFFS = (CASUAL_SIGNOFF_NONE, "tkt", "grave")` catalogue
+  gets its own "Casual sign-off" picker, separate from "Add a
+  finishing touch", with a plain-language caption ("Changes register
+  and meaning, not just tone") next to it — a slang term never sits
+  unlabelled beside a tone-only emote. Kept to exactly the two terms
+  notes_004 named as safe examples; every other entry in Essential
+  Shortcuts.txt is a greeting, an in-sentence abbreviation, a
+  standalone reply, a noun, or carries a harsher or more culturally
+  loaded connotation (`wesh`, `meuf`, `keuf`, `boloss`, …), and stays
+  out — a curation-guard test pins the exclusion.
+- The two pickers are independent and compose: a new pure
+  `compose_finishing_touch(emote, signoff)` space-joins whichever of
+  the two is selected (either, both, or neither) into one string,
+  which then feeds unchanged into the existing, already-tested
+  `append_finishing_touch()`. `PlumeApp._current_touch()` becomes the
+  single call site for both pickers, so `_refresh_primary_display()`,
+  `_copy_main()` and `_copy_variation()` needed no changes. Both
+  pickers reset to "None" on Clear and on Reopen from History, mirroring
+  the existing finishing-touch reset.
 
 ---
 
@@ -277,10 +297,10 @@ schema impact beyond one constants tuple:
 - The v1.2 refactor was landed *with* the finishing-touch picker precisely so
   that v1.3's "Use this" and the picker's touch-aware Copy do not collide in a
   shared loop body — both now extend `_build_variation_card` in one place.
-- Finishing touches deliberately ship only the safe "Emotes & Reactions" group.
-  A "Casual sign-off / slang" group (tkt, grave, …) was left for a later phase
-  after the first experience proves satisfactory; that phase is now scheduled
-  as v1.14.
+- Finishing touches shipped the safe "Emotes & Reactions" group first (v1.2).
+  A "Casual sign-off / slang" group (tkt, grave) was left for a later phase
+  after the first experience proved satisfactory; that phase landed as v1.14,
+  as its own picker rather than folded into the emote one.
 - notes_009 and notes_010 both proposed an end-of-turn "Reply" button
   independently; v1.9 merges them into one feature rather than shipping two,
   following notes_009's mechanism throughout and declining notes_010's

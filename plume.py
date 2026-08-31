@@ -143,6 +143,21 @@ FINISHING_TOUCHES = (
     FINISHING_TOUCH_NONE, ":)", ":p", ";)", "xD", "mdr", "ptdr", "jpp",
 )
 
+# --- Casual sign-off / slang catalogue (v1.14, notes_004 revisited) --------
+# The second phase notes_004 deliberately deferred: unlike the tone-only
+# Emotes & Reactions group above, these terms change the message's register
+# and meaning, not just its tone ("tkt" asserts reassurance, "grave" asserts
+# emphasis), so this is its own small, separately curated catalogue and its
+# own picker in the UI rather than folded into FINISHING_TOUCHES — a wider
+# audience shouldn't see a slang term sitting unlabelled next to ":)". Kept
+# to the two terms notes_004 named explicitly as safe examples; every other
+# entry in Essential Shortcuts.txt is either a greeting, an in-sentence
+# abbreviation, a standalone reply, a noun, or carries a harsher or more
+# culturally loaded connotation (e.g. "boloss", "keuf", "wesh") that has no
+# place as an optional one-click append.
+CASUAL_SIGNOFF_NONE = "None"
+CASUAL_SIGNOFFS = (CASUAL_SIGNOFF_NONE, "tkt", "grave")
+
 # Confidence values the model may report for language detection.
 CONFIDENCE_VALUES = ("high", "medium", "low")
 
@@ -1496,6 +1511,25 @@ def append_finishing_touch(text, touch) -> str:
     return "{} {}".format(base, mark)
 
 
+def compose_finishing_touch(emote, signoff) -> str:
+    """Join an emote and a casual sign-off into one space-separated touch.
+
+    The two pickers (v1.2's Emotes & Reactions and v1.14's Casual sign-off)
+    are independent: either, both, or neither may be selected. Each uses its
+    own "None" sentinel. The composed result feeds straight into
+    append_finishing_touch(), which already treats an empty string as a
+    no-op, so this is the only new composition logic v1.14 needs.
+    """
+    parts = []
+    emote = (emote or "").strip()
+    if emote and emote != FINISHING_TOUCH_NONE:
+        parts.append(emote)
+    signoff = (signoff or "").strip()
+    if signoff and signoff != CASUAL_SIGNOFF_NONE:
+        parts.append(signoff)
+    return " ".join(parts)
+
+
 def adopt_main_translation(current_main, candidate):
     """Return the adopted working translation.
 
@@ -2291,8 +2325,30 @@ if GUI_AVAILABLE:
                 touch_row, text="Slow", variable=self.slow_speech_var, width=70,
             ).grid(row=0, column=2, padx=(8, 0))
 
+            # Casual sign-off / slang picker (v1.14, notes_004 revisited). A
+            # separate control from the finishing-touch picker above, not a
+            # second entry folded into it: "tkt"/"grave" change register and
+            # meaning, unlike a tone-only ":)", so this gets its own label and
+            # a plain-language caption rather than sitting unlabelled next to
+            # the safe emote group.
+            signoff_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
+            signoff_row.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 4))
+            ctk.CTkLabel(signoff_row, text="Casual sign-off").grid(
+                row=0, column=0, sticky="w", padx=(0, 8)
+            )
+            self.casual_signoff_var = ctk.StringVar(value=CASUAL_SIGNOFF_NONE)
+            ctk.CTkOptionMenu(
+                signoff_row, values=list(CASUAL_SIGNOFFS),
+                variable=self.casual_signoff_var, width=110,
+                command=self._on_finishing_touch_change,
+            ).grid(row=0, column=1, sticky="w")
+            ctk.CTkLabel(
+                signoff_row, text="Changes register and meaning, not just tone",
+                text_color="gray60",
+            ).grid(row=0, column=2, sticky="w", padx=(8, 0))
+
             main_buttons = ctk.CTkFrame(self.primary_card, fg_color="transparent")
-            main_buttons.grid(row=2, column=0, sticky="ew", padx=12, pady=(4, 12))
+            main_buttons.grid(row=3, column=0, sticky="ew", padx=12, pady=(4, 12))
             main_buttons.grid_columnconfigure(0, weight=1)
             self.copy_main_btn = ctk.CTkButton(
                 main_buttons, text="Copy main translation",
@@ -2321,7 +2377,7 @@ if GUI_AVAILABLE:
             self.use_as_input_btn.grid(row=0, column=3)
 
             favourite_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
-            favourite_row.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+            favourite_row.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
             self.favourite_btn = ctk.CTkButton(
                 favourite_row, text="☆ Favourite", width=140,
                 command=self._favourite_current_result,
@@ -2376,9 +2432,10 @@ if GUI_AVAILABLE:
         # --- finishing touch (notes_004) ---------------------------------
 
         def _current_touch(self):
-            """The selected finishing touch, or "" when the picker is on None."""
-            touch = self.finishing_touch_var.get()
-            return "" if touch == FINISHING_TOUCH_NONE else touch
+            """The composed finishing touch: emote + casual sign-off (v1.14)."""
+            return compose_finishing_touch(
+                self.finishing_touch_var.get(), self.casual_signoff_var.get()
+            )
 
         def _refresh_primary_display(self):
             """Show the main translation with the finishing touch composed in.
@@ -2495,6 +2552,7 @@ if GUI_AVAILABLE:
             self._stop_speech()
             self._cleanup_tts_file()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
+            self.casual_signoff_var.set(CASUAL_SIGNOFF_NONE)
             self.language_label.configure(text="")
             self._current_main = ""
             self._current_result = None
@@ -2576,6 +2634,7 @@ if GUI_AVAILABLE:
             self._on_input_change()
             self.advisory.grid_remove()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
+            self.casual_signoff_var.set(CASUAL_SIGNOFF_NONE)
             self._render_result(entry)
             if entry.get("favourite"):
                 # Already starred in history: reflect that instead of letting
