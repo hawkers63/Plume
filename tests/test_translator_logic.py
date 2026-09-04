@@ -662,6 +662,31 @@ class TestConversationPresets(unittest.TestCase):
         self.assertEqual(plume.normalise_conversation_presets("not a list"), [])
 
 
+class TestResourceDir(unittest.TestCase):
+    def test_not_frozen_uses_module_directory(self):
+        with mock.patch.object(plume.sys, "frozen", False, create=True):
+            self.assertEqual(
+                plume.resource_dir(),
+                os.path.dirname(os.path.abspath(plume.__file__)),
+            )
+
+    def test_frozen_uses_meipass_not_file(self):
+        with mock.patch.object(plume.sys, "frozen", True, create=True), \
+                mock.patch.object(plume.sys, "_MEIPASS", r"C:\fake\meipass", create=True):
+            self.assertEqual(plume.resource_dir(), r"C:\fake\meipass")
+
+    def test_frozen_without_meipass_falls_back(self):
+        # Defensive only: PyInstaller always sets _MEIPASS when frozen is
+        # True, but resource_dir() must not raise if that ever changes.
+        with mock.patch.object(plume.sys, "frozen", True, create=True):
+            if hasattr(plume.sys, "_MEIPASS"):
+                delattr(plume.sys, "_MEIPASS")
+            self.assertEqual(
+                plume.resource_dir(),
+                os.path.dirname(os.path.abspath(plume.__file__)),
+            )
+
+
 class TestAutostart(unittest.TestCase):
     def test_autostart_command_contains_start_minimised_flag(self):
         self.assertIn("--start-minimised", plume.autostart_command())

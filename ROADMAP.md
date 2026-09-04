@@ -355,6 +355,21 @@ schema impact beyond one constants tuple:
   "Launch at sign-in" itself was verified only via mocked-registry unit
   tests, not exercised for real, so as not to write a persistent
   autostart entry to the developer's own Windows account during testing.
+- **Bug fix, found rebuilding and testing the frozen .exe:** the tray
+  icon never actually appeared in a real build — `_icon_png_path()`
+  (and the pre-existing, unrelated `_apply_window_icon()`, broken the
+  same way since v1.1) located bundled files via
+  `os.path.dirname(os.path.abspath(__file__))`, which does not reliably
+  point at PyInstaller's extraction directory when frozen. Both silently
+  treated the resulting "file not found" as "skip" — a generic window
+  icon and a tray icon that never started, no error either way. Fixed
+  with a new `resource_dir()` helper that uses `sys._MEIPASS` when
+  frozen (distinct from `config_dir()`, which is a writable location,
+  not a resource-lookup one). Confirmed only by actually launching the
+  rebuilt frozen .exe and finding the tray icon missing from the real
+  Windows notification area, including its overflow flyout — running
+  from source, or even the app just starting without error, would never
+  have surfaced this.
 
 ## v1.17 — Backend resilience (notes_011 Feature G)
 

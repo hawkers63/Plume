@@ -287,6 +287,22 @@ def config_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def resource_dir() -> str:
+    """Base directory for bundled read-only resources (the icon files).
+
+    Not the same as config_dir(): that is a writable per-user location.
+    When frozen, PyInstaller's bootloader unpacks bundled data files
+    (see plume.spec's ctk_datas/icon_datas) into a temporary directory
+    given by sys._MEIPASS — __file__ does not reliably point there, so
+    using it here (as this function used to) silently finds nothing in a
+    frozen build: no exception, just a missing icon and a tray icon that
+    never starts, since both call sites treat a missing file as "skip".
+    """
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def config_path() -> str:
     return os.path.join(config_dir(), CONFIG_FILENAME)
 
@@ -2760,9 +2776,7 @@ if GUI_AVAILABLE:
             Best-effort only: a missing file or a platform that rejects .ico is
             ignored silently rather than blocking start-up.
             """
-            icon_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "icon", "icon-96.ico"
-            )
+            icon_path = os.path.join(resource_dir(), "icon", "icon-96.ico")
             try:
                 if os.path.exists(icon_path):
                     self.iconbitmap(icon_path)
@@ -3378,9 +3392,7 @@ if GUI_AVAILABLE:
         # --- tray (v1.16) --------------------------------------------------
 
         def _icon_png_path(self) -> str:
-            return os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "icon", "icon-96.png"
-            )
+            return os.path.join(resource_dir(), "icon", "icon-96.png")
 
         def _maybe_start_tray(self):
             """Start the tray icon if Settings or --start-minimised wants one."""
