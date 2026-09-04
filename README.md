@@ -60,6 +60,10 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   `pystray` and `Pillow`): launch quietly at Windows sign-in, start
   minimised, and close-to-tray instead of quitting — a conversation
   helper that doesn't need to be relaunched and re-parked every session.
+- **Conversation presets:** save the toolbar's direction, French form,
+  Me/You gender agreement and situation as a named preset (a "Presets…"
+  menu plus Save/Delete beside the toolbar's You control) — switch
+  between a few regular conversations in one click.
 
 ---
 

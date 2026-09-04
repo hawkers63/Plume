@@ -423,6 +423,29 @@ schema impact beyond one constants tuple:
   problem correctly, rather than further trial-and-error on hand-rolled
   ctypes subclassing.
 
+## v1.19 — User conversation presets (notes_011 Feature D)
+
+- A different object from the local-only Situation presets (v1.11): a
+  named snapshot of the toolbar's five live controls (direction, French
+  form, Me, You, situation), stored in `plume_config.json` as
+  `conversation_presets` (capped at `MAX_CONVERSATION_PRESETS`, 12).
+  `normalise_conversation_preset()`/`normalise_conversation_presets()`
+  drop malformed entries and coerce unknown enum values to the same
+  defaults `_coerce_choice` already uses elsewhere, so a hand-edited
+  file cannot crash `load_config`.
+- Toolbar UI (row 1, after You): a "Presets…" `OptionMenu` that applies
+  a preset's controls immediately (in-memory only, matching the
+  existing toolbar-wins-at-save rule), plus "Save preset…" (a
+  `CTkInputDialog` for the name) and "Delete". Unlike the toolbar
+  values themselves, the preset *list* is written to disk immediately
+  on Save/Delete via `save_config`, so a named preset cannot vanish if
+  Plume crashes before Settings is next saved.
+- Verified end-to-end against the live app: saved a preset with a
+  non-default direction and situation, confirmed it persisted to
+  `plume_config.json` immediately, reset the toolbar, selected the
+  preset from the menu and confirmed it restored both fields, then
+  deleted it and confirmed the file and menu both went back to empty.
+
 ---
 
 ### Notes on sequencing

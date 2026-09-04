@@ -492,6 +492,21 @@ class TestConfigCoercion(unittest.TestCase):
         )
         self.assertEqual(config["keep_as_is_terms"], ["Kes"])
 
+    def test_conversation_presets_default_empty(self):
+        config, _ = self._load_with({})
+        self.assertEqual(config["conversation_presets"], [])
+
+    def test_conversation_presets_normalised_on_load(self):
+        config, _ = self._load_with({
+            "conversation_presets": [
+                {"name": "Work email", "direction": "Sideways"},
+                {"not": "a valid preset"},
+            ]
+        })
+        self.assertEqual(len(config["conversation_presets"]), 1)
+        self.assertEqual(config["conversation_presets"][0]["name"], "Work email")
+        self.assertEqual(config["conversation_presets"][0]["direction"], plume.DIR_AUTO)
+
     def test_tray_settings_default_false(self):
         config, _ = self._load_with({})
         self.assertIs(config["launch_at_sign_in"], False)
@@ -507,6 +522,76 @@ class TestConfigCoercion(unittest.TestCase):
         self.assertIs(config["launch_at_sign_in"], True)
         self.assertIs(config["start_minimised_to_tray"], True)
         self.assertIs(config["close_to_tray"], True)
+
+
+class TestConversationPresets(unittest.TestCase):
+    def _preset(self, **overrides):
+        base = {
+            "name": "Work email",
+            "direction": plume.DIR_EN_FR,
+            "french_formality": plume.FORM_FORMAL,
+            "speaker_gender": plume.GENDER_FEMININE,
+            "recipient_gender": plume.GENDER_MASCULINE,
+            "situation": "formal work email",
+        }
+        base.update(overrides)
+        return base
+
+    def test_rejects_non_dict(self):
+        self.assertIsNone(plume.normalise_conversation_preset("not a dict"))
+
+    def test_rejects_blank_name(self):
+        self.assertIsNone(plume.normalise_conversation_preset(self._preset(name="   ")))
+
+    def test_name_truncated_to_max(self):
+        clean = plume.normalise_conversation_preset(self._preset(name="x" * 60))
+        self.assertEqual(len(clean["name"]), plume.PRESET_NAME_MAX)
+
+    def test_unknown_direction_falls_back_to_auto(self):
+        clean = plume.normalise_conversation_preset(self._preset(direction="Sideways"))
+        self.assertEqual(clean["direction"], plume.DIR_AUTO)
+
+    def test_unknown_gender_falls_back_to_feminine(self):
+        clean = plume.normalise_conversation_preset(
+            self._preset(speaker_gender="nonsense")
+        )
+        self.assertEqual(clean["speaker_gender"], plume.GENDER_FEMININE)
+
+    def test_assigns_id_when_missing(self):
+        clean = plume.normalise_conversation_preset(self._preset())
+        self.assertTrue(clean["id"])
+
+    def test_preserves_given_id(self):
+        clean = plume.normalise_conversation_preset(self._preset(id="abc123"))
+        self.assertEqual(clean["id"], "abc123")
+
+    def test_valid_preset_round_trips(self):
+        clean = plume.normalise_conversation_preset(self._preset())
+        self.assertEqual(clean["name"], "Work email")
+        self.assertEqual(clean["direction"], plume.DIR_EN_FR)
+        self.assertEqual(clean["french_formality"], plume.FORM_FORMAL)
+        self.assertEqual(clean["recipient_gender"], plume.GENDER_MASCULINE)
+        self.assertEqual(clean["situation"], "formal work email")
+
+    def test_list_drops_malformed_entries(self):
+        presets = plume.normalise_conversation_presets([
+            self._preset(id="1"), {"bad": "entry"}, self._preset(id="2", name="Chat"),
+        ])
+        self.assertEqual(len(presets), 2)
+
+    def test_list_deduplicates_by_id(self):
+        presets = plume.normalise_conversation_presets([
+            self._preset(id="1"), self._preset(id="1", name="Different name"),
+        ])
+        self.assertEqual(len(presets), 1)
+
+    def test_list_caps_at_max(self):
+        many = [self._preset(id=str(i), name="P{}".format(i)) for i in range(20)]
+        presets = plume.normalise_conversation_presets(many)
+        self.assertEqual(len(presets), plume.MAX_CONVERSATION_PRESETS)
+
+    def test_list_rejects_non_list(self):
+        self.assertEqual(plume.normalise_conversation_presets("not a list"), [])
 
 
 class TestAutostart(unittest.TestCase):

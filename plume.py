@@ -157,6 +157,14 @@ SITUATION_PRESETS = (
     "Close friend", "Formal work email", "Neighbour", "Appointment", "Dating/chat",
 )
 
+# --- User conversation presets (v1.19, notes_011 Feature D) -----------------
+# A different object from the local-only Situation presets above: a named
+# snapshot of the live toolbar controls (direction, French form, Me/You,
+# situation), stored in plume_config.json rather than hard-coded.
+CONVERSATION_PRESET_PLACEHOLDER = "Presets…"
+MAX_CONVERSATION_PRESETS = 12
+PRESET_NAME_MAX = 40
+
 # --- Finishing-touch catalogue (notes_004) ---------------------------------
 # A small, curated set of end-of-message emotes the user may optionally append
 # to a copied translation. Deliberately NOT read from Essential Shortcuts.txt
@@ -273,6 +281,7 @@ DEFAULT_CONFIG = {
     "default_french_recipient_gender": GENDER_FEMININE,
     "protect_placeholders": True,
     "keep_as_is_terms": [],
+    "conversation_presets": [],
     "save_local_history": False,
     "max_input_chars": DEFAULT_MAX_INPUT_CHARS,
     "elevenlabs_api_key": "",
@@ -371,6 +380,9 @@ def load_config():
     config["protect_placeholders"] = bool(config.get("protect_placeholders"))
     config["keep_as_is_terms"] = normalise_keep_as_is_terms(
         config.get("keep_as_is_terms")
+    )
+    config["conversation_presets"] = normalise_conversation_presets(
+        config.get("conversation_presets")
     )
     config["privacy_ack"] = bool(config.get("privacy_ack"))
     config["save_local_history"] = bool(config.get("save_local_history"))
@@ -799,6 +811,55 @@ def normalise_keep_as_is_terms(value) -> list:
         seen.add(key)
         out.append(term)
         if len(out) >= KEEP_AS_IS_MAX_TERMS:
+            break
+    return out
+
+
+def normalise_conversation_preset(entry) -> dict | None:
+    """Return a clean conversation preset, or None if it cannot be salvaged.
+
+    A malformed list entry is dropped rather than crashing load_config;
+    unknown enum values fall back to the same defaults _coerce_choice
+    already uses for the equivalent config keys.
+    """
+    if not isinstance(entry, dict):
+        return None
+    name = _safe_short_string(entry.get("name"), PRESET_NAME_MAX)
+    if not name:
+        return None
+    ident = entry.get("id")
+    if not isinstance(ident, str) or not ident.strip():
+        ident = uuid.uuid4().hex
+    return {
+        "id": ident.strip(),
+        "name": name,
+        "direction": _coerce_choice(entry.get("direction"), DIRECTIONS, DIR_AUTO),
+        "french_formality": _coerce_choice(
+            entry.get("french_formality"), FORMALITIES, FORM_INFORMAL),
+        "speaker_gender": _coerce_choice(
+            entry.get("speaker_gender"), FRENCH_GENDERS, GENDER_FEMININE),
+        "recipient_gender": _coerce_choice(
+            entry.get("recipient_gender"), FRENCH_GENDERS, GENDER_FEMININE),
+        "situation": _safe_short_string(entry.get("situation")),
+    }
+
+
+def normalise_conversation_presets(value) -> list:
+    """Return a short list of clean presets, de-duplicated by id.
+
+    Caps at MAX_CONVERSATION_PRESETS so a hand-edited file cannot grow the
+    toolbar menu without bound.
+    """
+    if not isinstance(value, list):
+        return []
+    out, seen = [], set()
+    for item in value:
+        clean = normalise_conversation_preset(item)
+        if clean is None or clean["id"] in seen:
+            continue
+        seen.add(clean["id"])
+        out.append(clean)
+        if len(out) >= MAX_CONVERSATION_PRESETS:
             break
     return out
 
@@ -2507,7 +2568,7 @@ if GUI_AVAILABLE:
             # Row 1: French form and the Me/You gender-agreement controls.
             bottom = ctk.CTkFrame(bar, fg_color="transparent")
             bottom.grid(row=1, column=0, sticky="ew")
-            bottom.grid_columnconfigure(6, weight=1)
+            bottom.grid_columnconfigure(10, weight=1)
 
             self.formality_var = ctk.StringVar(
                 value=self.config_data.get("default_french_formality", FORM_INFORMAL)
@@ -2535,6 +2596,29 @@ if GUI_AVAILABLE:
                 bottom, values=list(FRENCH_GENDERS), variable=self.recipient_gender_var,
                 width=150, command=self._on_toolbar_change,
             ).grid(row=0, column=5, padx=6, pady=(0, 8))
+
+            # User conversation presets (v1.19): a named snapshot of the five
+            # controls above plus Situation, saved to plume_config.json.
+            # Independent of the local-only Situation presets on the input
+            # pane (notes_008 #1) — this is the toolbar's own preset system.
+            self.preset_var = ctk.StringVar(value=CONVERSATION_PRESET_PLACEHOLDER)
+            ctk.CTkLabel(bottom, text="Presets").grid(
+                row=0, column=6, padx=(16, 6), pady=(0, 8)
+            )
+            self.preset_menu = ctk.CTkOptionMenu(
+                bottom, values=self._conversation_preset_menu_values(),
+                variable=self.preset_var, width=160,
+                command=self._apply_conversation_preset,
+            )
+            self.preset_menu.grid(row=0, column=7, padx=6, pady=(0, 8))
+            ctk.CTkButton(
+                bottom, text="Save preset…", width=110,
+                command=self._save_conversation_preset_dialog, fg_color="gray30",
+            ).grid(row=0, column=8, padx=(6, 0), pady=(0, 8))
+            ctk.CTkButton(
+                bottom, text="Delete", width=70,
+                command=self._delete_conversation_preset, fg_color="gray30",
+            ).grid(row=0, column=9, padx=(6, 0), pady=(0, 8))
 
         def _build_body(self):
             body = ctk.CTkFrame(self, fg_color="transparent")
@@ -2811,6 +2895,83 @@ if GUI_AVAILABLE:
                 return
             self.situation_entry.delete(0, "end")
             self.situation_entry.insert(0, value)
+
+        # --- user conversation presets (v1.19) -----------------------------
+
+        def _conversation_preset_menu_values(self):
+            names = [p["name"] for p in self.config_data.get("conversation_presets", [])]
+            return [CONVERSATION_PRESET_PLACEHOLDER] + names
+
+        def _refresh_conversation_preset_menu(self, select=CONVERSATION_PRESET_PLACEHOLDER):
+            self.preset_menu.configure(values=self._conversation_preset_menu_values())
+            self.preset_var.set(select)
+
+        def _apply_conversation_preset(self, value):
+            """Load a saved preset's controls onto the live toolbar.
+
+            Only updates the in-memory toolbar state, matching the existing
+            toolbar-wins-at-save rule — the preset *list* is what persists
+            immediately (on Save/Delete below), not this selection.
+            """
+            if value == CONVERSATION_PRESET_PLACEHOLDER:
+                return
+            preset = next(
+                (p for p in self.config_data.get("conversation_presets", [])
+                 if p["name"] == value),
+                None,
+            )
+            if preset is None:
+                return
+            self.direction_var.set(preset["direction"])
+            self.formality_var.set(preset["french_formality"])
+            self.speaker_gender_var.set(preset["speaker_gender"])
+            self.recipient_gender_var.set(preset["recipient_gender"])
+            self.situation_entry.delete(0, "end")
+            self.situation_entry.insert(0, preset["situation"])
+            self._on_toolbar_change()
+
+        def _save_conversation_preset_dialog(self):
+            """Prompt for a name and snapshot the current toolbar controls.
+
+            Persisted immediately (unlike the toolbar values themselves) so
+            a named preset cannot vanish if the app crashes before Settings
+            is next saved.
+            """
+            dialog = ctk.CTkInputDialog(text="Name this preset:", title="Save preset")
+            name = dialog.get_input()
+            if not name or not name.strip():
+                return
+            preset = normalise_conversation_preset({
+                "name": name,
+                "direction": self.direction_var.get(),
+                "french_formality": self.formality_var.get(),
+                "speaker_gender": self.speaker_gender_var.get(),
+                "recipient_gender": self.recipient_gender_var.get(),
+                "situation": self._situation_text(),
+            })
+            if preset is None:
+                return
+            presets = self.config_data.get("conversation_presets", []) + [preset]
+            self.config_data["conversation_presets"] = normalise_conversation_presets(presets)
+            try:
+                save_config(self.config_data)
+            except ConfigError:
+                pass
+            self._refresh_conversation_preset_menu(select=preset["name"])
+
+        def _delete_conversation_preset(self):
+            value = self.preset_var.get()
+            if value == CONVERSATION_PRESET_PLACEHOLDER:
+                return
+            self.config_data["conversation_presets"] = [
+                p for p in self.config_data.get("conversation_presets", [])
+                if p["name"] != value
+            ]
+            try:
+                save_config(self.config_data)
+            except ConfigError:
+                pass
+            self._refresh_conversation_preset_menu()
 
         def _copy_variation(self, text):
             """Copy an alternative with the current finishing touch."""
