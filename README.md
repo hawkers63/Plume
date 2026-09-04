@@ -124,6 +124,11 @@ is `claude-sonnet-4-6`; you can change it in Settings (for example to
 `claude-sonnet-5`). The key is read from the config file if you deliberately
 enter it, otherwise from the `ANTHROPIC_API_KEY` environment variable.
 
+Transient failures (rate limiting, a temporary 502/503/504, or a dropped
+connection) are retried automatically with a short exponential backoff
+before Plume shows an error — no action needed, and nothing is retried
+for a rejected key or a missing model.
+
 ### Ollama (local, privacy-first)
 
 Talks to `http://localhost:11434` using `/api/chat` with `stream: false` and

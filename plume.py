@@ -34,9 +34,11 @@ import io
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -211,6 +213,12 @@ OLLAMA_CHAT_PATH = "/api/chat"
 OLLAMA_TAGS_PATH = "/api/tags"
 DEFAULT_OLLAMA_MODEL = "llama3.1:8b"
 OLLAMA_TIMEOUT = 120
+
+# Transient-failure retry for _http_post_json (v1.17, notes_011 Feature G).
+HTTP_RETRYABLE_CODES = frozenset({429, 502, 503, 504})
+HTTP_MAX_ATTEMPTS = 4
+HTTP_BACKOFF_BASE = 0.6
+HTTP_BACKOFF_CAP = 8.0
 
 # One-shot Text-to-Speech only (not the Conversational-AI agent API): "read
 # this exact text aloud", nothing more.
@@ -1340,27 +1348,76 @@ class BackendError(Exception):
     """
 
 
-def _http_post_json(url, payload, headers, timeout, service_name="backend"):
+def _backoff_delay(attempt, retry_after=None) -> float:
+    """Seconds to wait before the next attempt. *attempt* is 0-based.
+
+    Honours a numeric Retry-After header outright (still capped); otherwise
+    exponential backoff from HTTP_BACKOFF_BASE, capped at HTTP_BACKOFF_CAP,
+    with up to 25% jitter so concurrent retries do not all land together.
+    """
+    if retry_after not in (None, ""):
+        try:
+            header_delay = float(retry_after)
+            if header_delay >= 0:
+                return min(header_delay, HTTP_BACKOFF_CAP)
+        except (TypeError, ValueError):
+            pass
+    delay = min(HTTP_BACKOFF_CAP, HTTP_BACKOFF_BASE * (2 ** attempt))
+    jitter = secrets.SystemRandom().uniform(0.0, delay * 0.25)
+    return delay + jitter
+
+
+def _http_post_json(url, payload, headers, timeout, service_name="backend",
+                     max_attempts=HTTP_MAX_ATTEMPTS):
     """POST *payload* as JSON and return the decoded JSON response.
 
-    The service name is used only for safe, generic diagnostics; backend detail
-    text is still not displayed because it may contain prompt fragments.
+    Retries transient failures (429/502/503/504, dropped connections, and
+    timeouts) with bounded exponential backoff; 401/403/404 and other client
+    errors are never retried. The service name is used only for safe,
+    generic diagnostics; backend detail text is still not displayed because
+    it may contain prompt fragments.
     """
     data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        raise BackendError(_friendly_http_message(exc.code, service_name))
-    except urllib.error.URLError as exc:
+    last_network_message = None
+    attempts = max(1, int(max_attempts or 1))
+    for attempt in range(attempts):
+        request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read().decode("utf-8")
+            break
+        except urllib.error.HTTPError as exc:
+            # HTTPError is a subclass of URLError, so it must be caught first.
+            retry_after = None
+            try:
+                retry_after = exc.headers.get("Retry-After")
+            except Exception:
+                retry_after = None
+            if exc.code in HTTP_RETRYABLE_CODES and attempt < attempts - 1:
+                time.sleep(_backoff_delay(attempt, retry_after))
+                continue
+            raise BackendError(_friendly_http_message(exc.code, service_name))
+        except urllib.error.URLError as exc:
+            last_network_message = (
+                "Could not reach the translation backend. Please check your "
+                "connection and try again. ({})".format(_reason_text(exc))
+            )
+            if attempt < attempts - 1:
+                time.sleep(_backoff_delay(attempt))
+                continue
+            raise BackendError(last_network_message)
+        except (TimeoutError, OSError):
+            last_network_message = (
+                "The translation backend did not respond in time. Please try again."
+            )
+            if attempt < attempts - 1:
+                time.sleep(_backoff_delay(attempt))
+                continue
+            raise BackendError(last_network_message)
+    else:  # pragma: no cover - defensive; every branch above raises or continues
         raise BackendError(
-            "Could not reach the translation backend. Please check your "
-            "connection and try again. ({})".format(_reason_text(exc))
-        )
-    except (TimeoutError, OSError):
-        raise BackendError(
-            "The translation backend did not respond in time. Please try again."
+            last_network_message
+            or "The translation backend did not respond in time. Please try again."
         )
     try:
         return json.loads(body)
@@ -1415,11 +1472,17 @@ def call_anthropic(config_snapshot, system_prompt, user_text):
         "max_tokens": ANTHROPIC_MAX_TOKENS,
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_text}],
+        "stream": False,
     }
     data = _http_post_json(
         ANTHROPIC_URL, payload, headers, ANTHROPIC_TIMEOUT,
         service_name="Claude API",
     )
+    return _anthropic_text_from_response(data)
+
+
+def _anthropic_text_from_response(data) -> str:
+    """Pull concatenated text blocks from a Claude Messages response body."""
     if not isinstance(data, dict):
         raise BackendError("The Claude API returned a response that could not be read.")
     if data.get("stop_reason") == "max_tokens":
@@ -1464,6 +1527,11 @@ def call_ollama(config_snapshot, system_prompt, user_text):
                 "running?".format(OLLAMA_BASE_URL)
             )
         raise
+    return _ollama_text_from_response(data)
+
+
+def _ollama_text_from_response(data) -> str:
+    """Pull the reply content out of an Ollama /api/chat response body."""
     if not isinstance(data, dict):
         raise BackendError("Ollama returned a response that could not be read.")
     if data.get("error"):

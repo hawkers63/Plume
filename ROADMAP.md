@@ -356,6 +356,31 @@ schema impact beyond one constants tuple:
   tests, not exercised for real, so as not to write a persistent
   autostart entry to the developer's own Windows account during testing.
 
+## v1.17 — Backend resilience (notes_011 Feature G)
+
+- `_http_post_json` retries 429/502/503/504, dropped connections
+  (`URLError`) and timeouts with bounded exponential backoff
+  (`_backoff_delay`: `HTTP_BACKOFF_BASE` doubling per attempt, capped at
+  `HTTP_BACKOFF_CAP`, plus up to 25% jitter so concurrent retries do not
+  land together) — up to `HTTP_MAX_ATTEMPTS` (4) attempts total. A
+  numeric `Retry-After` header is honoured outright, still capped.
+  401/403/404 and other client errors are never retried; `HTTPError` is
+  caught before `URLError` since it is a subclass. Both translation and
+  Speak already run on a worker thread, so a blocking `time.sleep`
+  between attempts is safe.
+- **Streaming preparation, not streaming:** Claude's payload now sets
+  `"stream": False` explicitly, and the response-parsing halves of
+  `call_anthropic`/`call_ollama` are lifted into standalone
+  `_anthropic_text_from_response()` / `_ollama_text_from_response()` —
+  the same functions a later `_http_post_json` retry loop and a future
+  SSE slice would both need, without changing today's JSON-only
+  contract or adding any actual streaming/token-painting in this
+  version.
+- Verified against the live app: a real Claude translation still
+  completed correctly after the refactor (unchanged behaviour, not a
+  new capability — there was no transient failure to trigger a retry
+  against the live API in this session).
+
 ---
 
 ### Notes on sequencing

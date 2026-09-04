@@ -612,7 +612,9 @@ class TestBackendHardening(unittest.TestCase):
                 self.fail("expected BackendError")
 
     def test_ollama_http_error_names_ollama_not_claude(self):
-        with mock.patch("urllib.request.urlopen", side_effect=self._http_error(429)):
+        # 429 is now retried (v1.17); mock the sleep so this stays instant.
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=self._http_error(429)):
             try:
                 plume.call_ollama({"ollama_model": "x"}, "sys", "user")
             except plume.BackendError as exc:
@@ -642,6 +644,123 @@ class TestBackendHardening(unittest.TestCase):
                 io.BytesIO(b"detail"),
             )
         return _raise
+
+
+class TestHttpBackoff(unittest.TestCase):
+    def test_retries_transient_failure_then_succeeds(self):
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise urllib.error.HTTPError(
+                    "https://x", 503, "busy", {}, io.BytesIO(b""),
+                )
+            return mock.MagicMock(
+                __enter__=lambda s: s,
+                __exit__=lambda *a: None,
+                read=lambda: b'{"ok": true}',
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            data = plume._http_post_json(
+                "https://x", {}, {"content-type": "application/json"}, 5
+            )
+        self.assertEqual(data, {"ok": True})
+        self.assertEqual(calls["n"], 3)
+
+    def test_401_is_not_retried(self):
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(
+                "https://x", 401, "no", {}, io.BytesIO(b""),
+            )
+
+        with mock.patch.object(plume, "time") as fake_time, \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError):
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5
+                )
+        fake_time.sleep.assert_not_called()
+
+    def test_exhausts_retries_and_raises(self):
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            raise urllib.error.HTTPError(
+                "https://x", 503, "busy", {}, io.BytesIO(b""),
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError):
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5,
+                    max_attempts=3,
+                )
+        self.assertEqual(calls["n"], 3)
+
+    def test_dropped_connection_is_retried(self):
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise urllib.error.URLError("connection reset")
+            return mock.MagicMock(
+                __enter__=lambda s: s,
+                __exit__=lambda *a: None,
+                read=lambda: b'{"ok": true}',
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            data = plume._http_post_json(
+                "https://x", {}, {"content-type": "application/json"}, 5
+            )
+        self.assertEqual(data, {"ok": True})
+
+    def test_backoff_delay_honours_retry_after_header(self):
+        self.assertEqual(plume._backoff_delay(0, retry_after="2"), 2.0)
+
+    def test_backoff_delay_caps_retry_after_header(self):
+        self.assertEqual(
+            plume._backoff_delay(0, retry_after="999"), plume.HTTP_BACKOFF_CAP
+        )
+
+    def test_backoff_delay_ignores_invalid_retry_after(self):
+        delay = plume._backoff_delay(0, retry_after="not-a-number")
+        self.assertGreaterEqual(delay, plume.HTTP_BACKOFF_BASE)
+
+    def test_backoff_delay_exponential_and_capped(self):
+        delay = plume._backoff_delay(10)
+        self.assertGreaterEqual(delay, plume.HTTP_BACKOFF_CAP)
+        self.assertLessEqual(delay, plume.HTTP_BACKOFF_CAP * 1.25)
+
+
+class TestResponseExtraction(unittest.TestCase):
+    def test_anthropic_text_from_response_extracts_text(self):
+        data = {"content": [{"type": "text", "text": "Bonjour"}]}
+        self.assertEqual(plume._anthropic_text_from_response(data), "Bonjour")
+
+    def test_anthropic_text_from_response_cut_short(self):
+        data = {"stop_reason": "max_tokens", "content": []}
+        with self.assertRaises(plume.BackendError):
+            plume._anthropic_text_from_response(data)
+
+    def test_anthropic_text_from_response_rejects_non_dict(self):
+        with self.assertRaises(plume.BackendError):
+            plume._anthropic_text_from_response(["oops"])
+
+    def test_ollama_text_from_response_extracts_content(self):
+        data = {"message": {"content": "Bonjour"}}
+        self.assertEqual(plume._ollama_text_from_response(data), "Bonjour")
+
+    def test_ollama_text_from_response_error_field(self):
+        with self.assertRaises(plume.BackendError):
+            plume._ollama_text_from_response({"error": "boom", "message": {}})
 
 
 class TestElevenLabsTTS(unittest.TestCase):
