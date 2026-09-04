@@ -56,6 +56,10 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   paraphrasing, translating or changing register — then automatically
   translates the corrected text into French, so typos are never
   faithfully carried into the French output.
+- Optional **sign-in autostart** and a **system tray icon** (needs
+  `pystray` and `Pillow`): launch quietly at Windows sign-in, start
+  minimised, and close-to-tray instead of quitting — a conversation
+  helper that doesn't need to be relaunched and re-parked every session.
 
 ---
 
@@ -70,6 +74,9 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
 
   That installs `customtkinter>=5.2.0`. Nothing else is required — Plume uses
   only the Python standard library for HTTP, JSON, threading and validation.
+  Optionally, `pip install pystray Pillow` enables the tray icon, sign-in
+  autostart and close-to-tray; without them Plume runs exactly as before
+  and the tray checkboxes in Settings are simply disabled.
 
 - **One backend**, either:
   - a **Claude API key** (cloud), or

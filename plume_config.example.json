@@ -16,5 +16,8 @@
   "elevenlabs_api_key": "",
   "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",
   "elevenlabs_privacy_ack": false,
-  "always_on_top": false
+  "always_on_top": false,
+  "launch_at_sign_in": false,
+  "start_minimised_to_tray": false,
+  "close_to_tray": false
 }

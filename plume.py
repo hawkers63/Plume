@@ -60,6 +60,28 @@ except Exception:  # pragma: no cover
     ctk = None
     GUI_AVAILABLE = False
 
+# --- Optional extras ---------------------------------------------------------
+# Tray icon, close-to-tray and start-minimised (v1.16, notes_011 Feature B) need
+# pystray and Pillow. Plume must import and run exactly as before when either
+# is absent; the Settings tray checkboxes are disabled with a caption instead.
+try:  # pragma: no cover - environment-dependent
+    import pystray as _pystray
+    from PIL import Image as _PILImage
+
+    TRAY_AVAILABLE = True
+except Exception:  # pragma: no cover
+    _pystray = None
+    _PILImage = None
+    TRAY_AVAILABLE = False
+
+try:  # pragma: no cover - Windows only
+    import winreg as _winreg
+
+    WINREG_AVAILABLE = True
+except Exception:  # pragma: no cover
+    _winreg = None
+    WINREG_AVAILABLE = False
+
 
 # ===========================================================================
 # 1. Application constants and configuration paths
@@ -68,6 +90,10 @@ except Exception:  # pragma: no cover
 APP_NAME = "Plume"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 CONFIG_FILENAME = "plume_config.json"
+
+# Sign-in autostart (v1.16): the HKCU Run value Plume writes when enabled.
+AUTOSTART_VALUE_NAME = "Plume"
+AUTOSTART_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 HISTORY_FILENAME = "plume_history.json"
 MAX_HISTORY_ENTRIES = 200
 
@@ -245,6 +271,9 @@ DEFAULT_CONFIG = {
     "elevenlabs_voice_id": DEFAULT_ELEVENLABS_VOICE_ID,
     "elevenlabs_privacy_ack": False,
     "always_on_top": False,
+    "launch_at_sign_in": False,
+    "start_minimised_to_tray": False,
+    "close_to_tray": False,
 }
 
 
@@ -345,6 +374,9 @@ def load_config():
     )
     config["elevenlabs_privacy_ack"] = bool(config.get("elevenlabs_privacy_ack"))
     config["always_on_top"] = bool(config.get("always_on_top"))
+    config["launch_at_sign_in"] = bool(config.get("launch_at_sign_in"))
+    config["start_minimised_to_tray"] = bool(config.get("start_minimised_to_tray"))
+    config["close_to_tray"] = bool(config.get("close_to_tray"))
 
     return config, None
 
@@ -372,6 +404,74 @@ def save_config(config, force: bool = False) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp_path, path)
+
+
+# ---------------------------------------------------------------------------
+# Sign-in autostart (v1.16, notes_011 Feature B). winreg-only, Windows-only;
+# a no-op (or a refusal) everywhere else. Kept separate from the tray so a
+# machine with winreg but no tray extras cannot silently write a Run key
+# that would flash a full-size window at every login.
+# ---------------------------------------------------------------------------
+
+
+def autostart_command() -> str:
+    """Quoted command written to the HKCU Run key.
+
+    Always passes --start-minimised: autostart's whole point is to sit
+    quietly in the tray, never to pop a window at login.
+    """
+    if getattr(sys, "frozen", False):
+        return '"{}" --start-minimised'.format(sys.executable)
+    script = os.path.abspath(__file__)
+    return '"{}" "{}" --start-minimised'.format(sys.executable, script)
+
+
+def set_launch_at_sign_in(enabled: bool) -> None:
+    """Create or delete the HKCU Run value. Raises ConfigError, never silently.
+
+    Refuses to enable on a non-Windows machine (no winreg) or when the tray
+    extras are missing: --start-minimised would then have nowhere to hide
+    the window, so autostart would just flash it at every sign-in instead.
+    """
+    if enabled and not WINREG_AVAILABLE:
+        raise ConfigError("Sign-in autostart is only available on Windows.")
+    if enabled and not TRAY_AVAILABLE:
+        raise ConfigError(
+            "Sign-in autostart needs the tray extras (pystray and Pillow) "
+            "installed, so the window has somewhere to go when it starts."
+        )
+    if not WINREG_AVAILABLE:
+        return
+    access = _winreg.KEY_SET_VALUE | _winreg.KEY_QUERY_VALUE
+    with _winreg.OpenKey(_winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY,
+                          0, access) as key:
+        if enabled:
+            _winreg.SetValueEx(
+                key, AUTOSTART_VALUE_NAME, 0, _winreg.REG_SZ,
+                autostart_command(),
+            )
+        else:
+            try:
+                _winreg.DeleteValue(key, AUTOSTART_VALUE_NAME)
+            except FileNotFoundError:
+                pass
+
+
+def launch_at_sign_in_is_set() -> bool:
+    """True if the HKCU Run value currently points at Plume."""
+    if not WINREG_AVAILABLE:
+        return False
+    try:
+        with _winreg.OpenKey(
+            _winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY, 0,
+            _winreg.KEY_QUERY_VALUE,
+        ) as key:
+            value, _ = _winreg.QueryValueEx(key, AUTOSTART_VALUE_NAME)
+        return bool(value)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1814,6 +1914,47 @@ if GUI_AVAILABLE:
             ).grid(row=row, column=0, sticky="w", **pad)
             row += 1
 
+            # Sign-in autostart + tray (v1.16). Feature-gated: if pystray or
+            # Pillow are missing, the checkboxes are shown but disabled with
+            # a one-line caption, rather than hidden without explanation.
+            self.launch_var = ctk.BooleanVar(
+                value=bool(self._config.get("launch_at_sign_in"))
+            )
+            self.minimised_var = ctk.BooleanVar(
+                value=bool(self._config.get("start_minimised_to_tray"))
+            )
+            self.close_to_tray_var = ctk.BooleanVar(
+                value=bool(self._config.get("close_to_tray"))
+            )
+            launch_box = ctk.CTkCheckBox(
+                body, text="Launch Plume when I sign in to Windows",
+                variable=self.launch_var,
+            )
+            launch_box.grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+            minimised_box = ctk.CTkCheckBox(
+                body, text="Start minimised to the tray",
+                variable=self.minimised_var,
+            )
+            minimised_box.grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+            close_box = ctk.CTkCheckBox(
+                body, text="Close to the tray rather than quitting",
+                variable=self.close_to_tray_var,
+            )
+            close_box.grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+            if not TRAY_AVAILABLE:
+                for widget in (launch_box, minimised_box, close_box):
+                    widget.configure(state="disabled")
+                ctk.CTkLabel(
+                    body,
+                    text="Install pystray and Pillow to enable tray and "
+                         "sign-in start.",
+                    text_color="gray60",
+                ).grid(row=row, column=0, sticky="w", padx=16)
+                row += 1
+
             ctk.CTkLabel(body, text="Maximum message length").grid(
                 row=row, column=0, sticky="w", padx=16
             )
@@ -1915,6 +2056,20 @@ if GUI_AVAILABLE:
             self._config["keep_as_is_terms"] = normalise_keep_as_is_terms(
                 self.keep_as_is_box.get("1.0", "end")
             )
+
+            want_launch = bool(self.launch_var.get()) and TRAY_AVAILABLE
+            want_minimised = bool(self.minimised_var.get()) and TRAY_AVAILABLE
+            want_close_to_tray = bool(self.close_to_tray_var.get()) and TRAY_AVAILABLE
+            if want_launch:
+                want_minimised = True  # never autostart a visible window
+            self._config["launch_at_sign_in"] = want_launch
+            self._config["start_minimised_to_tray"] = want_minimised
+            self._config["close_to_tray"] = want_close_to_tray
+            try:
+                set_launch_at_sign_in(want_launch)
+            except ConfigError as exc:
+                self.status_label.configure(text=str(exc))
+                return
 
             # Carry the live toolbar selections forward so a deliberate change
             # made this session is persisted rather than reset to the file
@@ -2170,6 +2325,7 @@ if GUI_AVAILABLE:
             self._tts_temp_path = None
             self._current_result = None
             self._current_favourited = False
+            self._tray_icon = None
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
@@ -2187,6 +2343,7 @@ if GUI_AVAILABLE:
             self._build_status_bar()
             self._bind_shortcuts()
             self._apply_always_on_top()
+            self._maybe_start_tray()
 
             # Invalidate any in-flight worker when the window is closed so a
             # late callback cannot run against a destroyed widget tree.
@@ -2655,13 +2812,95 @@ if GUI_AVAILABLE:
             self._on_input_change()
             self._refresh_status(state="ready")
 
-        def _on_close(self):
+        def _on_close_destroy(self):
             """Invalidate in-flight work, stop playback, then destroy the window."""
             self._request_id += 1
             self._speech_request_id += 1
             self._stop_speech()
             self._cleanup_tts_file()
             self.destroy()
+
+        def _on_close(self):
+            """Close-to-tray when enabled and running; otherwise a real quit."""
+            if (
+                TRAY_AVAILABLE
+                and self.config_data.get("close_to_tray")
+                and self._tray_icon is not None
+            ):
+                self.withdraw()
+                return
+            self._quit_from_tray()
+
+        # --- tray (v1.16) --------------------------------------------------
+
+        def _icon_png_path(self) -> str:
+            return os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "icon", "icon-96.png"
+            )
+
+        def _maybe_start_tray(self):
+            """Start the tray icon if Settings or --start-minimised wants one."""
+            if not TRAY_AVAILABLE or self._tray_icon is not None:
+                return
+            want = (
+                self.config_data.get("start_minimised_to_tray")
+                or self.config_data.get("close_to_tray")
+                or "--start-minimised" in sys.argv
+            )
+            if not want:
+                return
+            try:
+                image = _PILImage.open(self._icon_png_path())
+            except Exception:  # pragma: no cover - missing/unreadable icon
+                return
+            menu = _pystray.Menu(
+                _pystray.MenuItem("Show Plume", self._tray_show, default=True),
+                _pystray.MenuItem("Quit", self._tray_quit),
+            )
+            self._tray_icon = _pystray.Icon(APP_NAME, image, APP_NAME, menu)
+            threading.Thread(target=self._tray_icon.run, daemon=True).start()
+            if (
+                self.config_data.get("start_minimised_to_tray")
+                or "--start-minimised" in sys.argv
+            ):
+                self.after(0, self.withdraw)
+
+        def _tray_show(self, icon=None, item=None):
+            # pystray's callback runs on its own thread; every UI action must
+            # hop back to the Tk thread via after(0, ...).
+            def _show():
+                try:
+                    if not self.winfo_exists():
+                        return
+                    self.deiconify()
+                    self.lift()
+                    self.focus_force()
+                    self._apply_always_on_top()
+                except tk.TclError:  # pragma: no cover - window closed
+                    pass
+
+            try:
+                self.after(0, _show)
+            except Exception:  # pragma: no cover - window closed
+                pass
+
+        def _tray_quit(self, icon=None, item=None):
+            try:
+                self.after(0, self._quit_from_tray)
+            except Exception:  # pragma: no cover - window closed
+                pass
+
+        def _quit_from_tray(self):
+            """Real shutdown: stop the tray icon, then the normal close path."""
+            self.config_data["close_to_tray"] = False  # do not recurse
+            icon = self._tray_icon
+            if icon is not None:
+                self._tray_icon = None
+                try:
+                    icon.stop()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+            self._on_close_destroy()
 
         def _clear_results(self):
             self._set_primary_text("Your main translation will appear here.")
@@ -2916,6 +3155,7 @@ if GUI_AVAILABLE:
                 new_config.get("default_french_recipient_gender", GENDER_FEMININE))
             self.backend_var.set(normalise_backend(new_config.get("backend")))
             self._apply_always_on_top()
+            self._maybe_start_tray()
             self._refresh_status()
 
         # --- translation lifecycle ---------------------------------------

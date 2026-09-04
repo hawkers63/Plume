@@ -492,6 +492,89 @@ class TestConfigCoercion(unittest.TestCase):
         )
         self.assertEqual(config["keep_as_is_terms"], ["Kes"])
 
+    def test_tray_settings_default_false(self):
+        config, _ = self._load_with({})
+        self.assertIs(config["launch_at_sign_in"], False)
+        self.assertIs(config["start_minimised_to_tray"], False)
+        self.assertIs(config["close_to_tray"], False)
+
+    def test_tray_settings_coerced_to_bool(self):
+        config, _ = self._load_with({
+            "launch_at_sign_in": "yes",
+            "start_minimised_to_tray": 1,
+            "close_to_tray": "true",
+        })
+        self.assertIs(config["launch_at_sign_in"], True)
+        self.assertIs(config["start_minimised_to_tray"], True)
+        self.assertIs(config["close_to_tray"], True)
+
+
+class TestAutostart(unittest.TestCase):
+    def test_autostart_command_contains_start_minimised_flag(self):
+        self.assertIn("--start-minimised", plume.autostart_command())
+
+    def test_autostart_command_quotes_executable(self):
+        command = plume.autostart_command()
+        self.assertTrue(command.startswith('"'))
+
+    def test_set_launch_at_sign_in_refuses_without_winreg(self):
+        with mock.patch.object(plume, "WINREG_AVAILABLE", False):
+            with self.assertRaises(plume.ConfigError):
+                plume.set_launch_at_sign_in(True)
+
+    def test_disable_without_winreg_is_a_no_op(self):
+        with mock.patch.object(plume, "WINREG_AVAILABLE", False):
+            plume.set_launch_at_sign_in(False)  # must not raise
+
+    def test_set_launch_at_sign_in_refuses_without_tray(self):
+        with mock.patch.object(plume, "WINREG_AVAILABLE", True), \
+                mock.patch.object(plume, "TRAY_AVAILABLE", False):
+            with self.assertRaises(plume.ConfigError):
+                plume.set_launch_at_sign_in(True)
+
+    def test_set_launch_at_sign_in_writes_registry_value(self):
+        fake_winreg = mock.MagicMock()
+        with mock.patch.object(plume, "WINREG_AVAILABLE", True), \
+                mock.patch.object(plume, "TRAY_AVAILABLE", True), \
+                mock.patch.object(plume, "_winreg", fake_winreg):
+            plume.set_launch_at_sign_in(True)
+        fake_winreg.SetValueEx.assert_called_once()
+        args = fake_winreg.SetValueEx.call_args[0]
+        self.assertEqual(args[1], plume.AUTOSTART_VALUE_NAME)
+        self.assertIn("--start-minimised", args[4])
+
+    def test_set_launch_at_sign_in_deletes_registry_value(self):
+        fake_winreg = mock.MagicMock()
+        with mock.patch.object(plume, "WINREG_AVAILABLE", True), \
+                mock.patch.object(plume, "_winreg", fake_winreg):
+            plume.set_launch_at_sign_in(False)
+        fake_winreg.DeleteValue.assert_called_once()
+
+    def test_set_launch_at_sign_in_disable_tolerates_missing_value(self):
+        fake_winreg = mock.MagicMock()
+        fake_winreg.DeleteValue.side_effect = FileNotFoundError
+        with mock.patch.object(plume, "WINREG_AVAILABLE", True), \
+                mock.patch.object(plume, "_winreg", fake_winreg):
+            plume.set_launch_at_sign_in(False)  # must not raise
+
+    def test_launch_at_sign_in_is_set_false_without_winreg(self):
+        with mock.patch.object(plume, "WINREG_AVAILABLE", False):
+            self.assertFalse(plume.launch_at_sign_in_is_set())
+
+    def test_launch_at_sign_in_is_set_true_when_value_present(self):
+        fake_winreg = mock.MagicMock()
+        fake_winreg.QueryValueEx.return_value = (plume.autostart_command(), 1)
+        with mock.patch.object(plume, "WINREG_AVAILABLE", True), \
+                mock.patch.object(plume, "_winreg", fake_winreg):
+            self.assertTrue(plume.launch_at_sign_in_is_set())
+
+    def test_launch_at_sign_in_is_set_false_when_value_missing(self):
+        fake_winreg = mock.MagicMock()
+        fake_winreg.OpenKey.side_effect = FileNotFoundError
+        with mock.patch.object(plume, "WINREG_AVAILABLE", True), \
+                mock.patch.object(plume, "_winreg", fake_winreg):
+            self.assertFalse(plume.launch_at_sign_in_is_set())
+
 
 class TestBackendHardening(unittest.TestCase):
     KEY_CONFIG = {"anthropic_api_key": "sk-test", "anthropic_model": "m"}

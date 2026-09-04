@@ -292,10 +292,13 @@ schema impact beyond one constants tuple:
 
 ## v1.15 — Correct English, then translate to French (notes_011 Feature A)
 
-- **Correct English** button on the left-pane button row (Paste / Clear /
-  Copy source / Reply / Correct English / Translate), plus a
-  Ctrl+Shift+Enter shortcut on the input box. A dedicated, narrower model
-  call (`build_correction_prompt` / `parse_correction_result` /
+- **Correct English** button, right-aligned next to Translate on its own
+  row beneath Paste / Clear / Copy source / Reply (a sixth fixed-width
+  button on the original single row pushed Translate off-screen at the
+  default 1180px width — split into two rows instead of widening the
+  window, mirroring the Settings dialog's Cancel/Save spacer pattern),
+  plus a Ctrl+Shift+Enter shortcut on the input box. A dedicated, narrower
+  model call (`build_correction_prompt` / `parse_correction_result` /
   `correct_english`) fixes spelling, grammar and necessary punctuation only
   — no paraphrasing, register change, or translation — then overwrites the
   input box with the corrected English and immediately runs the existing
@@ -312,6 +315,46 @@ schema impact beyond one constants tuple:
   Translate. If the input changes while correction is running, the result
   is discarded rather than overwriting newer text (matching `_deliver`'s
   existing "generated for an earlier message" discipline).
+
+## v1.16 — Sign-in autostart, minimised to the tray (notes_011 Feature B)
+
+- **Sign-in autostart:** a "Launch Plume when I sign in to Windows"
+  checkbox in Settings writes a quoted command (always including
+  `--start-minimised`) to the current user's
+  `HKCU\...\CurrentVersion\Run` key via `winreg`; unchecking deletes the
+  value. `set_launch_at_sign_in()` refuses to *enable* it outright on a
+  non-Windows machine or when the tray extras are missing — the command
+  always passes `--start-minimised`, so without a tray to hide into, the
+  window would just flash at every sign-in instead of sitting quietly.
+- **Tray icon, feature-gated:** `pystray` + `Pillow` are optional
+  (`TRAY_AVAILABLE`); Plume imports and runs exactly as before when
+  either is missing, and the three tray checkboxes in Settings are shown
+  disabled with a one-line caption rather than hidden without
+  explanation. The tray menu offers Show and Quit; the tray thread
+  marshals every UI action back to the Tk thread via `self.after(0, …)`,
+  the same discipline already used for Speak and Correct English
+  delivery.
+- **Start minimised to the tray** withdraws the window right after
+  construction (or immediately on Settings save, if just enabled) and
+  again whenever launched with `--start-minimised` on argv — the flag
+  the autostart command always passes.
+- **Close to the tray rather than quitting** replaces the destroy-on-X
+  behaviour with `withdraw()` when a tray icon is running; the tray's
+  Show item restores geometry, `deiconify()`, `lift()`, `focus_force()`
+  and re-applies Always on top (v1.9) so a hidden-then-shown window
+  never silently loses that flag. Quit (from the tray menu, or a real
+  close when close-to-tray is off) is the only path that stops the tray
+  icon and invalidates in-flight work via the existing `_on_close`
+  teardown. Single-instance enforcement is deliberately out of scope —
+  a second launch just opens a second window.
+- Verified end-to-end against the live app: enabling "Start minimised to
+  the tray" and "Close to the tray" and saving withdrew the running
+  window immediately; a fresh launch with those settings saved withdrew
+  on startup; sending the window a close request (the X-button path)
+  hid it rather than exiting, with the process staying alive throughout.
+  "Launch at sign-in" itself was verified only via mocked-registry unit
+  tests, not exercised for real, so as not to write a persistent
+  autostart entry to the developer's own Windows account during testing.
 
 ---
 

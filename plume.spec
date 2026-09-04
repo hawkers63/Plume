@@ -23,12 +23,23 @@ icon_datas = [
     (os.path.join("icon", "icon-96.png"), "icon"),
 ]
 
+# Tray support (v1.16) is optional at runtime; only bundle it if it is
+# actually installed at freeze time, so building without it still works.
+hiddenimports = ["customtkinter"]
+try:
+    import pystray  # noqa: F401
+    import PIL  # noqa: F401
+
+    hiddenimports += ["pystray", "PIL"]
+except ImportError:
+    pass
+
 a = Analysis(
     ["plume.py"],
     pathex=[],
     binaries=[],
     datas=ctk_datas + icon_datas,
-    hiddenimports=["customtkinter"],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

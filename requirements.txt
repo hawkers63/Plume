@@ -1,1 +1,5 @@
 customtkinter>=5.2.0
+
+# Optional extras (feature-gated; Plume runs normally without them):
+# pystray>=0.19.5      # tray icon, close-to-tray, start-minimised
+# Pillow>=10.0.0       # tray icon image
