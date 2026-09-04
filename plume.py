@@ -1127,6 +1127,108 @@ def parse_translation_result(raw, forced_direction=DIR_AUTO) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# English correction (v1.15, notes_011 Feature A): a second, narrower model
+# call, kept separate from translate() so the user always sees the exact
+# English that was sent for translation rather than a silent rewrite.
+# ---------------------------------------------------------------------------
+
+_CORRECTION_SCHEMA = """{
+  "corrected_text": "the corrected English, or the original if already correct",
+  "changes_made": true or false,
+  "notes": ["optional short notes"]
+}"""
+
+
+def looks_like_english(text: str) -> bool:
+    """Cheap, conservative guard: any French diacritic means "not English".
+
+    Used only to decide whether Correct English may run under Auto-detect. A
+    forced English -> French direction always wins over this helper. Accented
+    English loanwords ("cafe") may be refused; that is preferable to running
+    an English corrector over a French message.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return False
+    if re.search(r"[àâçéèêëîïôùûüÿœæÀÂÇÉÈÊËÎÏÔÙÛÜŸŒÆ]", text):
+        return False
+    return True
+
+
+def build_correction_prompt() -> str:
+    """System prompt for English spelling and grammar correction only."""
+    return (
+        "You are a precise copy-editor for British English. The user will "
+        "send a short conversational message that is about to be translated "
+        "into French.\n"
+        "Correct spelling, grammar and only the punctuation required for "
+        "correctness. Use British English spelling (organise, colour, "
+        "defence, practise as a verb, licence as a noun).\n"
+        "Do not paraphrase. Do not change register, tone, hedging, slang, "
+        "ellipsis or emoji. Do not add or remove clauses, facts or courtesy. "
+        "Do not translate. Do not 'improve' the wording. Preserve names, "
+        "placeholder tokens of the form ⟦PH0⟧, line breaks, and any "
+        "quoted content exactly.\n"
+        "If the text is already correct, return it unchanged and set "
+        "changes_made to false.\n\n"
+        "Return only one valid JSON object matching this shape, with no "
+        "Markdown fences and no prose before or after it:\n"
+        + _CORRECTION_SCHEMA
+    )
+
+
+def parse_correction_result(raw) -> dict:
+    """Validate a correction response. Never echoes submitted text in errors."""
+    if not isinstance(raw, str) or not raw.strip():
+        raise TranslationValidationError("The model returned an empty response.")
+    text = _strip_code_fence(raw)
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise TranslationValidationError(
+            "The model did not return valid JSON. Please try again."
+        )
+    if not isinstance(data, dict):
+        raise TranslationValidationError(
+            "The model response was not a single JSON object."
+        )
+    corrected = data.get("corrected_text")
+    if not isinstance(corrected, str) or not corrected.strip():
+        raise TranslationValidationError(
+            "The response had no usable corrected text."
+        )
+    return {
+        "corrected_text": corrected.replace("\r\n", "\n"),
+        "changes_made": bool(data.get("changes_made")),
+        "notes": _safe_string_list(data.get("notes", [])),
+    }
+
+
+def correct_english(config_snapshot, text: str) -> dict:
+    """Mask, correct, restore. Mirrors translate()'s worker-thread shape."""
+    protect = bool(config_snapshot.get("protect_placeholders", True))
+    masked, mapping = protect_text(
+        text,
+        enabled=protect,
+        extra_terms=normalise_keep_as_is_terms(
+            config_snapshot.get("keep_as_is_terms")
+        ),
+    )
+    raw = run_backend(
+        config_snapshot,
+        build_correction_prompt(),
+        "English text to correct:\n{}".format(masked),
+    )
+    result = parse_correction_result(raw)
+    if mapping and any(token not in result["corrected_text"] for token in mapping):
+        result["notes"] = [
+            "One or more protected items may not have been reproduced "
+            "exactly. Please check the corrected English before sending it."
+        ] + result.get("notes", [])
+    result["corrected_text"] = restore_tokens(result["corrected_text"], mapping)
+    return result
+
+
 # ===========================================================================
 # 5. Claude and Ollama backend functions
 # ===========================================================================
@@ -2238,7 +2340,10 @@ if GUI_AVAILABLE:
             self.char_label.grid(row=2, column=0, sticky="w", padx=12)
 
             ctk.CTkLabel(
-                left, text="Ctrl+Enter to translate", text_color="gray60"
+                left,
+                text="Ctrl+Enter to translate · Ctrl+Shift+Enter to correct "
+                     "English, then translate",
+                text_color="gray60",
             ).grid(row=3, column=0, sticky="w", padx=12)
 
             situation_row = ctk.CTkFrame(left, fg_color="transparent")
@@ -2261,8 +2366,7 @@ if GUI_AVAILABLE:
             ).grid(row=0, column=2, padx=(8, 0))
 
             buttons = ctk.CTkFrame(left, fg_color="transparent")
-            buttons.grid(row=5, column=0, sticky="ew", padx=12, pady=(8, 12))
-            buttons.grid_columnconfigure(4, weight=1)
+            buttons.grid(row=5, column=0, sticky="ew", padx=12, pady=(8, 4))
             ctk.CTkButton(buttons, text="Paste", width=90, command=self._paste,
                           fg_color="gray30").grid(row=0, column=0, padx=(0, 8))
             ctk.CTkButton(buttons, text="Clear", width=90, command=self._clear,
@@ -2276,10 +2380,24 @@ if GUI_AVAILABLE:
                 fg_color="gray30",
             )
             self.reply_btn.grid(row=0, column=3, padx=(0, 8))
-            self.translate_btn = ctk.CTkButton(
-                buttons, text="Translate", width=140, command=self._translate
+
+            # A second row for the two "do the work" actions, right-aligned as
+            # a secondary/primary pair — the same spacer-column pattern the
+            # Settings dialog already uses for Cancel/Save. Kept off the row
+            # above so a 1180px-wide window has room for both without any of
+            # the six buttons being pushed past the visible pane.
+            translate_row = ctk.CTkFrame(left, fg_color="transparent")
+            translate_row.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 12))
+            translate_row.grid_columnconfigure(0, weight=1)
+            self.correct_btn = ctk.CTkButton(
+                translate_row, text="Correct English", width=140,
+                command=self._correct_then_translate, fg_color="gray30",
             )
-            self.translate_btn.grid(row=0, column=5, sticky="e")
+            self.correct_btn.grid(row=0, column=1, padx=(0, 8))
+            self.translate_btn = ctk.CTkButton(
+                translate_row, text="Translate", width=140, command=self._translate
+            )
+            self.translate_btn.grid(row=0, column=2)
 
         def _build_right(self, parent):
             right = ctk.CTkFrame(parent)
@@ -2413,6 +2531,7 @@ if GUI_AVAILABLE:
             # does not fire while the Settings key field or another widget has
             # focus, and so it respects the disabled Translate button.
             self.input_box.bind("<Control-Return>", self._translate_shortcut)
+            self.input_box.bind("<Control-Shift-Return>", self._correct_shortcut)
 
         # --- small helpers ------------------------------------------------
 
@@ -2529,6 +2648,7 @@ if GUI_AVAILABLE:
             self._request_id += 1
             self._speech_request_id += 1
             self.translate_btn.configure(state="normal", text="Translate")
+            self.correct_btn.configure(state="normal", text="Correct English")
             self.reply_btn.configure(state="normal")
             self.input_box.delete("1.0", "end")
             self._clear_results()
@@ -2804,6 +2924,148 @@ if GUI_AVAILABLE:
             self._translate()
             return "break"  # suppress the newline Ctrl+Enter would insert
 
+        def _correct_shortcut(self, event):
+            self._correct_then_translate()
+            return "break"
+
+        def _correction_is_allowed(self):
+            """Return (ok, message). *message* is always safe to show."""
+            direction = self.direction_var.get()
+            if direction == DIR_FR_EN:
+                return False, (
+                    "Correct English applies to English source. Swap to "
+                    "English → French, or choose Auto-detect."
+                )
+            if direction == DIR_AUTO and not looks_like_english(self._input_text()):
+                return False, (
+                    "This looks like French. Correction is for English drafts "
+                    "that will be translated into French."
+                )
+            return True, ""
+
+        def _correct_then_translate(self):
+            """Correct the input's English, then run the existing translate pipeline.
+
+            Two sequential worker calls under the existing request-id guard,
+            not one combined prompt: the user should always see the exact
+            English that was actually sent for translation (notes_011
+            Feature A), and history keeps recording the corrected text as
+            the source, matching what was really translated.
+            """
+            if str(self.translate_btn.cget("state")) == "disabled":
+                return
+            ok, message = self._correction_is_allowed()
+            if not ok:
+                self.advisory.configure(text=message)
+                self.advisory.grid()
+                return
+            text = self._input_text()
+            limit = coerce_positive_int(
+                self.config_data.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS
+            )
+            ok, message = validate_source_size(text, limit)
+            if not ok:
+                self.advisory.configure(text=message)
+                self.advisory.grid()
+                return
+
+            snapshot = dict(self.config_data)
+            snapshot["default_direction"] = self.direction_var.get()
+            snapshot["default_french_formality"] = self.formality_var.get()
+            snapshot["default_french_speaker_gender"] = self.speaker_gender_var.get()
+            snapshot["default_french_recipient_gender"] = self.recipient_gender_var.get()
+
+            if snapshot.get("backend") == "anthropic" and not snapshot.get("privacy_ack"):
+                proceed = messagebox.askokcancel(
+                    "Privacy notice",
+                    "Claude processes text in the cloud, so the text you submit "
+                    "is sent to Anthropic. Ollama, by contrast, keeps everything "
+                    "on this machine.\n\nContinue with Claude?",
+                )
+                if not proceed:
+                    return
+                self.config_data["privacy_ack"] = True
+                snapshot["privacy_ack"] = True
+                try:
+                    save_config(self.config_data)
+                except ConfigError:
+                    pass
+
+            self._request_id += 1
+            rid = self._request_id
+            self.translate_btn.configure(state="disabled", text="Translate")
+            self.correct_btn.configure(state="disabled", text="Correcting…")
+            self.reply_btn.configure(state="disabled")
+            self.use_as_input_btn.configure(state="disabled")
+            self.advisory.grid_remove()
+            self._refresh_status(state="correcting English…")
+
+            def worker():
+                try:
+                    result = correct_english(snapshot, text)
+                    payload = ("ok", result)
+                except (BackendError, TranslationValidationError) as exc:
+                    payload = ("error", str(exc))
+                except Exception as exc:  # pragma: no cover - defensive
+                    payload = ("error", "An unexpected error occurred: {}".format(
+                        exc.__class__.__name__))
+
+                def _deliver_safe():
+                    try:
+                        self._deliver_correction(rid, text, payload)
+                    except tk.TclError:  # pragma: no cover - window closed
+                        pass
+
+                try:
+                    if self.winfo_exists():
+                        self.after(0, _deliver_safe)
+                except tk.TclError:  # pragma: no cover - window closed
+                    pass
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _deliver_correction(self, rid, snap_text, payload):
+            try:
+                if not self.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            if result_is_stale(rid, self._request_id):
+                return
+            self.translate_btn.configure(state="normal", text="Translate")
+            self.correct_btn.configure(state="normal", text="Correct English")
+            self.reply_btn.configure(state="normal")
+            kind, data = payload
+            if kind == "error":
+                self.advisory.configure(text=data)
+                self.advisory.grid()
+                self._refresh_status(state="ready")
+                return
+            if self._input_text() != snap_text:
+                self.advisory.configure(
+                    text="Corrected for an earlier message. Your input has "
+                         "changed since this correction was requested; it "
+                         "was not applied."
+                )
+                self.advisory.grid()
+                self._refresh_status(state="ready")
+                return
+
+            corrected = data.get("corrected_text", "")
+            self.input_box.delete("1.0", "end")
+            self.input_box.insert("1.0", corrected)
+            self._on_input_change()
+            notes = data.get("notes") or []
+            if notes:
+                self.advisory.configure(text="  •  ".join(notes))
+                self.advisory.grid()
+            # Proceed to French. Pin the direction so Auto-detect cannot bounce
+            # a short corrected phrase into French -> English.
+            if self.direction_var.get() != DIR_EN_FR:
+                self.direction_var.set(DIR_EN_FR)
+                self._on_toolbar_change()
+            self._translate()
+
         def _translate(self):
             # Refuse to start a second request while one is in flight. The
             # Translate button is disabled during a run; Ctrl+Enter would
@@ -2856,6 +3118,7 @@ if GUI_AVAILABLE:
             rid = self._request_id
 
             self.translate_btn.configure(state="disabled", text="Translating\u2026")
+            self.correct_btn.configure(state="disabled")
             self.reply_btn.configure(state="disabled")
             self.use_as_input_btn.configure(state="disabled")
             self.advisory.grid_remove()
@@ -2898,6 +3161,7 @@ if GUI_AVAILABLE:
             if result_is_stale(rid, self._request_id):
                 return
             self.translate_btn.configure(state="normal", text="Translate")
+            self.correct_btn.configure(state="normal", text="Correct English")
             self.reply_btn.configure(state="normal")
             self.use_as_input_btn.configure(state="normal" if self._current_main else "disabled")
 

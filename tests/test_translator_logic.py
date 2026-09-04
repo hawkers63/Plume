@@ -976,6 +976,74 @@ class TestHistoryPersistence(unittest.TestCase):
             self.assertEqual(loaded[0]["source_text"], "hello")
 
 
+class TestEnglishCorrection(unittest.TestCase):
+    def test_looks_like_english_plain(self):
+        self.assertTrue(plume.looks_like_english("See you tomorrow"))
+
+    def test_looks_like_english_rejects_diacritics(self):
+        self.assertFalse(plume.looks_like_english("À demain"))
+
+    def test_looks_like_english_rejects_blank(self):
+        self.assertFalse(plume.looks_like_english("   "))
+
+    def test_correction_prompt_forbids_paraphrase(self):
+        prompt = plume.build_correction_prompt()
+        self.assertIn("Do not paraphrase", prompt)
+        self.assertIn("British English", prompt)
+
+    def test_parse_correction_round_trip(self):
+        raw = json.dumps({
+            "corrected_text": "See you tomorrow.",
+            "changes_made": True,
+            "notes": [],
+        })
+        result = plume.parse_correction_result(raw)
+        self.assertEqual(result["corrected_text"], "See you tomorrow.")
+        self.assertTrue(result["changes_made"])
+
+    def test_parse_correction_rejects_empty_text(self):
+        raw = json.dumps({"corrected_text": "  ", "changes_made": False})
+        with self.assertRaises(plume.TranslationValidationError):
+            plume.parse_correction_result(raw)
+
+    def test_parse_correction_rejects_non_json(self):
+        with self.assertRaises(plume.TranslationValidationError):
+            plume.parse_correction_result("not json at all")
+
+    def test_parse_correction_rejects_list(self):
+        with self.assertRaises(plume.TranslationValidationError):
+            plume.parse_correction_result(json.dumps(["not", "a", "dict"]))
+
+    def test_correct_english_restores_protected_terms(self):
+        raw = json.dumps({
+            "corrected_text": "See you at ⟦PH0⟧ tomorrow.",
+            "changes_made": True,
+            "notes": [],
+        })
+        with mock.patch.object(plume, "run_backend", return_value=raw):
+            result = plume.correct_english(
+                dict(plume.DEFAULT_CONFIG),
+                "See you at test@example.com tomorrow.",
+            )
+        self.assertEqual(
+            result["corrected_text"], "See you at test@example.com tomorrow."
+        )
+        self.assertEqual(result["notes"], [])
+
+    def test_correct_english_warns_on_dropped_token(self):
+        raw = json.dumps({
+            "corrected_text": "See you tomorrow.",  # token silently dropped
+            "changes_made": True,
+            "notes": [],
+        })
+        with mock.patch.object(plume, "run_backend", return_value=raw):
+            result = plume.correct_english(
+                dict(plume.DEFAULT_CONFIG),
+                "See you at test@example.com tomorrow.",
+            )
+        self.assertTrue(result["notes"])
+
+
 class TestDocumentationShape(unittest.TestCase):
     def test_example_config_matches_default_config_keys(self):
         root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

@@ -51,6 +51,11 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   **Stop** button and a **Slow** playback toggle (a slower, lower-pitched
   playback rate — not studio-quality time-stretching, but a genuine aid
   for catching liaisons and elisions).
+- **Correct English** (Ctrl+Shift+Enter) fixes spelling, grammar and
+  necessary punctuation in a quickly-typed English draft — never
+  paraphrasing, translating or changing register — then automatically
+  translates the corrected text into French, so typos are never
+  faithfully carried into the French output.
 
 ---
 
@@ -87,6 +92,8 @@ switch to Ollama.
 Keyboard and mouse:
 
 - **Ctrl+Enter** — translate the current input.
+- **Ctrl+Shift+Enter** — correct the input's English, then translate it
+  (disabled for a fixed French → English direction).
 - **Paste** / **Clear** buttons, plus per-row **Use this**, **Copy** and
   **Speak**.
 - Use **Swap** to reverse a fixed direction before translating if

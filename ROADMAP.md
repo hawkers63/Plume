@@ -290,6 +290,29 @@ schema impact beyond one constants tuple:
   pickers reset to "None" on Clear and on Reopen from History, mirroring
   the existing finishing-touch reset.
 
+## v1.15 — Correct English, then translate to French (notes_011 Feature A)
+
+- **Correct English** button on the left-pane button row (Paste / Clear /
+  Copy source / Reply / Correct English / Translate), plus a
+  Ctrl+Shift+Enter shortcut on the input box. A dedicated, narrower model
+  call (`build_correction_prompt` / `parse_correction_result` /
+  `correct_english`) fixes spelling, grammar and necessary punctuation only
+  — no paraphrasing, register change, or translation — then overwrites the
+  input box with the corrected English and immediately runs the existing
+  Translate pipeline. Two separate calls, not one combined prompt: the user
+  always sees the exact English that was actually translated, and history
+  records the corrected text as the source.
+- Enabled for English → French or Auto-detect (guarded by the conservative
+  `looks_like_english()` diacritic check, which prefers a false refusal
+  over silently English-correcting a French message); refused for
+  French → English with an explanation in the advisory strip. Auto-detect
+  is pinned to English → French after a successful correction so a short
+  corrected phrase cannot bounce back into French → English.
+- Same in-flight lock, stale-request guard and Claude privacy notice as
+  Translate. If the input changes while correction is running, the result
+  is discarded rather than overwriting newer text (matching `_deliver`'s
+  existing "generated for an earlier message" discipline).
+
 ---
 
 ### Notes on sequencing
