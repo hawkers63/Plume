@@ -64,6 +64,11 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   Me/You gender agreement and situation as a named preset (a "Presets…"
   menu plus Save/Delete beside the toolbar's You control) — switch
   between a few regular conversations in one click.
+- **Register tones:** up to three background tones (Warm, Terse,
+  Playful, Precise, Courteous, Direct, Reassuring) beneath Situation,
+  the same non-authoritative background context, never overriding the
+  source text's own meaning. Conflicting tones (e.g. Terse + Playful)
+  resolve automatically, keeping the one just chosen.
 
 ---
 

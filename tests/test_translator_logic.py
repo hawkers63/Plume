@@ -391,6 +391,74 @@ class TestGenderAgreement(unittest.TestCase):
         self.assertEqual(plume.DEFAULT_CONFIG["default_french_recipient_gender"], "Feminine")
 
 
+class TestTones(unittest.TestCase):
+    def test_caps_at_three(self):
+        self.assertEqual(
+            len(plume.validate_tones(
+                ["Warm", "Precise", "Courteous", "Direct"]
+            )),
+            3,
+        )
+
+    def test_later_wins_conflict(self):
+        self.assertEqual(
+            plume.validate_tones(["Terse", "Playful"]),
+            ["Playful"],
+        )
+
+    def test_earlier_kept_when_no_conflict(self):
+        self.assertEqual(
+            plume.validate_tones(["Warm", "Courteous"]),
+            ["Warm", "Courteous"],
+        )
+
+    def test_none_and_unknown_dropped(self):
+        self.assertEqual(
+            plume.validate_tones(["None", "Sarcastic", "Warm"]),
+            ["Warm"],
+        )
+
+    def test_duplicate_ignored(self):
+        self.assertEqual(plume.validate_tones(["Warm", "Warm"]), ["Warm"])
+
+    def test_rejects_non_list(self):
+        self.assertEqual(plume.validate_tones("Warm"), [])
+
+    def test_all_conflict_pairs_resolve_to_later(self):
+        for a, b in (
+            ("Terse", "Playful"), ("Terse", "Warm"),
+            ("Playful", "Precise"), ("Direct", "Reassuring"),
+        ):
+            self.assertEqual(plume.validate_tones([a, b]), [b])
+
+    def test_instruction_omitted_when_empty(self):
+        self.assertEqual(plume.build_tone_instruction([]), "")
+
+    def test_instruction_is_background_only(self):
+        text = plume.build_tone_instruction(["Warm", "Precise"])
+        self.assertIn("background only", text)
+        self.assertIn("source text wins", text.lower())
+        self.assertIn("warm", text)
+        self.assertIn("precise", text)
+
+    def test_prompt_omits_tone_clause_when_empty(self):
+        prompt = plume.build_translation_prompt(tones=[])
+        self.assertNotIn("Register tones", prompt)
+
+    def test_prompt_includes_tone_clause(self):
+        prompt = plume.build_translation_prompt(tones=["Warm"])
+        self.assertIn("Register tones", prompt)
+        self.assertIn("warm", prompt)
+
+    def test_envelope_omits_tones_line_when_empty(self):
+        env = plume.build_user_envelope("hello", tones=[])
+        self.assertNotIn("Tones:", env)
+
+    def test_envelope_includes_tones_line(self):
+        env = plume.build_user_envelope("hello", tones=["Warm", "Precise"])
+        self.assertIn("Tones: Warm, Precise", env)
+
+
 class TestStatusState(unittest.TestCase):
     def test_status_honours_explicit_state(self):
         cfg = dict(plume.DEFAULT_CONFIG)

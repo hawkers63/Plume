@@ -446,6 +446,40 @@ schema impact beyond one constants tuple:
   preset from the menu and confirmed it restored both fields, then
   deleted it and confirmed the file and menu both went back to empty.
 
+## v1.20 — Three-tone register combinator (notes_011 Feature E)
+
+- Up to three register tones (`REGISTER_TONES`: Warm, Terse, Playful,
+  Precise, Courteous, Direct, Reassuring) as three compact `OptionMenu`s
+  under the Situation row on the input pane. The same class of
+  information as Situation and just as non-authoritative:
+  `build_tone_instruction()` explicitly forbids changing the JSON
+  shape, adding facts, or outranking the source text.
+- `validate_tones()` caps at three, drops unknown/`None` entries, and
+  resolves the four fixed conflict pairs (Terse/Playful, Terse/Warm,
+  Playful/Precise, Direct/Reassuring) by keeping whichever tone comes
+  *later* in the given order. The three menus feed their values through
+  in fixed left-to-right slot order on every change, so a newly-chosen
+  conflicting tone always wins over an existing one and the resolved
+  selection compacts left — simple and fully deterministic, at the cost
+  of using slot position rather than true click-order as the "later"
+  signal.
+- Wired into both `build_translation_prompt` (a background-only clause
+  appended after the Situation clause) and `build_user_envelope` (an
+  omitted-when-empty "Tones: …" line), matching Situation's own
+  omitted-when-blank pattern so existing callers and tests stay
+  unaffected. `translate()` reads tones from `config_snapshot["tones"]`
+  (set by `PlumeApp._translate()` from the three live menus), not from
+  a separate parameter like Situation, since tones have no per-message
+  free-text component.
+- Reopening a history entry resets all three tone menus to None, the
+  same as the finishing-touch and casual-sign-off pickers: history
+  entries predate this version and carry no stored tone data, so
+  resuming an old entry should not silently inherit today's live tones.
+- Verified end-to-end against the live app: selecting Terse then a
+  conflicting Playful correctly dropped Terse and compacted Playful
+  into the first slot; a real Claude translation completed normally
+  with a tone active.
+
 ---
 
 ### Notes on sequencing

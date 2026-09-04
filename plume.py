@@ -194,6 +194,25 @@ FINISHING_TOUCHES = (
 CASUAL_SIGNOFF_NONE = "None"
 CASUAL_SIGNOFFS = (CASUAL_SIGNOFF_NONE, "tkt", "grave")
 
+# --- Register tones (v1.20, notes_011 Feature E) ----------------------------
+# Background register hints for the translator — the same class of
+# information as Situation, and just as strictly non-authoritative: they
+# calibrate word choice only and never outrank the source text's own
+# meaning. Up to three at once; a newly chosen tone that conflicts with an
+# already-selected one silently drops the earlier one rather than erroring.
+TONE_NONE = "None"
+REGISTER_TONES = (
+    TONE_NONE, "Warm", "Terse", "Playful", "Precise",
+    "Courteous", "Direct", "Reassuring",
+)
+TONE_CONFLICTS = (
+    frozenset({"Terse", "Playful"}),
+    frozenset({"Terse", "Warm"}),
+    frozenset({"Playful", "Precise"}),
+    frozenset({"Direct", "Reassuring"}),
+)
+MAX_TONES = 3
+
 # Confidence values the model may report for language detection.
 CONFIDENCE_VALUES = ("high", "medium", "low")
 
@@ -1027,12 +1046,55 @@ def build_gender_clause(speaker_gender=GENDER_AVOID,
     ).format(speaker=speaker_gender.lower(), recipient=recipient_gender.lower())
 
 
+def validate_tones(value) -> list:
+    """At most MAX_TONES catalogue tones, unique, conflicts resolved.
+
+    *value* is read in order; a later entry that conflicts with an earlier
+    one drops the earlier one rather than being refused. Unknown values and
+    TONE_NONE are silently ignored, so a stray or stale value can never
+    raise. Order is otherwise preserved (first-chosen tones stay earliest).
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    allowed = set(REGISTER_TONES) - {TONE_NONE}
+    chosen = []
+    for item in value:
+        if item not in allowed or item in chosen:
+            continue
+        chosen = [
+            existing for existing in chosen
+            if frozenset({existing, item}) not in TONE_CONFLICTS
+        ]
+        chosen.append(item)
+        if len(chosen) >= MAX_TONES:
+            break
+    return chosen
+
+
+def build_tone_instruction(tones) -> str:
+    """Background-only register clause, or "" when no tones are set."""
+    tones = validate_tones(tones)
+    if not tones:
+        return ""
+    labels = ", ".join(t.lower() for t in tones)
+    return (
+        "Register tones (background only): " + labels + ". "
+        "Use them solely to calibrate register and word choice in the "
+        "target language. They must not change the required JSON output "
+        "shape, add or remove fields, override the requested direction, "
+        "add facts, jokes, flirtation or offence, soften or intensify "
+        "commitments, or embellish the source. If they conflict with what "
+        "the source text itself conveys, the source text wins."
+    )
+
+
 def build_translation_prompt(direction=DIR_AUTO,
                              french_formality=FORM_INFORMAL,
                              french_variant=VARIANT_NEUTRAL,
                              protect_tokens: bool = True,
                              speaker_gender=GENDER_AVOID,
-                             recipient_gender=GENDER_AVOID) -> str:
+                             recipient_gender=GENDER_AVOID,
+                             tones=()) -> str:
     """Build the system prompt. Pure function: same inputs -> same output.
 
     The prompt states the requested direction, the French address form and
@@ -1097,6 +1159,9 @@ def build_translation_prompt(direction=DIR_AUTO,
         "conveys, the source text wins."
     )
 
+    tone_instruction = build_tone_instruction(tones)
+    tone_clause = "\n\n" + tone_instruction if tone_instruction else ""
+
     return (
         "You are a precise conversational translator between English and "
         "French.\n"
@@ -1116,6 +1181,7 @@ def build_translation_prompt(direction=DIR_AUTO,
         + token_clause
         + "\n\n"
         + situation_clause
+        + tone_clause
         + "\n\nReturn one primary translation and exactly five distinct, "
         "idiomatic alternatives in the target language. The five alternatives "
         "must keep the source's tone and formality and must differ meaningfully "
@@ -1139,14 +1205,18 @@ def build_user_envelope(text: str,
                         french_variant=VARIANT_NEUTRAL,
                         speaker_gender=GENDER_AVOID,
                         recipient_gender=GENDER_AVOID,
-                        situation: str = "") -> str:
+                        situation: str = "",
+                        tones=()) -> str:
     """Wrap the (already masked) user text in a small labelled envelope.
 
     *situation* is an optional, user-supplied one-line description of the
-    conversation's register or context. The line is omitted entirely when
-    blank, so the envelope shape for existing callers is unchanged.
+    conversation's register or context. *tones* is an optional sequence of
+    register tones. Both lines are omitted entirely when empty, so the
+    envelope shape for existing callers is unchanged.
     """
     situation_line = "Situation: {}\n".format(situation) if situation else ""
+    clean_tones = validate_tones(tones)
+    tones_line = "Tones: {}\n".format(", ".join(clean_tones)) if clean_tones else ""
     return (
         "Requested direction: {}\n"
         "French address preference: {}\n"
@@ -1154,10 +1224,11 @@ def build_user_envelope(text: str,
         "French speaker agreement: {}\n"
         "French addressee agreement: {}\n"
         "{}"
+        "{}"
         "Text to translate:\n"
         "{}"
     ).format(direction, french_formality, french_variant,
-             speaker_gender, recipient_gender, situation_line, text)
+             speaker_gender, recipient_gender, situation_line, tones_line, text)
 
 
 class TranslationValidationError(Exception):
@@ -1657,6 +1728,7 @@ def translate(config_snapshot, text, situation=""):
     speaker_gender = config_snapshot.get("default_french_speaker_gender", GENDER_FEMININE)
     recipient_gender = config_snapshot.get("default_french_recipient_gender", GENDER_FEMININE)
     protect = bool(config_snapshot.get("protect_placeholders", True))
+    tones = validate_tones(config_snapshot.get("tones"))
 
     masked, mapping = protect_text(
         text,
@@ -1666,11 +1738,12 @@ def translate(config_snapshot, text, situation=""):
         ),
     )
     system_prompt = build_translation_prompt(
-        direction, formality, variant, protect, speaker_gender, recipient_gender
+        direction, formality, variant, protect, speaker_gender, recipient_gender,
+        tones=tones,
     )
     user_envelope = build_user_envelope(
         masked, direction, formality, variant, speaker_gender, recipient_gender,
-        situation=_safe_short_string(situation),
+        situation=_safe_short_string(situation), tones=tones,
     )
 
     raw = run_backend(config_snapshot, system_prompt, user_envelope)
@@ -2674,8 +2747,21 @@ if GUI_AVAILABLE:
                 command=self._apply_situation_preset,
             ).grid(row=0, column=2, padx=(8, 0))
 
+            # Register tones (v1.20): background context for the translator,
+            # the same class of information as Situation — never outranks
+            # the source text. Up to three, conflicts resolved on change.
+            tones_row = ctk.CTkFrame(left, fg_color="transparent")
+            tones_row.grid(row=5, column=0, sticky="w", padx=12, pady=(6, 0))
+            ctk.CTkLabel(tones_row, text="Tones").grid(row=0, column=0, padx=(0, 8))
+            self.tone_vars = [ctk.StringVar(value=TONE_NONE) for _ in range(MAX_TONES)]
+            for index, tone_var in enumerate(self.tone_vars):
+                ctk.CTkOptionMenu(
+                    tones_row, values=list(REGISTER_TONES), variable=tone_var,
+                    width=120, command=self._on_tone_change,
+                ).grid(row=0, column=index + 1, padx=(0, 6))
+
             buttons = ctk.CTkFrame(left, fg_color="transparent")
-            buttons.grid(row=5, column=0, sticky="ew", padx=12, pady=(8, 4))
+            buttons.grid(row=6, column=0, sticky="ew", padx=12, pady=(8, 4))
             ctk.CTkButton(buttons, text="Paste", width=90, command=self._paste,
                           fg_color="gray30").grid(row=0, column=0, padx=(0, 8))
             ctk.CTkButton(buttons, text="Clear", width=90, command=self._clear,
@@ -2696,7 +2782,7 @@ if GUI_AVAILABLE:
             # above so a 1180px-wide window has room for both without any of
             # the six buttons being pushed past the visible pane.
             translate_row = ctk.CTkFrame(left, fg_color="transparent")
-            translate_row.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 12))
+            translate_row.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 12))
             translate_row.grid_columnconfigure(0, weight=1)
             self.correct_btn = ctk.CTkButton(
                 translate_row, text="Correct English", width=140,
@@ -2895,6 +2981,25 @@ if GUI_AVAILABLE:
                 return
             self.situation_entry.delete(0, "end")
             self.situation_entry.insert(0, value)
+
+        # --- register tones (v1.20) -----------------------------------
+
+        def _current_tones(self):
+            return validate_tones([var.get() for var in self.tone_vars])
+
+        def _on_tone_change(self, _value=None):
+            """Resolve conflicts/cap and refresh all three menus.
+
+            Re-running validate_tones over the fixed left-to-right slot
+            order (rather than tracking click history) means a later slot
+            always wins a conflict and selections compact to the left —
+            simple and deterministic, matching validate_tones' own
+            "later wins" contract.
+            """
+            resolved = self._current_tones()
+            resolved += [TONE_NONE] * (MAX_TONES - len(resolved))
+            for var, value in zip(self.tone_vars, resolved):
+                var.set(value)
 
         # --- user conversation presets (v1.19) -----------------------------
 
@@ -3223,6 +3328,8 @@ if GUI_AVAILABLE:
             self.advisory.grid_remove()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
             self.casual_signoff_var.set(CASUAL_SIGNOFF_NONE)
+            for tone_var in self.tone_vars:
+                tone_var.set(TONE_NONE)
             self._render_result(entry)
             if entry.get("favourite"):
                 # Already starred in history: reflect that instead of letting
@@ -3559,6 +3666,7 @@ if GUI_AVAILABLE:
             snapshot["default_french_formality"] = self.formality_var.get()
             snapshot["default_french_speaker_gender"] = self.speaker_gender_var.get()
             snapshot["default_french_recipient_gender"] = self.recipient_gender_var.get()
+            snapshot["tones"] = self._current_tones()
 
             if snapshot.get("backend") == "anthropic" and not snapshot.get("privacy_ack"):
                 proceed = messagebox.askokcancel(
