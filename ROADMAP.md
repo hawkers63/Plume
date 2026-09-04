@@ -381,6 +381,48 @@ schema impact beyond one constants tuple:
   new capability — there was no transient failure to trigger a retry
   against the live API in this session).
 
+## v1.18 — Explorer drag-and-drop (notes_011 Feature C) — attempted, reverted
+
+- notes_011's `WindowsDropTarget` design (native `WM_DROPFILES` via a
+  ctypes `SetWindowLongPtrW` subclass of the Tk toplevel's WndProc, no
+  TkDND) was implemented in full: the subclass, `read_dropped_file()`
+  (.txt/.md always, .docx behind a `DOCX_AVAILABLE` guard exactly like
+  `TRAY_AVAILABLE`), extension filtering, and the "first supported file
+  wins, extras ignored with one advisory" replace-not-merge behaviour.
+- Two real bugs were found and fixed during testing: the note's own
+  `DragFinish(hdrop)` call passed a 64-bit HDROP through ctypes with no
+  `argtypes`, so ctypes assumed a 32-bit C `int` and raised
+  `OverflowError` on every real handle — silently swallowed by the
+  handler's own "fail closed" `except Exception: pass`, so the drop
+  appeared to simply do nothing. Fixing the `argtypes` exposed a second,
+  far more serious fault: **posting a real `WM_DROPFILES` message from
+  an external process** (simulated by constructing a genuine `DROPFILES`
+  structure via `GlobalAlloc`/`PostMessage` from a separate PowerShell
+  process — mechanically the same delivery path Explorer itself uses,
+  not a synthetic shortcut) **crashed the whole interpreter** with
+  `Fatal Python error: PyEval_RestoreThread: the function must be called
+  with the GIL held, but the GIL is released (the current Python thread
+  state is NULL)`. Explicitly wrapping the drop handler in
+  `ctypes.pythonapi.PyGILState_Ensure()`/`PyGILState_Release()` — the
+  standard fix for calling into Python from a foreign thread context —
+  did not change the crash at all, which points to a deeper conflict
+  between raw `WNDPROC` subclassing and this Tcl/Tk build's own internal
+  Windows message-pump/notifier implementation, not a simple missing-GIL
+  bug in the handler itself.
+- notes_011 itself named this "the most fragile slice" and prescribed
+  failing closed (DragAcceptFiles off, no crash, Paste still works) if
+  it misbehaved. A hard interpreter crash on a real Explorer drop is the
+  opposite of failing closed, so this version was **reverted in full**
+  (`git checkout --` back to the v1.17 tree) rather than shipped with a
+  known crash path — a real user dragging a file onto Plume would hit
+  the same asynchronous, cross-process delivery that crashed the test.
+- Not scheduled for a specific future version. Revisiting this needs
+  either real Tcl/Tk-on-Windows notifier expertise to find the actual
+  conflict, or dropping the "no TkDND" constraint in favour of a
+  maintained library (e.g. `tkinterdnd2`) that already solves this
+  problem correctly, rather than further trial-and-error on hand-rolled
+  ctypes subclassing.
+
 ---
 
 ### Notes on sequencing
