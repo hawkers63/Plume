@@ -1274,6 +1274,105 @@ class TestExportFavourites(unittest.TestCase):
         self.assertEqual(md.count("## Bonjour"), 2)
 
 
+class TestCurrentResultExport(unittest.TestCase):
+    def test_includes_source_situation_and_main(self):
+        md = plume.export_current_result_markdown(
+            "Bonjour", valid_result(), situation="a close friend"
+        )
+        self.assertIn("Bonjour", md)
+        self.assertIn("**Situation:** a close friend", md)
+        self.assertIn("Bonjour tout le monde", md)
+
+    def test_omits_situation_section_when_blank(self):
+        md = plume.export_current_result_markdown("Bonjour", valid_result())
+        self.assertNotIn("Situation:", md)
+
+    def test_includes_all_alternatives(self):
+        md = plume.export_current_result_markdown("Bonjour", valid_result())
+        for variation in valid_result()["variations"]:
+            self.assertIn(variation["translation"], md)
+
+    def test_includes_a_diff_section(self):
+        md = plume.export_current_result_markdown("Bonjour", valid_result())
+        self.assertIn("## Diff", md)
+        self.assertIn("```diff", md)
+
+    def test_omits_diff_when_no_source_or_target(self):
+        empty_result = valid_result(main="")
+        empty_result["variations"] = []
+        md = plume.export_current_result_markdown("", empty_result)
+        self.assertNotIn("## Diff", md)
+
+
+class TestMetrics(unittest.TestCase):
+    def test_counts_characters_and_words(self):
+        metrics = plume.text_metrics("one two three")
+        self.assertEqual(metrics["characters"], 13)
+        self.assertEqual(metrics["words"], 3)
+
+    def test_empty_text_has_zero_reading_seconds(self):
+        metrics = plume.text_metrics("")
+        self.assertEqual(metrics["reading_seconds"], 0)
+
+    def test_french_uses_slower_wpm(self):
+        text = " ".join(["mot"] * 200)
+        en_metrics = plume.text_metrics(text)
+        fr_metrics = plume.text_metrics(text, language=plume.FRENCH)
+        self.assertGreater(fr_metrics["reading_seconds"], en_metrics["reading_seconds"])
+
+    def test_auto_detect_uses_english_rate(self):
+        text = " ".join(["word"] * 200)
+        self.assertEqual(
+            plume.text_metrics(text, language=None)["reading_seconds"],
+            plume.text_metrics(text, language=plume.ENGLISH)["reading_seconds"],
+        )
+
+    def test_format_label_reports_empty(self):
+        label = plume.format_metrics_label(plume.text_metrics(""))
+        self.assertIn("0 characters", label)
+        self.assertIn("empty", label)
+
+    def test_format_label_reports_seconds(self):
+        label = plume.format_metrics_label({"characters": 10, "words": 2, "reading_seconds": 5})
+        self.assertIn("~5 s to read", label)
+
+    def test_format_label_reports_minutes(self):
+        label = plume.format_metrics_label(
+            {"characters": 1000, "words": 300, "reading_seconds": 90}
+        )
+        self.assertIn("min to read", label)
+
+
+class TestCfHtml(unittest.TestCase):
+    def _parse_offsets(self, payload: bytes) -> dict:
+        header = payload.decode("utf-8", errors="ignore")
+        offsets = {}
+        for line in header.splitlines():
+            if ":" in line:
+                key, _, value = line.partition(":")
+                if value.strip().isdigit():
+                    offsets[key] = int(value)
+        return offsets
+
+    def test_offsets_point_to_correct_slices(self):
+        payload = plume._build_cf_html("<b>hi</b>")
+        offsets = self._parse_offsets(payload)
+        fragment = payload[offsets["StartFragment"]:offsets["EndFragment"]]
+        self.assertEqual(fragment.decode("utf-8"), "<b>hi</b>")
+        whole = payload[offsets["StartHTML"]:offsets["EndHTML"]]
+        self.assertTrue(whole.decode("utf-8").startswith("<html>"))
+
+    def test_handles_multibyte_utf8_fragment(self):
+        payload = plume._build_cf_html("<p>café — déjà vu</p>")
+        offsets = self._parse_offsets(payload)
+        fragment = payload[offsets["StartFragment"]:offsets["EndFragment"]]
+        self.assertEqual(fragment.decode("utf-8"), "<p>café — déjà vu</p>")
+
+    def test_non_windows_copy_returns_false(self):
+        with mock.patch.object(plume.sys, "platform", "linux"):
+            self.assertFalse(plume.copy_html_to_windows_clipboard("<p>hi</p>", "hi"))
+
+
 class TestHistoryPersistence(unittest.TestCase):
     def test_atomic_save_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:

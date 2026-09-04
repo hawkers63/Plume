@@ -480,6 +480,42 @@ schema impact beyond one constants tuple:
   into the first slot; a real Claude translation completed normally
   with a tone active.
 
+## v1.21 — Current-result export, HTML clipboard, metrics (notes_011 Feature F)
+
+- **Export**, next to Favourite on the primary card: writes a Markdown
+  study sheet (`export_current_result_markdown`) with the source,
+  situation, main translation, all five alternatives, and a fenced
+  `difflib.unified_diff` of source vs. translation — a reading aid, not
+  a claim the two texts match (they are different languages). Distinct
+  from v1.13's Export favourites: this exports whatever is currently on
+  screen, whether or not local history is enabled, via the same
+  `_current_result` + `_current_main` ("Use this"-aware) pattern as
+  Favourite.
+- **Copy as HTML**, Windows only: puts a real `CF_HTML` clipboard
+  payload alongside a plain-text fallback, via
+  `copy_html_to_windows_clipboard()`. `_build_cf_html()` — the fiddly
+  part, per Microsoft's HTML Clipboard Format — builds the header twice
+  (placeholder offsets first, purely to measure its own byte length,
+  then the real offsets), all as UTF-8 byte positions. Falls back to
+  the existing plain-text `_copy()` on any non-Windows platform or if
+  the clipboard write fails for any reason, so the button always does
+  *something* useful. Unlike v1.18's WM_DROPFILES, this has no
+  callback-into-Python re-entrancy (`OpenClipboard`/`SetClipboardData`
+  are synchronous, same-thread, outward-only calls), so the GIL/thread-
+  state hazard that sank v1.18 does not apply here.
+- **Metrics**: the input pane's character count becomes "N characters
+  · M words · ~Xs to read" (`text_metrics`/`format_metrics_label`).
+  English ~200 wpm, French ~180 wpm; Auto-detect and a fixed
+  English → French direction both use the English rate rather than
+  running a model call just to pick a words-per-minute constant.
+- Verified end-to-end against the live app: the metrics label updated
+  correctly while typing; Export produced a correctly-formatted file
+  (checked on disk) via the real native Save dialog; Copy as HTML was
+  verified by reading the live Windows clipboard back afterwards
+  (`System.Windows.Forms.Clipboard`, from PowerShell) — both the plain
+  text and the `HTML Format` payload round-tripped correctly, with
+  .NET's own independent reader confirming the byte offsets were exact.
+
 ---
 
 ### Notes on sequencing

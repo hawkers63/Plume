@@ -30,6 +30,9 @@ module and exercise the logic without a display or CustomTkinter installed.
 
 from __future__ import annotations
 
+import ctypes
+import difflib
+import html
 import io
 import json
 import os
@@ -222,6 +225,11 @@ MAX_NOTE_CHARS = 240
 MAX_NOTES = 6
 KEEP_AS_IS_MAX_TERMS = 20
 KEEP_AS_IS_MAX_CHARS = 40
+
+# Reading-time estimate (v1.21): a rough guide beside the character count,
+# never a claim of precision.
+WORDS_PER_MINUTE_EN = 200
+WORDS_PER_MINUTE_FR = 180
 
 # Placeholder token format, e.g. the first protected item becomes the token
 # below with 0 substituted for its index.
@@ -762,6 +770,55 @@ def export_history_to_markdown(entries) -> str:
                     lines.append("- {} — *{}*".format(translation, meaning))
                 else:
                     lines.append("- {}".format(translation))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def export_current_result_markdown(source_text, result, situation="") -> str:
+    """Markdown study sheet for the working result (v1.21), not history.
+
+    export_history_to_markdown (v1.13) covers saved favourites; this is for
+    the translation currently on screen, whether or not history is enabled.
+    The trailing diff is a study aid only — source and translation are
+    different languages, so it is never a claim that the two match.
+    """
+    lines = ["# Plume translation", ""]
+    situation = (situation or "").strip()
+    if situation:
+        lines.append("**Situation:** {}".format(situation))
+        lines.append("")
+    lines.append("## Source")
+    lines.append("")
+    lines.append(source_text or "")
+    lines.append("")
+    lines.append("## Main translation")
+    lines.append("")
+    lines.append(result.get("main_translation") or "")
+    lines.append("")
+    variations = result.get("variations") or []
+    if variations:
+        lines.append("## Alternatives")
+        lines.append("")
+        for index, variation in enumerate(variations, start=1):
+            meaning = variation.get("english_meaning_check") or ""
+            lines.append("{}. {}{}".format(
+                index,
+                variation.get("translation") or "",
+                " — *{}*".format(meaning) if meaning else "",
+            ))
+        lines.append("")
+    source_lines = (source_text or "").splitlines()
+    target_lines = (result.get("main_translation") or "").splitlines()
+    diff = list(difflib.unified_diff(
+        source_lines, target_lines,
+        fromfile="source", tofile="translation", lineterm="",
+    ))
+    if diff:
+        lines.append("## Diff")
+        lines.append("")
+        lines.append("```diff")
+        lines.extend(diff)
+        lines.append("```")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1832,6 +1889,103 @@ def pcm_to_wav_bytes(pcm_data: bytes, sample_rate: int = ELEVENLABS_SAMPLE_RATE,
     return buffer.getvalue()
 
 
+# ---------------------------------------------------------------------------
+# Copy as HTML (v1.21, notes_011 Feature F). Windows' CF_HTML clipboard
+# format only — a plain-text copy is always the fallback, both when this
+# fails and on any non-Windows platform.
+# ---------------------------------------------------------------------------
+
+
+def _build_cf_html(html_fragment: str) -> bytes:
+    """Build a CF_HTML payload per Microsoft's HTML Clipboard Format.
+
+    The header's own byte offsets describe positions within the buffer that
+    includes the header itself, so it is built once with placeholder zeros
+    purely to measure the header's length, then rebuilt with the real
+    offsets. All offsets are UTF-8 byte offsets, matching the UTF-8 encoding
+    used for the whole payload.
+    """
+    prefix_template = (
+        "Version:0.9\r\n"
+        "StartHTML:{start_html:010d}\r\n"
+        "EndHTML:{end_html:010d}\r\n"
+        "StartFragment:{start_fragment:010d}\r\n"
+        "EndFragment:{end_fragment:010d}\r\n"
+    )
+    html_prefix = "<html><body><!--StartFragment-->"
+    html_suffix = "<!--EndFragment--></body></html>"
+    header_len = len(prefix_template.format(
+        start_html=0, end_html=0, start_fragment=0, end_fragment=0,
+    ).encode("utf-8"))
+    start_html = header_len
+    start_fragment = start_html + len(html_prefix.encode("utf-8"))
+    end_fragment = start_fragment + len(html_fragment.encode("utf-8"))
+    end_html = end_fragment + len(html_suffix.encode("utf-8"))
+    header = prefix_template.format(
+        start_html=start_html, end_html=end_html,
+        start_fragment=start_fragment, end_fragment=end_fragment,
+    )
+    return (header + html_prefix + html_fragment + html_suffix).encode("utf-8")
+
+
+def copy_html_to_windows_clipboard(html_fragment: str, plain_text: str) -> bool:
+    """Best-effort: put CF_HTML and a Unicode plain-text fallback on the
+    clipboard. Returns False (never raises) on any failure or off Windows,
+    so the caller can fall back to the existing plain-text copy path.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        payload = _build_cf_html(html_fragment)
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        user32.RegisterClipboardFormatW.restype = ctypes.c_uint
+        user32.RegisterClipboardFormatW.argtypes = [ctypes.c_wchar_p]
+        cf_html = user32.RegisterClipboardFormatW("HTML Format")
+        if not cf_html:
+            return False
+
+        user32.OpenClipboard.restype = ctypes.c_int
+        user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+        if not user32.OpenClipboard(None):
+            return False
+        try:
+            user32.EmptyClipboard()
+
+            kernel32.GlobalAlloc.restype = ctypes.c_void_p
+            kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+            kernel32.GlobalLock.restype = ctypes.c_void_p
+            kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+            kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+            user32.SetClipboardData.restype = ctypes.c_void_p
+            user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+            GMEM_MOVEABLE_ZEROINIT = 0x0042
+
+            # CF_HTML: raw UTF-8 bytes, NUL-terminated.
+            html_bytes = payload + b"\x00"
+            hmem_html = kernel32.GlobalAlloc(GMEM_MOVEABLE_ZEROINIT, len(html_bytes))
+            if hmem_html:
+                ptr = kernel32.GlobalLock(hmem_html)
+                ctypes.memmove(ptr, html_bytes, len(html_bytes))
+                kernel32.GlobalUnlock(hmem_html)
+                # Ownership passes to the system on success; never GlobalFree.
+                user32.SetClipboardData(cf_html, hmem_html)
+
+            # CF_UNICODETEXT = 13: plain-text fallback for non-HTML targets.
+            text_bytes = (plain_text + "\0").encode("utf-16-le")
+            hmem_text = kernel32.GlobalAlloc(GMEM_MOVEABLE_ZEROINIT, len(text_bytes))
+            if hmem_text:
+                ptr = kernel32.GlobalLock(hmem_text)
+                ctypes.memmove(ptr, text_bytes, len(text_bytes))
+                kernel32.GlobalUnlock(hmem_text)
+                user32.SetClipboardData(13, hmem_text)
+        finally:
+            user32.CloseClipboard()
+        return True
+    except Exception:  # pragma: no cover - defensive, platform dependent
+        return False
+
+
 # ===========================================================================
 # Status / label formatting (pure, tested for privacy)
 # ===========================================================================
@@ -1863,6 +2017,43 @@ def format_language_label(result) -> str:
     confidence = result.get("language_confidence", "low")
     return "{} \u2192 {} \u00b7 detected with {} confidence".format(
         source, target, confidence
+    )
+
+
+_WORD_RE = re.compile(r"\S+", re.UNICODE)
+
+
+def text_metrics(text: str, language=None) -> dict:
+    """Characters, words, and an approximate reading time in seconds.
+
+    *language* selects the words-per-minute assumption; anything other
+    than FRENCH (including None, e.g. Auto-detect) uses the English rate,
+    since guessing the language just for a metrics label is not worth a
+    model call.
+    """
+    text = text or ""
+    characters = len(text)
+    words = len(_WORD_RE.findall(text))
+    wpm = WORDS_PER_MINUTE_FR if language == FRENCH else WORDS_PER_MINUTE_EN
+    seconds = int(round((words / float(wpm)) * 60)) if words else 0
+    return {
+        "characters": characters,
+        "words": words,
+        "reading_seconds": seconds,
+    }
+
+
+def format_metrics_label(metrics: dict) -> str:
+    """Build the 'N characters \u00b7 M words \u00b7 ~Xs to read' input-pane label."""
+    seconds = metrics.get("reading_seconds") or 0
+    if seconds <= 1:
+        read = "~1 s to read" if metrics.get("words") else "empty"
+    elif seconds < 60:
+        read = "~{} s to read".format(seconds)
+    else:
+        read = "~{} min to read".format(max(1, int(round(seconds / 60.0))))
+    return "{} characters \u00b7 {} words \u00b7 {}".format(
+        metrics.get("characters", 0), metrics.get("words", 0), read
     )
 
 
@@ -2718,7 +2909,9 @@ if GUI_AVAILABLE:
             self.input_box.grid(row=1, column=0, sticky="nsew", padx=12, pady=4)
             self.input_box.bind("<KeyRelease>", self._on_input_change)
 
-            self.char_label = ctk.CTkLabel(left, text="0 characters", text_color="gray70")
+            self.char_label = ctk.CTkLabel(
+                left, text=format_metrics_label(text_metrics("")), text_color="gray70"
+            )
             self.char_label.grid(row=2, column=0, sticky="w", padx=12)
 
             ctk.CTkLabel(
@@ -2897,6 +3090,18 @@ if GUI_AVAILABLE:
                 state="disabled",
             )
             self.favourite_btn.grid(row=0, column=0, sticky="w")
+            self.export_btn = ctk.CTkButton(
+                favourite_row, text="Export", width=90,
+                command=self._export_current_result, fg_color="gray30",
+                state="disabled",
+            )
+            self.export_btn.grid(row=0, column=1, padx=(8, 0), sticky="w")
+            self.copy_html_btn = ctk.CTkButton(
+                favourite_row, text="Copy as HTML", width=120,
+                command=self._copy_current_result_as_html, fg_color="gray30",
+                state="disabled",
+            )
+            self.copy_html_btn.grid(row=0, column=2, padx=(8, 0), sticky="w")
 
             self.language_label = ctk.CTkLabel(right, text="", text_color="gray70")
             self.language_label.grid(row=2, column=0, sticky="w", padx=12)
@@ -3117,7 +3322,12 @@ if GUI_AVAILABLE:
             self.input_box.focus_set()
 
         def _on_input_change(self, _event=None):
-            self.char_label.configure(text="{} characters".format(len(self._input_text())))
+            language = FRENCH if self.direction_var.get() == DIR_FR_EN else None
+            self.char_label.configure(
+                text=format_metrics_label(
+                    text_metrics(self._input_text(), language=language)
+                )
+            )
             self._refresh_status()
 
         def _refresh_status(self, state=None):
@@ -3241,6 +3451,8 @@ if GUI_AVAILABLE:
             self.copy_main_btn.configure(state="disabled")
             self.speak_main_btn.configure(state="disabled")
             self.use_as_input_btn.configure(state="disabled")
+            self.export_btn.configure(state="disabled")
+            self.copy_html_btn.configure(state="disabled")
             self._reset_favourite_button(enabled=False)
             self._stop_speech()
             self._cleanup_tts_file()
@@ -3290,6 +3502,8 @@ if GUI_AVAILABLE:
             self.copy_main_btn.configure(state="normal")
             self.speak_main_btn.configure(state="normal")
             self.use_as_input_btn.configure(state="normal")
+            self.export_btn.configure(state="normal")
+            self.copy_html_btn.configure(state="normal")
             self._reset_favourite_button(enabled=True)
 
         def _use_main_as_input(self):
@@ -3813,6 +4027,8 @@ if GUI_AVAILABLE:
             self.copy_main_btn.configure(state="normal")
             self.speak_main_btn.configure(state="normal")
             self.use_as_input_btn.configure(state="normal")
+            self.export_btn.configure(state="normal")
+            self.copy_html_btn.configure(state="normal")
             self._reset_favourite_button(enabled=True)
             self.language_label.configure(text=format_language_label(result))
 
@@ -3900,6 +4116,52 @@ if GUI_AVAILABLE:
                 return
             self._current_favourited = True
             self.favourite_btn.configure(text="★ Favourited", state="disabled")
+
+        def _export_current_result(self):
+            """Write the working result to a Markdown study sheet (v1.21).
+
+            Distinct from Export favourites (v1.13, in the History window):
+            this exports the result currently on screen, whether or not
+            local history is enabled. Reuses self._current_result for the
+            alternatives with self._current_main as the main translation,
+            the same "Use this"-aware pattern as _favourite_current_result.
+            """
+            if not self._current_main or self._current_result is None:
+                return
+            path = filedialog.asksaveasfilename(
+                title="Export translation",
+                defaultextension=".md",
+                filetypes=[("Markdown study sheet", "*.md")],
+            )
+            if not path:
+                return
+            result_for_export = dict(self._current_result)
+            result_for_export["main_translation"] = self._current_main
+            content = export_current_result_markdown(
+                self._input_text(), result_for_export, self._situation_text()
+            )
+            try:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+            except OSError:
+                self.advisory.configure(text="Could not write the export file.")
+                self.advisory.grid()
+
+        def _copy_current_result_as_html(self):
+            """Copy the main translation as HTML, with a plain-text fallback.
+
+            Windows only (CF_HTML); falls back to the existing plain-text
+            copy on any other platform or if the clipboard write fails, so
+            this button always does *something* useful rather than nothing.
+            """
+            if not self._current_main:
+                return
+            text = append_finishing_touch(self._current_main, self._current_touch())
+            fragment = "<p>{}</p>".format(
+                html.escape(text).replace("\n", "<br>")
+            )
+            if not copy_html_to_windows_clipboard(fragment, text):
+                self._copy(text)
 
 
 # ===========================================================================

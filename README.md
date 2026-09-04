@@ -69,6 +69,12 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   the same non-authoritative background context, never overriding the
   source text's own meaning. Conflicting tones (e.g. Terse + Playful)
   resolve automatically, keeping the one just chosen.
+- **Export** the current result to a Markdown study sheet (source,
+  situation, all alternatives, a diff view), and **Copy as HTML**
+  (Windows) for pasting formatted text into email or documents — both
+  next to Favourite on the primary card.
+- The input pane shows a reading-time estimate alongside the character
+  and word count.
 
 ---
 
