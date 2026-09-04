@@ -18,3 +18,6 @@ dist/
 desktop.ini
 Thumbs.db
 .DS_Store
+
+# Claude Code local tooling state (background-job worktrees, etc.)
+.claude/

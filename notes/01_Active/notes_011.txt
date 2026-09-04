@@ -1,0 +1,1639 @@
+Plume — Feature proposals (Note 11)
+===================================
+Scope  : C:\Plume  (read-only review of the live GitHub main tree)
+Date   : 4 September 2026
+Author : Mark / Grok (Lead Enhancement & Feature Architect)
+Mode   : Ideation only. No application source was modified.
+Report : C:\Plume\notes\01_Active\notes_011.txt
+
+This is the next sequential active note after notes_010. Insertion maps
+and line numbers are against the live module on GitHub main
+(hawkers63/Plume @ 014f531, plume.py 3,081 lines), which already contains
+v1.10–v1.14. A workspace snapshot at 2,645 lines (through v1.9) was also
+read; it is behind the live tree and must not be used as the insertion
+baseline.
+
+------------------------------------------------------------------------
+0. What this note is and is not
+------------------------------------------------------------------------
+Re-read before writing: live plume.py, tests\test_translator_logic.py,
+plume_config.example.json, plume.spec, Plume.bat, requirements.txt,
+README.md, ROADMAP.md, AGENTS.md, and notes_004 through notes_010.
+
+Already landed (do not re-propose): gender agreement, finishing touches,
+"Use this", toolbar backend toggle, Swap, Situation, History/Favourites,
+Reopen, Speak/TTS, v1.8 hardening, Reply, Always on top, Keep as-is,
+situation presets, Copy source, Use as input, Stop/Slow speech,
+Favourite-from-main, export favourites (TSV/Markdown), casual sign-off
+(tkt / grave), scrollable Settings.
+
+This note does not repeat any of those. It proposes seven targeted
+enhancements: the two preferential requests first, then the five
+architectural priorities, each mapped onto Plume's actual translator
+architecture rather than Scriptorium's rewriter vocabulary.
+
+Scriptorium names in the brief, and how they map here:
+
+  original_box              ->  PlumeApp.input_box
+  WRITING_PRESETS           ->  CONVERSATION_PRESETS (direction + form +
+                                Me/You + situation + up to 3 register tones)
+  scriptorium_config.json   ->  plume_config.json (one config file; do not
+                                introduce a second persistence root)
+  dual-pane "revision"      ->  left = source, right = translation
+                                (Plume does not rewrite English in place
+                                except for the new Correct English step)
+
+British English throughout. urllib only. Optional extras remain feature-
+gated: python-docx for Word I/O; pystray + Pillow for tray and a quiet
+sign-in start. winreg, ctypes, secrets and difflib are standard library.
+
+Suggested release slices (do not land as one dump):
+
+  v1.15  Correct English, then translate to French     (preferential 1)
+  v1.16  Sign-in autostart, minimised to the tray      (preferential 2)
+  v1.17  Exponential backoff in _http_post_json        (resilience)
+  v1.18  Explorer drag-and-drop onto the source pane
+  v1.19  User conversation presets (persisted)
+  v1.20  Three-tone register combinator
+  v1.21  Current-result Markdown/HTML export + metrics
+
+------------------------------------------------------------------------
+1. Executive summary
+------------------------------------------------------------------------
+Plume is in good health. The live module is still a single, well-
+sectioned file: sections 1–5 stay import-safe and headless-testable;
+GUI work is confined to sections 6–7. Privacy guarantees hold (no
+source text in status, errors or titles; Claude/ElevenLabs gated by
+acknowledgement; local history opt-in). Background work still has a
+stale-callback guard for both translation and TTS. v1.9–v1.14 closed
+the live-conversation loop without adding a second purpose.
+
+Two daily-use gaps remain, and they are the highest-value next steps:
+
+  1. English that is about to be sent as French is often drafted
+     quickly, with typos. The model currently translates the typos
+     faithfully, which is correct under the existing contract and
+     wrong for the user. A dedicated Correct English pass, using the
+     same urllib Anthropic/Ollama path as translate(), should overwrite
+     the source box with cleaned British English and then proceed to
+     English → French. Correction is not rewriting: spelling, grammar
+     and necessary punctuation only.
+
+  2. Plume is a conversation companion. Starting it by hand every
+     session, then hunting for the window, fights that role. Windows 11
+     sign-in autostart (HKCU Run, via winreg) plus a feature-gated
+     system-tray icon (pystray + Pillow) lets it sit quietly and come
+     forward on click. Close-to-tray replaces today's WM_DELETE_WINDOW
+     destroy path when the extra is installed.
+
+Five architectural follow-ons keep the app a translator, not a word
+processor:
+
+  * Native WM_DROPFILES onto input_box, no TkDND.
+  * User-defined conversation presets in plume_config.json.
+  * Up to three stacked register tones with conflict resolution, wired
+    as background context the way Situation already is — source meaning
+    still wins; no embellishment.
+  * Current-result Markdown export, HTML clipboard, and a reading-time
+    metric beside the existing character count. Favourites export
+    already exists (v1.13); this is for the working result.
+  * Exponential backoff with jitter in _http_post_json for 429/502/503/
+    504 and dropped connections, plus a small extraction seam so a
+    later streaming slice does not rewrite the backends.
+
+Workspace snapshot tests (2,645-line copy): 109 passed in 0.039 s.
+GitHub main tests were not executed in this session (file is larger,
+43,560 bytes). No core files were modified.
+
+------------------------------------------------------------------------
+2. Detailed architectural proposals
+------------------------------------------------------------------------
+
+========================================================================
+FEATURE A — Correct English, then translate to French   [v1.15]
+========================================================================
+UX rationale
+------------
+The user drafts in English, then wants French. Typos in the English
+become faithful French mistakes. The fix is a second, narrower model
+call — not a silent rewrite inside translate() — so the user always
+sees the English that was actually translated.
+
+Behaviour
+---------
+1. A "Correct English" button sits to the left of Translate on the
+   existing left-pane button row (Paste / Clear / Copy source / Reply
+   | Correct English / Translate).
+2. Enabled when the direction is English → French, or Auto-detect and
+   looks_like_english() is true. Disabled for French → English, with
+   the existing advisory strip explaining why.
+3. Click: same in-flight lock as Translate (Correct, Translate, Reply
+   and Use as input all disable). Status becomes "correcting English…".
+4. Worker: protect_text (including keep_as_is_terms) → correction
+   prompt via run_backend() → parse_correction_result() → restore
+   tokens. One JSON object, not free prose.
+5. Delivery, if not stale: overwrite input_box with corrected_text,
+   refresh the character count, then immediately start the existing
+   _translate() path. Direction is forced to English → French for that
+   translation only when Auto-detect was selected and the source was
+   treated as English; a user who had already pinned English → French
+   is left pinned. Situation is untouched.
+6. If the user edited the box while correction was in flight, do not
+   overwrite and do not auto-translate (same "generated for an earlier
+   message" discipline as _deliver).
+7. If the model reports changes_made = false, still overwrite with the
+   normalised text (whitespace tidy only) and continue, so the pipeline
+   is one click either way.
+8. Keyboard: Ctrl+Shift+Enter on the input box. Ctrl+Enter remains
+   Translate only, so a user who trusts their English is not taxed.
+
+Why a separate prompt, not a translate() preamble
+-------------------------------------------------
+translate()'s contract is one primary + five alternatives in the
+*other* language. Folding correction into that JSON would either
+silently mutate the source (the user never sees what was translated)
+or bloat the schema. Two calls, one overwrite, then the existing
+pipeline, keeps every validator and the history source_text honest:
+history records the corrected English, which is what was sent.
+
+State / config
+--------------
+DEFAULT_CONFIG gains nothing required. Optional, off by default, for
+people who want Translate itself to correct first:
+
+    "correct_english_before_translate": false
+
+When true, _translate() runs the correction pass automatically if the
+source looks English. The dedicated button still exists and always
+corrects-then-translates, matching the requested workflow. Recommend
+shipping the button first and leaving the flag false until the prompt
+has been lived with — auto-correcting French pasted under Auto-detect
+would be a real foot-gun.
+
+Privacy: correction uses the same backend as translation, so the
+existing Claude privacy acknowledgement covers it. No new notice.
+Ollama remains the local option.
+
+Performance: one extra round-trip only when the button (or the opt-in
+flag) is used. ANTHROPIC_MAX_TOKENS can stay 4096; conversational
+messages are short. Correction max_tokens of 1024 is enough if we pass
+it through a new optional argument later; not required for v1.15.
+
+Prompt invariants (anti-rewrite)
+--------------------------------
+* British English spelling (organise, colour, defence, practise as
+  the verb).
+* Fix spelling, grammar, and punctuation required for correctness.
+* Do not paraphrase, change register, add or remove clauses, translate,
+  "improve" the wording, or insert facts.
+* Preserve names, placeholders, emoji, line breaks and the user's
+  hedging / slang / ellipses.
+* If the text is already correct, return it unchanged with
+  changes_made = false.
+
+========================================================================
+FEATURE B — Start with Windows 11, minimised to the tray   [v1.16]
+========================================================================
+UX rationale
+------------
+A conversation helper that has to be launched and parked every session
+gets closed. Sign-in autostart plus a tray icon matches Always on top
+(v1.9): Plume is present without occupying the desktop.
+
+Feature gate
+------------
+Tray icon, close-to-tray and start-minimised require pystray and
+Pillow. If either import fails, Plume runs exactly as today; the three
+tray checkboxes in Settings are disabled with a one-line caption.
+Sign-in autostart uses winreg only and does *not* depend on pystray —
+but the Run-key command always passes --start-minimised, so a machine
+without the extras would flash a window at logon. Therefore: enabling
+"Launch when I sign in" while tray extras are missing is refused with
+that caption, rather than writing a Run key that pops a window.
+
+Config (all default false)
+--------------------------
+    "launch_at_sign_in": false
+    "start_minimised_to_tray": false
+    "close_to_tray": false
+
+Behaviour
+---------
+* launch_at_sign_in: HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+  value name "Plume". Command is quoted:
+    frozen:  "{sys.executable}" --start-minimised
+    source:  "{sys.executable}" "{abspath(plume.py)}" --start-minimised
+  Never point the Run key at Plume.bat (it can pause on error).
+* start_minimised_to_tray: after the window is constructed, withdraw()
+  and start the tray icon. Also honoured when --start-minimised is on
+  argv (the autostart path).
+* close_to_tray: WM_DELETE_WINDOW hides to the tray instead of
+  destroy(). Tray menu: Show, Quit. Quit is the only path that
+  invalidates in-flight work and destroys, matching today's _on_close.
+  Left-click the icon also shows the window (Windows 11 habit).
+* Show restores geometry, deiconify(), lift(), focus. Always-on-top is
+  re-applied so a hidden-then-shown window does not lose v1.9's flag.
+* Single instance is deliberately out of scope. A second launch just
+  opens a second window; a mutex would be a new failure mode for a
+  first tray slice.
+
+PyInstaller: if the extras are installed at freeze time, add
+hiddenimports ["pystray", "PIL"]. If they are not, the frozen app
+behaves as today. Do not make them hard requirements in
+requirements.txt; add a commented optional block instead.
+
+The tray thread must marshal every UI action through self.after(0, …).
+pystray's callback thread is not the Tk thread.
+
+========================================================================
+FEATURE C — Explorer drag-and-drop                         [v1.18]
+========================================================================
+Native WM_DROPFILES via ctypes (shell32.DragAcceptFiles + a WndProc
+subclass). No tkdnd, no windnd. Drops on the top-level HWND land in
+input_box (the brief's original_box).
+
+Accepted extensions: .txt, .md always (UTF-8, BOM stripped). .docx
+only when python-docx imports; otherwise a friendly advisory, no
+crash. Over-long files hit validate_source_size and are refused.
+Multiple files: first supported file wins; extras ignored with one
+advisory. Drop replaces the current source (it is "here is a message
+to translate", not a merge). Keep-as-is / placeholders are not applied
+until Translate/Correct, matching Paste.
+
+Subclass after update_idletasks() so the HWND exists. Unsubclass in
+_on_close / Quit so a late drop cannot run against a destroyed Tk.
+Keep a Python reference to the ctypes callback or it will be
+collected and crash the process.
+
+========================================================================
+FEATURE D — User conversation presets                      [v1.19]
+========================================================================
+SITUATION_PRESETS (v1.11) stay as local-only quick-fills for the
+Situation field. User presets are a different object: a named snapshot
+of the live conversation controls.
+
+Schema, stored in plume_config.json as "conversation_presets" (list,
+cap 12). Not a second file.
+
+    {
+      "id": "<uuid hex>",
+      "name": "Work email",
+      "direction": "English → French",
+      "french_formality": "Formal (vous)",
+      "speaker_gender": "Feminine",
+      "recipient_gender": "Feminine",
+      "situation": "formal work email",
+      "tones": ["precise", "courteous"]
+    }
+
+normalise_conversation_preset() drops unknown ids/fields, coerces
+enums with the existing _coerce_choice helpers, caps the name at 40
+characters, and caps tones via validate_tones() (Feature E). A
+malformed list becomes [] rather than crashing load_config.
+
+UI: an OptionMenu "Presets…" on toolbar row 1 (after You), plus "Save
+preset…" which prompts for a name and snapshots the current controls.
+Choosing a preset writes direction / form / Me / You / situation /
+tones and calls _on_toolbar_change. It does not persist until Settings
+is saved, matching today's toolbar-wins-at-save rule — except the
+preset *list* itself is saved immediately on Save preset / Delete, so
+a named preset cannot vanish on a crash.
+
+========================================================================
+FEATURE E — Three-tone register combinator                 [v1.20]
+========================================================================
+Plume is not a writing rewriter. "Tones" here are register hints for
+the translator, the same class of information as Situation, and they
+must never outrank the source.
+
+Catalogue (closed; British labels):
+
+    TONE_NONE = "None"
+    REGISTER_TONES = (
+        TONE_NONE, "Warm", "Terse", "Playful", "Precise",
+        "Courteous", "Direct", "Reassuring",
+    )
+
+Conflicts (later selection wins, earlier conflicting tone dropped):
+
+    frozenset({"Terse", "Playful"})
+    frozenset({"Terse", "Warm"})
+    frozenset({"Playful", "Precise"})
+    frozenset({"Direct", "Reassuring"})
+
+validate_tones(seq) → at most 3 unique real tones, order preserved,
+conflicts resolved, unknowns dropped, "None" ignored.
+
+build_tone_instruction(tones) → a short clause injected next to the
+existing situation_clause in build_translation_prompt, with the same
+anti-instruction / anti-embellishment guard: background register only;
+do not add facts, jokes, soften or intensify commitments, or change
+JSON shape. Source text wins on conflict.
+
+UI: three compact OptionMenus under the Situation row, default None.
+Choosing a conflicting third tone silently drops the conflicting
+earlier one and refreshes the menus — no modal.
+
+build_user_envelope gains an optional tones line, omitted when empty,
+so existing callers and tests stay green.
+
+========================================================================
+FEATURE F — Current-result export, HTML clipboard, metrics [v1.21]
+========================================================================
+v1.13 already exports *favourites*. This slice is the working result.
+
+* "Export" on the primary card writes a Markdown file via filedialog
+  (source, situation, main, five alternatives with meaning checks, and
+  a fenced unified diff of source vs main using difflib.unified_diff —
+  useful as a study view, not as a claim that the two are the same
+  language). Reuse _export_field discipline: no leaked keys.
+* "Copy as HTML" puts a small HTML fragment on the Windows clipboard
+  (CF_HTML via ctypes) and plain text as fallback via the existing
+  Tk clipboard. Non-Windows: plain text only.
+* char_label becomes "N characters · M words · ~Xs to read" using
+  text_metrics(). English ~200 wpm, French ~180 wpm; Auto-detect uses
+  200. Never include the source wording.
+
+========================================================================
+FEATURE G — Backend resilience and streaming preparation   [v1.17]
+========================================================================
+_http_post_json currently fails on the first 429/503 or dropped
+socket. Translation already runs on a worker thread, so a short sleep
+there is safe.
+
+* Retry 429, 502, 503, 504, URLError (non-HTTP), TimeoutError, OSError.
+* Do not retry 401, 403, 404, or 400.
+* Up to 4 attempts (1 + 3 retries). Exponential backoff 0.6 s · 2^n,
+  capped at 8 s, plus secrets.SystemRandom jitter (0–25 %). Honour
+  Retry-After when it is a numeric delay, still capped at 8 s.
+* HTTPError must be caught before URLError (it is a subclass).
+* After exhaustion, keep the existing friendly messages. Never echo
+  body text.
+
+Streaming preparation (no streaming in this slice):
+
+* Lift Anthropic text extraction into _anthropic_text_from_response().
+* Lift Ollama content extraction into _ollama_text_from_response().
+* Set "stream": False explicitly on the Anthropic payload so a later
+  SSE slice is a one-key change. Do not implement SSE or token
+  painting in CustomTkinter yet — that is a v2 concern and would
+  change the JSON-only contract.
+
+call_elevenlabs_tts is out of scope for retry in v1.17 (it is a
+different helper). A one-line follow-up can wrap it the same way.
+
+------------------------------------------------------------------------
+3. Modular code snippets
+------------------------------------------------------------------------
+All snippets are PEP 8, British English, stdlib-only unless a feature
+gate is named. Comments say where they go.
+
+------------------------------------------------------------------------
+3.1  Shared constants, config keys, optional extras
+------------------------------------------------------------------------
+File: plume.py — section 1, after the existing backend constants
+(around line 187) and in the import block (lines 31–44).
+
+    import ctypes
+    import secrets
+    import time
+
+    # Optional extras. Plume must import and run when they are absent.
+    try:  # pragma: no cover - environment-dependent
+        import pystray as _pystray
+        from PIL import Image as _PILImage
+        TRAY_AVAILABLE = True
+    except Exception:  # pragma: no cover
+        _pystray = None
+        _PILImage = None
+        TRAY_AVAILABLE = False
+
+    try:  # pragma: no cover - environment-dependent
+        import docx as _docx
+        DOCX_AVAILABLE = True
+    except Exception:  # pragma: no cover
+        _docx = None
+        DOCX_AVAILABLE = False
+
+    try:  # pragma: no cover - Windows only
+        import winreg as _winreg
+        WINREG_AVAILABLE = True
+    except Exception:  # pragma: no cover
+        _winreg = None
+        WINREG_AVAILABLE = False
+
+    WM_DROPFILES = 0x0233
+    GWLP_WNDPROC = -4
+    GWL_WNDPROC = -4
+    AUTOSTART_VALUE_NAME = "Plume"
+    AUTOSTART_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+    HTTP_RETRYABLE_CODES = frozenset({429, 502, 503, 504})
+    HTTP_MAX_ATTEMPTS = 4
+    HTTP_BACKOFF_BASE = 0.6
+    HTTP_BACKOFF_CAP = 8.0
+
+    TONE_NONE = "None"
+    REGISTER_TONES = (
+        TONE_NONE, "Warm", "Terse", "Playful", "Precise",
+        "Courteous", "Direct", "Reassuring",
+    )
+    TONE_CONFLICTS = (
+        frozenset({"Terse", "Playful"}),
+        frozenset({"Terse", "Warm"}),
+        frozenset({"Playful", "Precise"}),
+        frozenset({"Direct", "Reassuring"}),
+    )
+    MAX_TONES = 3
+    MAX_CONVERSATION_PRESETS = 12
+    PRESET_NAME_MAX = 40
+    PRESET_PLACEHOLDER = "Presets…"
+
+    WORDS_PER_MINUTE_EN = 200
+    WORDS_PER_MINUTE_FR = 180
+
+Add to DEFAULT_CONFIG (after "always_on_top", line 247):
+
+    "correct_english_before_translate": False,
+    "launch_at_sign_in": False,
+    "start_minimised_to_tray": False,
+    "close_to_tray": False,
+    "conversation_presets": [],
+
+Coerce them at the end of load_config() (after always_on_top, line 347):
+
+    config["correct_english_before_translate"] = bool(
+        config.get("correct_english_before_translate")
+    )
+    config["launch_at_sign_in"] = bool(config.get("launch_at_sign_in"))
+    config["start_minimised_to_tray"] = bool(
+        config.get("start_minimised_to_tray")
+    )
+    config["close_to_tray"] = bool(config.get("close_to_tray"))
+    config["conversation_presets"] = normalise_conversation_presets(
+        config.get("conversation_presets")
+    )
+
+Mirror the new keys in plume_config.example.json (the existing test
+test_example_config_matches_default_config_keys will fail until this
+is done).
+
+------------------------------------------------------------------------
+3.2  Feature A — correction pipeline (import-safe)
+------------------------------------------------------------------------
+File: plume.py — section 4, after parse_translation_result (after
+line 1131). Headless-testable.
+
+    _CORRECTION_SCHEMA = """{
+      "corrected_text": "the corrected English, or the original if already correct",
+      "changes_made": true or false,
+      "notes": ["optional short notes"]
+    }"""
+
+
+    def looks_like_english(text: str) -> bool:
+        """Cheap, conservative guard. Diacritics => treat as not-English.
+
+        Used only to enable the Correct English button under Auto-detect.
+        A forced English → French direction always wins over this helper.
+        Accented loanwords in English (café) may be refused; that is
+        preferable to running an English corrector over a French SMS.
+        """
+        if not isinstance(text, str) or not text.strip():
+            return False
+        if re.search(r"[àâçéèêëîïôùûüÿœæÀÂÇÉÈÊËÎÏÔÙÛÜŸŒÆ]", text):
+            return False
+        return True
+
+
+    def build_correction_prompt() -> str:
+        """System prompt for English spelling and grammar correction only."""
+        return (
+            "You are a precise copy-editor for British English. The user will "
+            "send a short conversational message that is about to be translated "
+            "into French.\n"
+            "Correct spelling, grammar and only the punctuation required for "
+            "correctness. Use British English spelling (organise, colour, "
+            "defence, practise as a verb, licence as a noun).\n"
+            "Do not paraphrase. Do not change register, tone, hedging, slang, "
+            "ellipsis or emoji. Do not add or remove clauses, facts or "
+            "courtesy. Do not translate. Do not 'improve' the wording. "
+            "Preserve names, placeholder tokens of the form "
+            "\u27e6PH0\u27e7, line breaks, and any quoted content exactly.\n"
+            "If the text is already correct, return it unchanged and set "
+            "changes_made to false.\n\n"
+            "Return only one valid JSON object matching this shape, with no "
+            "Markdown fences and no prose before or after it:\n"
+            + _CORRECTION_SCHEMA
+        )
+
+
+    def parse_correction_result(raw) -> dict:
+        """Validate a correction response. Never returns submitted text in errors."""
+        if not isinstance(raw, str) or not raw.strip():
+            raise TranslationValidationError("The model returned an empty response.")
+        text = _strip_code_fence(raw)
+        try:
+            data = json.loads(text)
+        except ValueError:
+            raise TranslationValidationError(
+                "The model did not return valid JSON. Please try again."
+            )
+        if not isinstance(data, dict):
+            raise TranslationValidationError(
+                "The model response was not a single JSON object."
+            )
+        corrected = data.get("corrected_text")
+        if not isinstance(corrected, str) or not corrected.strip():
+            raise TranslationValidationError(
+                "The response had no usable corrected text."
+            )
+        return {
+            "corrected_text": corrected.replace("\r\n", "\n"),
+            "changes_made": bool(data.get("changes_made")),
+            "notes": _safe_string_list(data.get("notes", [])),
+        }
+
+
+    def correct_english(config_snapshot, text: str) -> dict:
+        """Mask, correct, restore. Same worker-thread shape as translate()."""
+        protect = bool(config_snapshot.get("protect_placeholders", True))
+        masked, mapping = protect_text(
+            text,
+            enabled=protect,
+            extra_terms=normalise_keep_as_is_terms(
+                config_snapshot.get("keep_as_is_terms")
+            ),
+        )
+        raw = run_backend(
+            config_snapshot,
+            build_correction_prompt(),
+            "English text to correct:\n{}".format(masked),
+        )
+        result = parse_correction_result(raw)
+        restored = restore_tokens(result["corrected_text"], mapping)
+        if mapping and any(token in restored for token in mapping):
+            result["notes"] = [
+                "One or more protected items may not have been reproduced "
+                "exactly. Please check the corrected English before sending it."
+            ] + result.get("notes", [])
+        result["corrected_text"] = restored
+        return result
+
+Correction UI methods go on PlumeApp (section 7). Insert the button in
+_build_left after Reply (line 2278), before Translate. Change the
+spacer from column 4 to still be the stretch column; Correct at
+column 5, Translate at column 6.
+
+    # inside _build_left, replacing the current Translate grid:
+            self.correct_btn = ctk.CTkButton(
+                buttons, text="Correct English", width=140,
+                command=self._correct_then_translate, fg_color="gray30",
+            )
+            self.correct_btn.grid(row=0, column=5, padx=(0, 8), sticky="e")
+            self.translate_btn = ctk.CTkButton(
+                buttons, text="Translate", width=140, command=self._translate
+            )
+            self.translate_btn.grid(row=0, column=6, sticky="e")
+
+    # _bind_shortcuts, after Control-Return:
+            self.input_box.bind("<Control-Shift-Return>",
+                                self._correct_shortcut)
+
+    def _correct_shortcut(self, event):
+        self._correct_then_translate()
+        return "break"
+
+    def _set_busy(self, busy: bool, label="Translate"):
+        """One lock for Translate / Correct / Reply / Use as input."""
+        state = "disabled" if busy else "normal"
+        self.translate_btn.configure(state=state, text=label if not busy else label)
+        if busy:
+            self.translate_btn.configure(state="disabled", text=label)
+        self.correct_btn.configure(state="disabled" if busy else "normal")
+        self.reply_btn.configure(state="disabled" if busy else "normal")
+        if hasattr(self, "use_as_input_btn"):
+            if busy:
+                self.use_as_input_btn.configure(state="disabled")
+
+    def _correction_is_allowed(self) -> tuple:
+        """Return (ok, message). Message is safe to show."""
+        direction = self.direction_var.get()
+        if direction == DIR_FR_EN:
+            return False, (
+                "Correct English applies to English source. Swap to "
+                "English \u2192 French, or choose Auto-detect."
+            )
+        if direction == DIR_AUTO and not looks_like_english(self._input_text()):
+            return False, (
+                "This looks like French. Correction is for English drafts "
+                "that will be translated into French."
+            )
+        return True, ""
+
+    def _correct_then_translate(self):
+        if str(self.translate_btn.cget("state")) == "disabled":
+            return
+        ok, message = self._correction_is_allowed()
+        if not ok:
+            self.advisory.configure(text=message)
+            self.advisory.grid()
+            return
+        text = self._input_text()
+        limit = coerce_positive_int(
+            self.config_data.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS
+        )
+        ok, message = validate_source_size(text, limit)
+        if not ok:
+            self.advisory.configure(text=message)
+            self.advisory.grid()
+            return
+        snapshot = dict(self.config_data)
+        snapshot["default_direction"] = self.direction_var.get()
+        snapshot["default_french_formality"] = self.formality_var.get()
+        snapshot["default_french_speaker_gender"] = self.speaker_gender_var.get()
+        snapshot["default_french_recipient_gender"] = self.recipient_gender_var.get()
+        if snapshot.get("backend") == "anthropic" and not snapshot.get("privacy_ack"):
+            # Reuse the existing Claude notice in _translate by calling it
+            # first-style; simplest: duplicate the three-line askokcancel
+            # already in _translate (lines 2832–2853). Do not skip it.
+            proceed = messagebox.askokcancel(
+                "Privacy notice",
+                "Claude processes text in the cloud, so the text you submit "
+                "is sent to Anthropic. Ollama, by contrast, keeps everything "
+                "on this machine.\n\nContinue with Claude?",
+            )
+            if not proceed:
+                return
+            self.config_data["privacy_ack"] = True
+            snapshot["privacy_ack"] = True
+            try:
+                save_config(self.config_data)
+            except ConfigError:
+                pass
+
+        self._request_id += 1
+        rid = self._request_id
+        self.translate_btn.configure(state="disabled", text="Correcting\u2026")
+        self.correct_btn.configure(state="disabled")
+        self.reply_btn.configure(state="disabled")
+        self.use_as_input_btn.configure(state="disabled")
+        self.advisory.grid_remove()
+        self._refresh_status(state="correcting English\u2026")
+
+        def worker():
+            try:
+                result = correct_english(snapshot, text)
+                payload = ("ok", result)
+            except (BackendError, TranslationValidationError) as exc:
+                payload = ("error", str(exc))
+            except Exception as exc:  # pragma: no cover
+                payload = ("error", "An unexpected error occurred: {}".format(
+                    exc.__class__.__name__))
+
+            def _deliver_safe():
+                try:
+                    self._deliver_correction(rid, text, payload)
+                except tk.TclError:
+                    pass
+
+            try:
+                if self.winfo_exists():
+                    self.after(0, _deliver_safe)
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _deliver_correction(self, rid, snap_text, payload):
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        if result_is_stale(rid, self._request_id):
+            return
+        self.translate_btn.configure(state="normal", text="Translate")
+        self.correct_btn.configure(state="normal")
+        self.reply_btn.configure(state="normal")
+        kind, data = payload
+        if kind == "error":
+            self.advisory.configure(text=data)
+            self.advisory.grid()
+            self._refresh_status(state="ready")
+            return
+        if self._input_text() != snap_text:
+            self.advisory.configure(
+                text="Corrected for an earlier message. Your input has changed "
+                     "since this correction was requested; it was not applied."
+            )
+            self.advisory.grid()
+            self._refresh_status(state="ready")
+            return
+        corrected = data.get("corrected_text", "")
+        self.input_box.delete("1.0", "end")
+        self.input_box.insert("1.0", corrected)
+        self._on_input_change()
+        notes = data.get("notes") or []
+        if notes:
+            self.advisory.configure(text="  \u2022  ".join(notes))
+            self.advisory.grid()
+        # Proceed to French. Pin the direction so Auto-detect cannot
+        # bounce a short English phrase into FR → EN after correction.
+        if self.direction_var.get() != DIR_EN_FR:
+            self.direction_var.set(DIR_EN_FR)
+            self._on_toolbar_change()
+        self._translate()
+
+_clear / _on_close / in-flight lock: bumping _request_id already
+cancels this worker, because delivery checks result_is_stale. Also
+re-enable correct_btn in _clear next to translate_btn (line 2531).
+
+------------------------------------------------------------------------
+3.3  Feature B — autostart + tray
+------------------------------------------------------------------------
+File: plume.py — new helpers in section 2 (config-adjacent), Windows
+calls isolated so Linux tests stay green.
+
+    def autostart_command() -> str:
+        """Quoted command written to the HKCU Run key."""
+        if getattr(sys, "frozen", False):
+            return '"{}" --start-minimised'.format(sys.executable)
+        script = os.path.abspath(__file__)
+        return '"{}" "{}" --start-minimised'.format(sys.executable, script)
+
+
+    def set_launch_at_sign_in(enabled: bool) -> None:
+        """Create or delete the HKCU Run value. No-op off Windows."""
+        if not WINREG_AVAILABLE:
+            if enabled:
+                raise ConfigError(
+                    "Sign-in autostart is only available on Windows."
+                )
+            return
+        access = _winreg.KEY_SET_VALUE | _winreg.KEY_QUERY_VALUE
+        with _winreg.OpenKey(_winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY,
+                             0, access) as key:
+            if enabled:
+                _winreg.SetValueEx(
+                    key, AUTOSTART_VALUE_NAME, 0, _winreg.REG_SZ,
+                    autostart_command(),
+                )
+            else:
+                try:
+                    _winreg.DeleteValue(key, AUTOSTART_VALUE_NAME)
+                except FileNotFoundError:
+                    pass
+
+
+    def launch_at_sign_in_is_set() -> bool:
+        if not WINREG_AVAILABLE:
+            return False
+        try:
+            with _winreg.OpenKey(
+                _winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY, 0,
+                _winreg.KEY_QUERY_VALUE,
+            ) as key:
+                value, _ = _winreg.QueryValueEx(key, AUTOSTART_VALUE_NAME)
+            return bool(value)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+
+SettingsDialog: three checkboxes immediately after Always on top
+(line 1713). Disable the tray pair when not TRAY_AVAILABLE.
+
+    self.launch_var = ctk.BooleanVar(
+        value=bool(self._config.get("launch_at_sign_in"))
+    )
+    self.minimised_var = ctk.BooleanVar(
+        value=bool(self._config.get("start_minimised_to_tray"))
+    )
+    self.close_to_tray_var = ctk.BooleanVar(
+        value=bool(self._config.get("close_to_tray"))
+    )
+    launch_box = ctk.CTkCheckBox(
+        body, text="Launch Plume when I sign in to Windows",
+        variable=self.launch_var,
+    )
+    launch_box.grid(row=row, column=0, sticky="w", **pad)
+    row += 1
+    minimised_box = ctk.CTkCheckBox(
+        body, text="Start minimised to the tray",
+        variable=self.minimised_var,
+    )
+    minimised_box.grid(row=row, column=0, sticky="w", **pad)
+    row += 1
+    close_box = ctk.CTkCheckBox(
+        body, text="Close to the tray rather than quitting",
+        variable=self.close_to_tray_var,
+    )
+    close_box.grid(row=row, column=0, sticky="w", **pad)
+    row += 1
+    if not TRAY_AVAILABLE:
+        for widget in (launch_box, minimised_box, close_box):
+            widget.configure(state="disabled")
+        ctk.CTkLabel(
+            body,
+            text="Install pystray and Pillow to enable tray and sign-in start.",
+            text_color="gray60",
+        ).grid(row=row, column=0, sticky="w", padx=16)
+        row += 1
+
+In SettingsDialog._save (after keep_as_is_terms, line 1815):
+
+    want_launch = bool(self.launch_var.get()) and TRAY_AVAILABLE
+    want_min = bool(self.minimised_var.get()) and TRAY_AVAILABLE
+    want_close = bool(self.close_to_tray_var.get()) and TRAY_AVAILABLE
+    if want_launch:
+        want_min = True  # never autostart a visible window
+    self._config["launch_at_sign_in"] = want_launch
+    self._config["start_minimised_to_tray"] = want_min
+    self._config["close_to_tray"] = want_close
+    try:
+        set_launch_at_sign_in(want_launch)
+    except ConfigError as exc:
+        self.status_label.configure(text=str(exc))
+        return
+
+PlumeApp tray methods (section 7). Call _maybe_start_tray() at the end
+of __init__, after _apply_always_on_top.
+
+    def _icon_png_path(self) -> str:
+        return os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "icon", "icon-96.png"
+        )
+
+    def _maybe_start_tray(self):
+        if not TRAY_AVAILABLE:
+            return
+        want = (
+            self.config_data.get("start_minimised_to_tray")
+            or self.config_data.get("close_to_tray")
+            or "--start-minimised" in sys.argv
+        )
+        if not want:
+            return
+        try:
+            image = _PILImage.open(self._icon_png_path())
+        except Exception:
+            return
+        menu = _pystray.Menu(
+            _pystray.MenuItem("Show Plume", self._tray_show, default=True),
+            _pystray.MenuItem("Quit", self._tray_quit),
+        )
+        self._tray_icon = _pystray.Icon(APP_NAME, image, APP_NAME, menu)
+        threading.Thread(target=self._tray_icon.run, daemon=True).start()
+        if (
+            self.config_data.get("start_minimised_to_tray")
+            or "--start-minimised" in sys.argv
+        ):
+            self.after(0, self.withdraw)
+
+    def _tray_show(self, icon=None, item=None):
+        def _show():
+            try:
+                if not self.winfo_exists():
+                    return
+                self.deiconify()
+                self.lift()
+                self.focus_force()
+                self._apply_always_on_top()
+            except tk.TclError:
+                pass
+        try:
+            self.after(0, _show)
+        except Exception:
+            pass
+
+    def _tray_quit(self, icon=None, item=None):
+        def _quit():
+            self._quit_from_tray()
+        try:
+            self.after(0, _quit)
+        except Exception:
+            pass
+
+    def _quit_from_tray(self):
+        """Real shutdown: in-flight work dies, tray icon stops, window dies."""
+        self.config_data["close_to_tray"] = False  # do not recurse
+        icon = getattr(self, "_tray_icon", None)
+        if icon is not None:
+            try:
+                icon.stop()
+            except Exception:
+                pass
+            self._tray_icon = None
+        self._on_close_destroy()
+
+    def _on_close_destroy(self):
+        """Today's _on_close body, always destroys."""
+        self._request_id += 1
+        self._speech_request_id += 1
+        self._stop_speech()
+        self._cleanup_tts_file()
+        self.destroy()
+
+    def _on_close(self):
+        if (
+            TRAY_AVAILABLE
+            and self.config_data.get("close_to_tray")
+            and getattr(self, "_tray_icon", None) is not None
+        ):
+            self.withdraw()
+            return
+        self._quit_from_tray() if getattr(self, "_tray_icon", None) else self._on_close_destroy()
+
+Replace the current _on_close (line 2538) with the split above.
+_apply_settings should call set_launch_at_sign_in only from Settings
+save (already done); after save, start the tray if newly requested:
+
+    # end of _apply_settings (line 2798):
+            self._apply_always_on_top()
+            if TRAY_AVAILABLE and not getattr(self, "_tray_icon", None):
+                self._maybe_start_tray()
+            self._refresh_status()
+
+requirements.txt — keep customtkinter as the only hard pin; append:
+
+    # Optional extras (feature-gated; Plume runs without them):
+    # pystray>=0.19.5
+    # Pillow>=10.0.0
+    # python-docx>=1.1.0
+
+------------------------------------------------------------------------
+3.4  Feature C — WM_DROPFILES
+------------------------------------------------------------------------
+File: plume.py — new helper class above PlumeApp, Windows-only.
+
+    class WindowsDropTarget:
+        """Accept Explorer file drops on a Tk top-level via WM_DROPFILES."""
+
+        def __init__(self, widget, on_files):
+            self.widget = widget
+            self.on_files = on_files
+            self._old_proc = None
+            self._callback = None
+            self._hwnd = None
+
+        def attach(self):
+            if sys.platform != "win32":
+                return
+            self.widget.update_idletasks()
+            user32 = ctypes.windll.user32
+            shell32 = ctypes.windll.shell32
+            hwnd = user32.GetAncestor(self.widget.winfo_id(), 2)  # GA_ROOT
+            if not hwnd:
+                hwnd = self.widget.winfo_id()
+            self._hwnd = hwnd
+            shell32.DragAcceptFiles(hwnd, True)
+            if ctypes.sizeof(ctypes.c_void_p) == 8:
+                LRESULT = ctypes.c_longlong
+                GetWindowLong = user32.GetWindowLongPtrW
+                SetWindowLong = user32.SetWindowLongPtrW
+            else:
+                LRESULT = ctypes.c_long
+                GetWindowLong = user32.GetWindowLongW
+                SetWindowLong = user32.SetWindowLongW
+            WNDPROC = ctypes.WINFUNCTYPE(
+                LRESULT, ctypes.c_void_p, ctypes.c_uint,
+                ctypes.c_void_p, ctypes.c_void_p,
+            )
+            self._old_proc = GetWindowLong(hwnd, GWLP_WNDPROC)
+
+            def _proc(h, msg, wparam, lparam):
+                if msg == WM_DROPFILES:
+                    try:
+                        self._handle_drop(wparam)
+                    except Exception:
+                        pass
+                    return 0
+                return ctypes.windll.user32.CallWindowProcW(
+                    self._old_proc, h, msg, wparam, lparam
+                )
+
+            self._callback = WNDPROC(_proc)  # keep referenced
+            SetWindowLong(hwnd, GWLP_WNDPROC, self._callback)
+
+        def detach(self):
+            if sys.platform != "win32" or not self._hwnd or not self._old_proc:
+                return
+            user32 = ctypes.windll.user32
+            setter = (user32.SetWindowLongPtrW
+                      if ctypes.sizeof(ctypes.c_void_p) == 8
+                      else user32.SetWindowLongW)
+            try:
+                setter(self._hwnd, GWLP_WNDPROC, self._old_proc)
+                ctypes.windll.shell32.DragAcceptFiles(self._hwnd, False)
+            except Exception:
+                pass
+            self._hwnd = None
+
+        def _handle_drop(self, hdrop):
+            shell32 = ctypes.windll.shell32
+            count = shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
+            paths = []
+            for index in range(count):
+                size = shell32.DragQueryFileW(hdrop, index, None, 0) + 1
+                buf = ctypes.create_unicode_buffer(size)
+                shell32.DragQueryFileW(hdrop, index, buf, size)
+                paths.append(buf.value)
+            shell32.DragFinish(hdrop)
+            self.widget.after(0, lambda: self.on_files(paths))
+
+
+    DROP_EXTENSIONS = {".txt", ".md", ".docx"}
+
+
+    def read_dropped_file(path: str) -> str:
+        """Return file text. Raises BackendError-style ValueError on refusal."""
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in DROP_EXTENSIONS:
+            raise ValueError(
+                "Plume can open .txt, .md and .docx files only."
+            )
+        if ext == ".docx":
+            if not DOCX_AVAILABLE:
+                raise ValueError(
+                    "Opening Word files needs python-docx. "
+                    "Save the document as .txt or .md, or install python-docx."
+                )
+            document = _docx.Document(path)
+            return "\n".join(p.text for p in document.paragraphs).strip()
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            return fh.read()
+
+PlumeApp.__init__, after _build_body:
+
+    self._drop_target = WindowsDropTarget(self, self._on_files_dropped)
+    self._drop_target.attach()
+
+    def _on_files_dropped(self, paths):
+        if not paths:
+            return
+        chosen = None
+        skipped = 0
+        for path in paths:
+            ext = os.path.splitext(path)[1].lower()
+            if ext in DROP_EXTENSIONS:
+                chosen = path
+                skipped = len(paths) - 1
+                break
+        if chosen is None:
+            self.advisory.configure(
+                text="Drop a .txt, .md or .docx file onto Plume."
+            )
+            self.advisory.grid()
+            return
+        try:
+            text = read_dropped_file(chosen)
+        except (OSError, ValueError) as exc:
+            self.advisory.configure(text=str(exc))
+            self.advisory.grid()
+            return
+        ok, message = validate_source_size(
+            text,
+            coerce_positive_int(
+                self.config_data.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS
+            ),
+        )
+        if not ok:
+            self.advisory.configure(text=message)
+            self.advisory.grid()
+            return
+        self.input_box.delete("1.0", "end")
+        self.input_box.insert("1.0", text)
+        self._on_input_change()
+        if skipped:
+            self.advisory.configure(
+                text="Opened the first supported file; extra files were ignored."
+            )
+            self.advisory.grid()
+
+Detach in the destroy path (_on_close_destroy).
+
+------------------------------------------------------------------------
+3.5  Feature D — conversation presets
+------------------------------------------------------------------------
+
+    def normalise_conversation_preset(entry) -> dict | None:
+        if not isinstance(entry, dict):
+            return None
+        name = _safe_short_string(entry.get("name"), PRESET_NAME_MAX)
+        if not name:
+            return None
+        ident = entry.get("id")
+        if not isinstance(ident, str) or not ident.strip():
+            ident = uuid.uuid4().hex
+        return {
+            "id": ident.strip(),
+            "name": name,
+            "direction": _coerce_choice(
+                entry.get("direction"), DIRECTIONS, DIR_AUTO),
+            "french_formality": _coerce_choice(
+                entry.get("french_formality"), FORMALITIES, FORM_INFORMAL),
+            "speaker_gender": _coerce_choice(
+                entry.get("speaker_gender"), FRENCH_GENDERS, GENDER_FEMININE),
+            "recipient_gender": _coerce_choice(
+                entry.get("recipient_gender"), FRENCH_GENDERS, GENDER_FEMININE),
+            "situation": _safe_short_string(entry.get("situation")),
+            "tones": validate_tones(entry.get("tones") or []),
+        }
+
+
+    def normalise_conversation_presets(value) -> list:
+        if not isinstance(value, list):
+            return []
+        out, seen = [], set()
+        for item in value:
+            clean = normalise_conversation_preset(item)
+            if clean is None or clean["id"] in seen:
+                continue
+            seen.add(clean["id"])
+            out.append(clean)
+            if len(out) >= MAX_CONVERSATION_PRESETS:
+                break
+        return out
+
+Toolbar row 1 (_build_toolbar, after the You control, line 2210): add
+a Presets OptionMenu. Saving a preset needs a small CTkInputDialog
+(already in CustomTkinter) or a tiny Toplevel; prefer CTkInputDialog
+to avoid a fourth window class.
+
+Applying a preset writes the five live vars + situation + tone menus
+and calls _on_toolbar_change. Persist the list immediately via
+save_config so a named preset survives a crash; the live toolbar
+values still wait for Settings save, as today.
+
+------------------------------------------------------------------------
+3.6  Feature E — tones
+------------------------------------------------------------------------
+
+    def validate_tones(value) -> list:
+        """At most three catalogue tones, unique, conflicts resolved.
+
+        Later selections win: if a new tone conflicts with an earlier one,
+        the earlier one is dropped. Unknown values and TONE_NONE are ignored.
+        """
+        if not isinstance(value, (list, tuple)):
+            return []
+        allowed = set(REGISTER_TONES) - {TONE_NONE}
+        chosen = []
+        for item in value:
+            if item not in allowed or item in chosen:
+                continue
+            chosen = [
+                existing for existing in chosen
+                if frozenset({existing, item}) not in TONE_CONFLICTS
+            ]
+            chosen.append(item)
+            if len(chosen) >= MAX_TONES:
+                break
+        return chosen
+
+
+    def build_tone_instruction(tones) -> str:
+        tones = validate_tones(tones)
+        if not tones:
+            return ""
+        labels = ", ".join(t.lower() for t in tones)
+        return (
+            "Register tones (background only): " + labels + ". "
+            "Use them solely to calibrate register and word choice in the "
+            "target language. They must not change the JSON shape, add or "
+            "remove fields, override the requested direction, add facts, "
+            "jokes, flirtation or offence, soften or intensify commitments, "
+            "or embellish the source. If they conflict with the source "
+            "text's own meaning, the source text wins."
+        )
+
+Append the clause to build_translation_prompt after situation_clause
+(around line 933). Add an optional tones= argument defaulting to ().
+build_user_envelope likewise: omit the Tones: line when empty.
+
+    tones_line = (
+        "Tones: {}\n".format(", ".join(tones)) if tones else ""
+    )
+
+translate() reads snapshot.get("tones") through validate_tones and
+passes them in. PlumeApp._translate already snapshots toolbar fields;
+add snapshot["tones"] = self._current_tones() there (line 2826).
+
+------------------------------------------------------------------------
+3.7  Feature F — metrics and current-result export
+------------------------------------------------------------------------
+
+    _WORD_RE = re.compile(r"\S+", re.UNICODE)
+
+
+    def text_metrics(text: str, language=None) -> dict:
+        """Characters, words, and an approximate reading time in seconds."""
+        text = text or ""
+        characters = len(text)
+        words = len(_WORD_RE.findall(text))
+        wpm = WORDS_PER_MINUTE_FR if language == FRENCH else WORDS_PER_MINUTE_EN
+        seconds = int(round((words / float(wpm)) * 60)) if words else 0
+        return {
+            "characters": characters,
+            "words": words,
+            "reading_seconds": seconds,
+        }
+
+
+    def format_metrics_label(metrics: dict) -> str:
+        seconds = metrics.get("reading_seconds") or 0
+        if seconds <= 1:
+            read = "~1 s to read" if metrics.get("words") else "empty"
+        elif seconds < 60:
+            read = "~{} s to read".format(seconds)
+        else:
+            read = "~{} min to read".format(max(1, int(round(seconds / 60.0))))
+        return "{} characters \u00b7 {} words \u00b7 {}".format(
+            metrics.get("characters", 0), metrics.get("words", 0), read
+        )
+
+
+    def export_current_result_markdown(source_text, result, situation="") -> str:
+        """Markdown study sheet for the working result (not history)."""
+        lines = ["# Plume translation", ""]
+        situation = (situation or "").strip()
+        if situation:
+            lines.append("**Situation:** {}".format(situation))
+            lines.append("")
+        lines.append("## Source")
+        lines.append("")
+        lines.append(source_text or "")
+        lines.append("")
+        lines.append("## Main translation")
+        lines.append("")
+        lines.append(result.get("main_translation") or "")
+        lines.append("")
+        variations = result.get("variations") or []
+        if variations:
+            lines.append("## Alternatives")
+            lines.append("")
+            for index, variation in enumerate(variations, start=1):
+                meaning = variation.get("english_meaning_check") or ""
+                lines.append("{}. {}{}".format(
+                    index,
+                    variation.get("translation") or "",
+                    " — *{}*".format(meaning) if meaning else "",
+                ))
+            lines.append("")
+        source_lines = (source_text or "").splitlines()
+        target_lines = (result.get("main_translation") or "").splitlines()
+        diff = list(difflib.unified_diff(
+            source_lines, target_lines,
+            fromfile="source", tofile="translation", lineterm="",
+        ))
+        if diff:
+            lines.append("## Diff")
+            lines.append("")
+            lines.append("```diff")
+            lines.extend(diff)
+            lines.append("```")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+Need `import difflib` at the top (stdlib, named in the brief).
+
+_on_input_change currently sets char_label to "{} characters". Point
+it at format_metrics_label(text_metrics(self._input_text())).
+
+Copy-as-HTML on Windows is optional polish: if it overruns the slice,
+ship Markdown export + metrics first. CF_HTML is well-documented but
+easy to get slightly wrong; do not block v1.21 on it.
+
+------------------------------------------------------------------------
+3.8  Feature G — backoff and extraction seams
+------------------------------------------------------------------------
+Replace _http_post_json (line 1141) in place. Signature gains
+max_attempts=HTTP_MAX_ATTEMPTS so tests can pass 1 and stay instant.
+
+    def _backoff_delay(attempt, retry_after=None) -> float:
+        """Seconds to wait before the next attempt. *attempt* is 0-based."""
+        if retry_after not in (None, ""):
+            try:
+                header_delay = float(retry_after)
+                if header_delay >= 0:
+                    return min(header_delay, HTTP_BACKOFF_CAP)
+            except (TypeError, ValueError):
+                pass
+        delay = min(HTTP_BACKOFF_CAP, HTTP_BACKOFF_BASE * (2 ** attempt))
+        jitter = secrets.SystemRandom().uniform(0.0, delay * 0.25)
+        return delay + jitter
+
+
+    def _http_post_json(url, payload, headers, timeout, service_name="backend",
+                        max_attempts=HTTP_MAX_ATTEMPTS):
+        """POST JSON with bounded exponential backoff for transient failures."""
+        data = json.dumps(payload).encode("utf-8")
+        last_network_message = None
+        attempts = max(1, int(max_attempts or 1))
+        for attempt in range(attempts):
+            request = urllib.request.Request(
+                url, data=data, headers=headers, method="POST"
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    body = response.read().decode("utf-8")
+                break
+            except urllib.error.HTTPError as exc:
+                retry_after = None
+                try:
+                    retry_after = exc.headers.get("Retry-After")
+                except Exception:
+                    retry_after = None
+                if exc.code in HTTP_RETRYABLE_CODES and attempt < attempts - 1:
+                    time.sleep(_backoff_delay(attempt, retry_after))
+                    continue
+                raise BackendError(_friendly_http_message(exc.code, service_name))
+            except urllib.error.URLError as exc:
+                last_network_message = (
+                    "Could not reach the translation backend. Please check your "
+                    "connection and try again. ({})".format(_reason_text(exc))
+                )
+                if attempt < attempts - 1:
+                    time.sleep(_backoff_delay(attempt))
+                    continue
+                raise BackendError(last_network_message)
+            except (TimeoutError, OSError):
+                last_network_message = (
+                    "The translation backend did not respond in time. "
+                    "Please try again."
+                )
+                if attempt < attempts - 1:
+                    time.sleep(_backoff_delay(attempt))
+                    continue
+                raise BackendError(last_network_message)
+        else:
+            raise BackendError(
+                last_network_message
+                or "The translation backend did not respond in time. Please try again."
+            )
+        try:
+            return json.loads(body)
+        except ValueError:
+            raise BackendError(
+                "The backend returned a response that could not be read."
+            )
+
+
+    def _anthropic_text_from_response(data) -> str:
+        """Pull concatenated text blocks from a Claude Messages body."""
+        if not isinstance(data, dict):
+            raise BackendError(
+                "The Claude API returned a response that could not be read."
+            )
+        if data.get("stop_reason") == "max_tokens":
+            raise BackendError(
+                "The translation was cut short by the model's length limit. "
+                "Please shorten the message and try again."
+            )
+        parts = []
+        for block in data.get("content", []):
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        text = "".join(parts).strip()
+        if not text:
+            raise BackendError("The Claude API returned an empty message.")
+        return text
+
+
+    def _ollama_text_from_response(data) -> str:
+        if not isinstance(data, dict):
+            raise BackendError("Ollama returned a response that could not be read.")
+        if data.get("error"):
+            raise BackendError(
+                "Ollama reported an error. Please check the model name in Settings."
+            )
+        message = data.get("message") or {}
+        text = (message.get("content") or "").strip()
+        if not text:
+            raise BackendError("Ollama returned an empty message.")
+        return text
+
+call_anthropic then becomes: data = _http_post_json(...);
+return _anthropic_text_from_response(data). Add "stream": False to its
+payload dict (line 1211) as an explicit marker. call_ollama already
+sends stream: False; switch its content extraction to the helper.
+
+------------------------------------------------------------------------
+3.9  Tests to add in tests\test_translator_logic.py
+------------------------------------------------------------------------
+All headless. Do not import Tk.
+
+    class TestEnglishCorrection(unittest.TestCase):
+        def test_looks_like_english_plain(self):
+            self.assertTrue(plume.looks_like_english("See you tomorrow"))
+
+        def test_looks_like_english_rejects_diacritics(self):
+            self.assertFalse(plume.looks_like_english("À demain"))
+
+        def test_parse_correction_round_trip(self):
+            raw = json.dumps({
+                "corrected_text": "See you tomorrow.",
+                "changes_made": True,
+                "notes": [],
+            })
+            result = plume.parse_correction_result(raw)
+            self.assertEqual(result["corrected_text"], "See you tomorrow.")
+            self.assertTrue(result["changes_made"])
+
+        def test_parse_correction_rejects_empty(self):
+            with self.assertRaises(plume.TranslationValidationError):
+                plume.parse_correction_result(json.dumps({
+                    "corrected_text": "  ", "changes_made": False,
+                }))
+
+        def test_correction_prompt_forbids_paraphrase(self):
+            prompt = plume.build_correction_prompt()
+            self.assertIn("Do not paraphrase", prompt)
+            self.assertIn("British English", prompt)
+
+    class TestTones(unittest.TestCase):
+        def test_caps_at_three(self):
+            self.assertEqual(
+                len(plume.validate_tones(
+                    ["Warm", "Precise", "Courteous", "Direct"]
+                )),
+                3,
+            )
+
+        def test_later_wins_conflict(self):
+            self.assertEqual(
+                plume.validate_tones(["Terse", "Playful"]),
+                ["Playful"],
+            )
+
+        def test_none_and_unknown_dropped(self):
+            self.assertEqual(
+                plume.validate_tones(["None", "Sarcastic", "Warm"]),
+                ["Warm"],
+            )
+
+        def test_instruction_omitted_when_empty(self):
+            self.assertEqual(plume.build_tone_instruction([]), "")
+
+        def test_instruction_is_background_only(self):
+            text = plume.build_tone_instruction(["Warm", "Precise"])
+            self.assertIn("background only", text)
+            self.assertIn("source text wins", text.lower())
+
+    class TestHttpBackoff(unittest.TestCase):
+        def test_retries_then_succeeds(self):
+            calls = {"n": 0}
+
+            def fake_urlopen(request, timeout=None):
+                calls["n"] += 1
+                if calls["n"] < 3:
+                    raise urllib.error.HTTPError(
+                        "https://x", 503, "busy", hdrs=None, fp=None
+                    )
+                body = io.BytesIO(b'{"ok": true}')
+                return mock.MagicMock(
+                    __enter__=lambda s: s,
+                    __exit__=lambda *a: None,
+                    read=body.read,
+                )
+
+            with mock.patch("plume.time.sleep"), \
+                    mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                data = plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5
+                )
+            self.assertEqual(data, {"ok": True})
+            self.assertEqual(calls["n"], 3)
+
+        def test_401_is_not_retried(self):
+            def fake_urlopen(request, timeout=None):
+                raise urllib.error.HTTPError(
+                    "https://x", 401, "no", hdrs=None, fp=None
+                )
+            with mock.patch("plume.time.sleep") as slept, \
+                    mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                with self.assertRaises(plume.BackendError):
+                    plume._http_post_json(
+                        "https://x", {}, {"content-type": "application/json"}, 5
+                    )
+            slept.assert_not_called()
+
+    class TestMetricsAndPresets(unittest.TestCase):
+        def test_metrics_counts_words(self):
+            m = plume.text_metrics("one two three")
+            self.assertEqual(m["words"], 3)
+            self.assertEqual(m["characters"], 13)
+
+        def test_preset_unknown_direction_falls_back(self):
+            clean = plume.normalise_conversation_preset({
+                "name": "Work", "direction": "Sideways",
+            })
+            self.assertEqual(clean["direction"], plume.DIR_AUTO)
+
+        def test_autostart_command_contains_flag(self):
+            self.assertIn("--start-minimised", plume.autostart_command())
+
+The HTTPError constructor in 3.x needs a file-like fp; if the test
+errors on hdrs=None, pass an email.message.Message() instead. Adjust
+when implementing; the intent is "503 retries, 401 does not".
+
+------------------------------------------------------------------------
+4. Insertion map
+------------------------------------------------------------------------
+All paths C:\Plume\plume.py unless noted. Line numbers: live GitHub
+main, 3,081-line plume.py (commit 014f531).
+
+Feature                 File / location                         Around
+----------------------  --------------------------------------  --------
+stdlib imports          top of plume.py                         31–44
+optional extras         after GUI import                        46–61
+new constants           section 1                               176–206
+DEFAULT_CONFIG keys     DEFAULT_CONFIG                          247
+load_config coercion    load_config                             347
+preset helpers          section 2, after save_config            352
+tone + correction       section 4, after parse_translation_     1131
+                        result
+_http_post_json         replace in place                        1141–1167
+extraction helpers      immediately after _http_post_json       1167
+call_anthropic          use helper; add stream: False           1195–1236
+call_ollama             use helper                              1238–1276
+translate() tones arg   translate                               1310–1350
+metrics / export md     section 3, after export_history_to_     595
+                        markdown
+Settings checkboxes     SettingsDialog.__init__, after          1713
+                        Always on top
+Settings._save          after keep_as_is_terms                  1815
+WindowsDropTarget       just above class PlumeApp               2059
+PlumeApp.__init__       tray + drop attach                      2087–2091
+_build_toolbar          presets menu on row 1                   2210
+_build_left             Correct English button                  2274–2282
+_build_left             three tone menus under Situation        2262
+char_label              _on_input_change                        ~2508
+_on_close split         _on_close                               2538
+_apply_settings         start tray if newly enabled             2788
+_correct_then_translate PlumeApp, beside _translate             2807
+_translate snapshot     add tones                               2826
+main()                  no change required; argv is read        3068
+                        from sys.argv inside _maybe_start_tray
+plume_config.example.json  add the five new keys                —
+requirements.txt        commented optional extras               —
+plume.spec              optional hiddenimports if extras        31
+                        present at freeze time
+tests\test_translator_logic.py  new classes as §3.9             end of file
+
+_clear (line 2531) must re-enable correct_btn next to translate_btn
+and reply_btn, or a cancelled correction leaves the UI stuck.
+
+------------------------------------------------------------------------
+5. Sequencing, risks, and what not to do
+------------------------------------------------------------------------
+Land v1.15 and v1.16 first — they are the two requested behaviours.
+v1.17 (backoff) is a small, no-UI win and can ride with either.
+
+Risks worth naming before implementation:
+
+* Correction is a second paid Claude call. Keep it behind an explicit
+  button; do not default correct_english_before_translate to true.
+* looks_like_english() will refuse "café at 6". Accept that. A false
+  refusal is recoverable (user hits Translate); a false accept would
+  English-correct a French SMS.
+* WndProc subclassing is the most fragile slice. If WM_DROPFILES
+  misbehaves on a particular CustomTkinter build, fail closed:
+  DragAcceptFiles off, no crash, Paste still works.
+* pystray's icon.run() is blocking; it must stay on a daemon thread,
+  and every callback must hop to Tk via after(0, …).
+* Always-on-top + start-minimised: withdraw first, then the tray Show
+  path re-applies -topmost. Do not set topmost on a withdrawn window
+  as the only show mechanism — some Windows 11 builds then restore
+  behind other windows.
+* Do not introduce scriptorium_config.json, a writing-mode selector,
+  or a silent rewrite of English inside translate(). Those would give
+  Plume a second purpose.
+
+Out of scope, still:
+
+* Speech input, live voice agent, cloud sync, extra language pairs,
+  regional French presets pending native-speaker review.
+
+When implementation is authorised, work in that order (v1.15 → v1.16
+→ v1.17, then C–F), keep the test run green, and wait for an explicit
+push instruction per AGENTS.md.
+
+------------------------------------------------------------------------
+6. Verification performed this session
+------------------------------------------------------------------------
+Read-only review. Core files not modified, moved or deleted. The only
+write is this report.
+
+* Live GitHub main plume.py: 3,081 lines, 132,512 bytes, v1.10–v1.14
+  present (keep_as_is, situation presets, Copy source, Use as input,
+  Stop/Slow, Favourite-from-main, export favourites, casual sign-off,
+  scrollable Settings).
+* Workspace snapshot plume.py: 2,645 lines / 109 unit tests, all
+  passing in 0.039 s (python -B -m unittest discover -s tests -v).
+  That snapshot is behind main and was used only as a health check.
+* No Claude/Ollama/ElevenLabs network calls were made.
+* No git commit or push.
+
+End of notes_011.
