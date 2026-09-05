@@ -1136,6 +1136,47 @@ schema impact beyond one constants tuple:
   deleting anything. Layout verified clean at both the default and
   documented 1000x600 minimum window sizes. Full suite: 352 tests pass.
 
+## v1.36 — Sticky register defaults (notes_015 2.C)
+
+- **A "Remember tones and profile" button**, its own row beneath Tones
+  and Writing profile, saves the three live tone slots and the live
+  Mode/Strength/Role as what a future launch restores
+  (`default_tones`/`default_writing_profile` in `plume_config.json`).
+  Restored automatically in `PlumeApp.__init__` once the widgets exist,
+  so a session spent as Warm+Precise+Colleague no longer resets to
+  None/Translate/Source-led/General every time the app reopens.
+  MAX_TONES stays 3; the conflict-resolution/newest-slot-wins UI
+  (v1.20/v1.24) is unchanged — this only changes what the menus start
+  at, never how they behave once open.
+- **Not tied to a fixed row placement by accident:** the button was
+  first tried on the Tones row itself and, separately, appended to the
+  Writing profile row — both were rejected after a live screenshot at
+  the documented 1000x600 minimum: neither row has fixed-width slack to
+  absorb another button, and Writing profile's three dropdowns visibly
+  truncated ("Source-led" -> "Sourc", "General" -> "Gen") once forced to
+  share space with it. A dedicated row avoids shrinking either.
+- **Settings Save also carries these forward automatically**, extending
+  the existing "toolbar is the single source of truth" rule already
+  applied to direction/French form/gender/backend (same
+  `hasattr(master, ...)` toolbar-wins block) — so closing Settings after
+  a deliberate tone change persists it exactly like the five fields
+  already did, without requiring a separate Remember click.
+- **Applying a conversation preset still overrides these menus**; it
+  does not rewrite the remembered defaults unless the user then clicks
+  Remember (or saves Settings) — a preset restores a *named* snapshot,
+  the defaults are "whatever I was last using".
+- No prompt change: this only changes what the toolbar/menus are
+  pre-filled with at launch.
+- 4 new unit tests (config load-time coercion: a malformed
+  `default_tones` entry still validates down to only the compatible
+  members; `default_writing_profile` coercion and its Source-led/General
+  fallback). Verified live against the real `PlumeApp`: setting Warm +
+  Balanced and clicking Remember writes both keys to the real config
+  file with the advisory shown; killing and relaunching the app restores
+  Warm/Balanced automatically with Mode/Role left at their defaults;
+  layout re-verified clean at the documented 1000x600 minimum after the
+  row was moved. Full suite: 356 tests pass.
+
 ---
 
 ### Notes on sequencing

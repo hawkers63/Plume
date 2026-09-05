@@ -110,6 +110,11 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   on an explicit click — selecting a Mode, or applying a preset that
   restores one, never itself starts a request. Saved on conversation
   presets alongside direction, form, tones and situation.
+- **Remember tones and profile**, beneath Writing profile: a one-click
+  way to make your current Tones and Mode/Strength/Role the defaults a
+  future launch starts with, instead of resetting to None/Translate/
+  Source-led/General every time. Applying a conversation preset still
+  overrides these menus without changing what Remember last saved.
 - **Export** the current result to a Markdown study sheet (source,
   situation, all alternatives, a diff view), **Export diff…** for a
   standalone textual source/translation comparison, and **Copy as HTML**

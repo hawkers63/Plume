@@ -722,6 +722,30 @@ class TestConfigCoercion(unittest.TestCase):
         config, _ = self._load_with({})
         self.assertEqual(config["user_situation_presets"], [])
 
+    def test_default_tones_validated_on_load(self):
+        config, _ = self._load_with(
+            {"default_tones": ["Warm", ["nested"], "Sarcastic"]}
+        )
+        self.assertEqual(config["default_tones"], ["Warm"])
+
+    def test_default_tones_defaults_empty(self):
+        config, _ = self._load_with({})
+        self.assertEqual(config["default_tones"], [])
+
+    def test_default_writing_profile_normalised_on_load(self):
+        config, _ = self._load_with(
+            {"default_writing_profile": {"strength": "Balanced", "role": "bogus"}}
+        )
+        self.assertEqual(config["default_writing_profile"]["strength"], "Balanced")
+        self.assertEqual(config["default_writing_profile"]["role"], "General")
+
+    def test_default_writing_profile_defaults_to_source_led(self):
+        config, _ = self._load_with({})
+        self.assertEqual(
+            config["default_writing_profile"]["strength"],
+            plume.WRITING_STRENGTH_SOURCE_LED,
+        )
+
     def test_coerce_positive_int(self):
         self.assertEqual(plume.coerce_positive_int("5000", 2000), 5000)
         self.assertEqual(plume.coerce_positive_int("banana", 2000), 2000)

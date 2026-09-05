@@ -621,6 +621,8 @@ DEFAULT_CONFIG = {
     "close_to_tray": False,
     "send_to_shortcut": False,
     "user_situation_presets": [],
+    "default_tones": [],
+    "default_writing_profile": {},
 }
 
 
@@ -733,6 +735,10 @@ def load_config():
     config["send_to_shortcut"] = bool(config.get("send_to_shortcut"))
     config["user_situation_presets"] = normalise_user_situations(
         config.get("user_situation_presets")
+    )
+    config["default_tones"] = validate_tones(config.get("default_tones"))
+    config["default_writing_profile"] = normalise_writing_profile(
+        config.get("default_writing_profile")
     )
 
     return config, None
@@ -3255,6 +3261,10 @@ if GUI_AVAILABLE:
                 self._config["default_french_recipient_gender"] = master.recipient_gender_var.get()
             if hasattr(master, "backend_var"):
                 self._config["backend"] = master.backend_var.get()
+            if hasattr(master, "_current_tones"):
+                self._config["default_tones"] = master._current_tones()
+            if hasattr(master, "_current_writing_profile"):
+                self._config["default_writing_profile"] = master._current_writing_profile()
             # Re-read the live preset list rather than the snapshot this
             # dialog opened with: Save/Delete preset (main window) persist
             # immediately and are not reflected in self._config, so saving
@@ -3731,6 +3741,7 @@ if GUI_AVAILABLE:
 
             self._build_toolbar()
             self._build_body()
+            self._restore_register_defaults()
             self._build_status_bar()
             self._bind_shortcuts()
             self._apply_always_on_top()
@@ -4004,8 +4015,22 @@ if GUI_AVAILABLE:
                 writing_row.grid_columnconfigure(column, weight=1)
                 column += 1
 
+            # Remembers tones (row above) together with this writing profile
+            # (v1.36, notes_015 2.C) — one action for the whole register
+            # block. Its own row rather than sharing Tones' or Writing
+            # profile's: both of those rows are already sized to their
+            # documented-minimum-window widths, and adding a fixed-width
+            # button to either would shrink their dropdowns enough to
+            # truncate the visible label text (e.g. "Source-led" -> "Sourc").
+            remember_row = ctk.CTkFrame(left, fg_color="transparent")
+            remember_row.grid(row=7, column=0, sticky="e", padx=12, pady=(6, 0))
+            ctk.CTkButton(
+                remember_row, text="Remember tones and profile", width=180,
+                fg_color="gray30", command=self._remember_register_defaults,
+            ).grid(row=0, column=0)
+
             buttons = ctk.CTkFrame(left, fg_color="transparent")
-            buttons.grid(row=7, column=0, sticky="ew", padx=12, pady=(8, 4))
+            buttons.grid(row=8, column=0, sticky="ew", padx=12, pady=(8, 4))
             ctk.CTkButton(buttons, text="Paste", width=80, command=self._paste,
                           fg_color="gray30").grid(row=0, column=0, padx=(0, 6))
             ctk.CTkButton(buttons, text="Clear", width=80, command=self._clear,
@@ -4026,7 +4051,7 @@ if GUI_AVAILABLE:
             # above so a 1180px-wide window has room for both without any of
             # the six buttons being pushed past the visible pane.
             translate_row = ctk.CTkFrame(left, fg_color="transparent")
-            translate_row.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
+            translate_row.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 12))
             translate_row.grid_columnconfigure(0, weight=1)
             self.open_file_btn = ctk.CTkButton(
                 translate_row, text="Open file…", width=120,
@@ -4420,6 +4445,46 @@ if GUI_AVAILABLE:
             return normalise_writing_profile(
                 {key: variable.get() for key, variable in self._writing_vars.items()}
             )
+
+        # --- sticky register defaults (v1.36, notes_015 2.C) ---------------
+
+        def _restore_register_defaults(self):
+            """Apply the remembered tones/writing profile at launch.
+
+            Config-only, exactly like every other startup default: never
+            itself runs a request, even when the restored Mode is "Correct
+            English then translate". Applying a conversation preset later
+            still overrides these menus; it does not rewrite the
+            remembered defaults unless the user then clicks Remember.
+            """
+            tones = validate_tones(self.config_data.get("default_tones"))
+            padded_tones = tones + [TONE_NONE] * (MAX_TONES - len(tones))
+            for var, tone in zip(self.tone_vars, padded_tones):
+                var.set(tone)
+            writing = normalise_writing_profile(
+                self.config_data.get("default_writing_profile")
+            )
+            for key, variable in self._writing_vars.items():
+                variable.set(writing[key])
+
+        def _remember_register_defaults(self):
+            """Save the live tones/writing profile as what launch restores."""
+            candidate = dict(self.config_data)
+            candidate["default_tones"] = self._current_tones()
+            candidate["default_writing_profile"] = self._current_writing_profile()
+            try:
+                save_config(candidate)
+            except (ConfigError, OSError):
+                self.advisory.configure(
+                    text="Those defaults could not be saved."
+                )
+                self.advisory.grid()
+                return
+            self.config_data = candidate
+            self.advisory.configure(
+                text="Tones and writing profile remembered for next launch."
+            )
+            self.advisory.grid()
 
         def _run_selected_mode(self):
             """Dispatch Translate/Ctrl+Enter via the selected Mode.

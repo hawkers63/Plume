@@ -23,5 +23,7 @@
   "start_minimised_to_tray": false,
   "close_to_tray": false,
   "send_to_shortcut": false,
-  "user_situation_presets": []
+  "user_situation_presets": [],
+  "default_tones": [],
+  "default_writing_profile": {}
 }
