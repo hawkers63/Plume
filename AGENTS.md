@@ -1,48 +1,73 @@
-# # Role & Project Context
-You are an expert Python developer[cite: 2]. Your primary role is to support the iterative, version-controlled development of Python-based applications[cite: 2].
+# Role & Project Context
 
-You are currently working on **Plume**, a lightweight, Englist to French Translator desktop application for Windows 11[cite: 1]. It uses a dual-pane UI to compare original text with AI-suggested revisions[cite: 1].
+You are an expert Python developer. Your primary role is to support the
+iterative, version-controlled development of **Plume**.
+
+Plume is a lightweight Windows 11 French ↔ English conversation helper
+(CustomTkinter). It is **not** an open-source project.
+
+Copyright (c) 2026 Mark Hawksworth. All rights reserved. The source,
+tests, documentation, icons and compiled builds may not be copied or
+altered for any other product without Mark Hawksworth's express
+permission. Canonical remote: `https://github.com/hawkers63/Plume`.
 
 # Core Technologies & Architecture
-* **Python 3:** The application is built using CustomTkinter and Tkinter[cite: 1].
-* **Dependencies:** Use standard library `urllib` for API calls[cite: 1]. Strictly no third-party HTTP packages or Anthropic SDKs[cite: 1].
-* **Formatting & Style:** All UI text, comments, and system prompts must adhere to strict British English conventions[cite: 1].
-* **Implementation:** Provide clear, modular Python code that can be integrated with minimal disruption, specifying precisely where each snippet should be inserted[cite: 2].
-* **Development Philosophy:** Favour targeted, incremental fixes over broad rewrites or architectural churn[cite: 2].
+
+* **Python 3.10+**, CustomTkinter and Tkinter.
+* **HTTP:** standard library `urllib` only. No `requests`, no vendor SDKs.
+* **Language:** British English in UI text, comments, commits and notes.
+* **Shape:** one well-sectioned module (`plume.py`) plus headless tests
+  in `tests/test_translator_logic.py`.
+* **Philosophy:** targeted, incremental fixes; no architectural churn.
 
 # File Modification And Task Tracking
-Before writing, editing, creating, moving, or deleting any file, stop and verify whether task-tracking tools are available and active[cite: 2]. If active, create or resume a task prior to making any file modification (including code, comments, tests, configuration, and notes)[cite: 2].
 
-A task is not required when reading files, analysing code, searching the repository, running tests for investigative purposes, answering questions, or performing Git/dependency operations[cite: 2].
+Before writing, editing, creating, moving, or deleting any file, say
+what will change. Prefer the smallest safe edit.
 
-If task-tracking tools are unavailable, act as a standalone coding assistant, but clearly state what will be changed before editing[cite: 2].
+A task is not required when only reading, analysing, searching, or
+answering questions.
 
 # Standard Workflow For Code Changes
-1. Determine whether files will be modified[cite: 2].
-2. If task tracking is active: search for, reuse, or create a relevant task; set a concise product-level terminal title and goal; and record a brief implementation plan[cite: 2].
-3. Explain the intended edit before making changes[cite: 2].
-4. Make the smallest safe change that satisfies the request[cite: 2].
-5. Run focused verification or tests[cite: 2].
-6. Report what changed, what was tested, and any remaining risks[cite: 2].
 
-# Terminal Title And Activity
-When task-tracking tools are active, set the terminal title once at the outset using a product-level label, include a clear goal sentence, and use activity updates to reflect current work (investigation, implementation, testing)[cite: 2]. Keep activity phrasing focused on user-visible outcomes[cite: 2].
-
-# Testing And Completion
-Following implementation, move the task into testing and run appropriate tests or manual verification[cite: 2]. Mark the task complete if tests pass, or return to active development if they fail[cite: 2]. Never claim implementation is complete if testing has not been attempted; if tests cannot be run, explain why[cite: 2].
+1. Determine whether files will be modified.
+2. Explain the intended edit.
+3. Make the smallest safe change that satisfies the request.
+4. Run focused verification (`python -m unittest discover -s tests -v`
+   when deterministic logic changed).
+5. Report what changed, what was tested, and remaining risk.
 
 # Version Control & Repository Management
-* **Target Repository:** The active remote repository for this project is `https://github.com/hawkers63/Plume`.
-* **Branching Strategy:** Commit changes directly to the `main` branch. Do not create feature branches.
-* **Commit Protocol:** Once a task has passed testing and is marked as complete, stage and commit the modifications. Track all changes, including overwrites and deleted files (e.g., using `git add --all`), to ensure the repository precisely mirrors the local directory and outdated files are permanently removed. Never stage or commit `plume_config.json` or any other file containing a live API key or credential.
-* **Push Approval Required:** Do not push automatically. After committing, summarise what was committed and explicitly ask the user for confirmation before running `git push`. Only push once the user has approved that specific push.
-* **Pre-requisite Check:** Before pushing, confirm the local working tree is clean and all intended changes have been captured.
+
+* **Remote:** `https://github.com/hawkers63/Plume`.
+* **Branch:** commit on `main` only. Do not create feature branches.
+* **Commit:** after the authorised work is tested, stage and commit so
+  the repository mirrors the local tree. Never stage `plume_config.json`,
+  `plume_history.json`, or any live credential.
+* **Push:** do **not** push automatically. Summarise the commit and wait
+  for Mark's explicit approval of that push.
+* **History:** no force-push, no amend of published commits.
+
+# Grok Bots
+
+Two Grok Bot mandates live in this tree:
+
+* `grok_bot_bug_hunter.md` — read-only analysis; one note per run.
+* `grok_bot_repo_steward.md` — authorised implementation and git hygiene.
+
+Both bots must refuse swarm/burst behaviour: one invocation, one job,
+no spawning or chaining of other bots, no polling, then stop.
+
+`bug_hunter.md` and `enhancement_agent.md` are superseded drafts.
+Environment Admin is **not** a Grok Bot for this project and must not
+be stood up. Prefer the two `grok_bot_*.md` files.
+
+# Notes
+
+Review output belongs in `notes/01_Active/plume_notes_[N].txt`.
+Spent notes move to `notes/02_Archive`. Do not delete notes unless asked.
 
 # Plans And Final Responses
-Reconcile any plans or checklists before the final response, marking only genuinely completed work as complete and leaving unfinished work clearly labelled[cite: 2]. Final responses should be concise, leading with what changed, followed by verification, risks, and next steps[cite: 2].
 
-# Plume-Specific Reporting
-For Plume read-only reviews, compile findings, severity assessments, and recommended code snippets into a sequential project note at:
-`D:\Bot_Activity\notes_[N].txt`[cite: 2]
-
-Use the next available note number[cite: 2]. This file write is permitted solely for the review summary[cite: 2]. All other project files must remain read-only unless the user explicitly authorises implementation work[cite: 2].
+Final responses stay concise: what changed, verification, risks, next
+step (including whether a push is waiting on approval).
