@@ -1,1413 +1,674 @@
-PLUME — TARGETED ENHANCEMENT ARCHITECTURE
-Note 012 | 5 September 2026 | Read-only design and integration proposals
+Plume — Bug hunt (Note 12)
+==========================
+Scope  : live C:\Plume on GitHub main (hawkers63/Plume @ 6e56bf8)
+Date   : 5 September 2026
+Author : Grok (Lead Bug Hunter & Code Auditor)
+Mode   : Read-only analysis. No application source was modified.
 
-Source: C:\Plume\plume.py, commit 65634e3, 4,196 lines at inspection.
-SHA-256: A650D70A363E7DBB41E20BA675F80DC32C1F0835D23F1F03BF81BBFCFE654DD4
-Line references below refer to that source snapshot, before any insertion.
-Scope: this note only. No application, configuration or test source is edited.
-Project task-tracking tools were checked; no active project tracker is exposed.
-The user's requested C:\Plume\notes\01_Active destination takes precedence
-over the older D:\Bot_Activity destination in the repository's AGENTS.md.
+Line numbers refer to the live 4,184-line plume.py (v1.10–v1.21 landed:
+keep-as-is, live-loop polish, voice extensions, history export, casual
+sign-off, Correct English, tray/autostart, presets, tones, backoff,
+metrics, HTML clipboard).
 
-1. EXECUTIVE SUMMARY
-====================
+The function names in the brief map as follows on the live tree:
 
-The highest-value work is native file import, completing preset snapshots,
-repairing Windows clipboard ownership, making tone selection predictable,
-and strengthening the retry mechanism already present. Keep the single-file
-application, existing structured translation contract and two-pane layout.
+  parse_and_validate_translation()  ->  parse_translation_result()
+  _clean_variation_list()           ->  inline loop in parse_translation_result
+  original_box                      ->  PlumeApp.input_box
 
-Several premises in the brief describe an earlier Scriptorium architecture:
+------------------------------------------------------------------------
+1. Executive summary
+------------------------------------------------------------------------
+Files audited:
 
-Requested concept                 Actual Plume implementation
--------------------------------   ------------------------------------------
-self.original_box                 self.input_box, created at line 2922
-scriptorium_config.json            plume_config.json, constant at line 97
-WRITING_PRESETS                    SITUATION_PRESETS and conversation_presets
-Mode / Strength / Role controls    Absent; direction/formality/gender exist
-Two-tone limit                    MAX_TONES = 3, three menus at 2963–2968
-New retry mechanism               Shared _http_post_json already retries
-New HTML clipboard                Helper and Copy HTML action already exist
-New reading metrics               text_metrics + input label already exist
-New Markdown export               Study-sheet export exists; diff does not
-Optional Word I/O                  No Word import or python-docx gate exists
+  C:\Plume\plume.py                         4,184 lines
+  C:\Plume\tests\test_translator_logic.py   1,511 lines / 210 tests
+  C:\Plume\plume_config.example.json
+  C:\Plume\ROADMAP.md, AGENTS.md, bug_hunter.md (for invariants)
 
-Recommended order:
-1. Repair clipboard ownership and preset save failure handling.
-2. Complete presets with tones and make the newest tone selection win.
-3. Add bounded, asynchronous file import and native Explorer drop support.
-4. Add a clearly labelled textual diff using the submitted source snapshot.
-5. Harden transport retries; prepare, but do not enable, streaming.
-6. Optionally add Mode/Strength/Role as the explicit second preset phase.
+Verification:
 
-All proposed new dependencies are standard-library modules, except the
-explicitly optional python-docx gate. CustomTkinter remains the existing GUI
-dependency. No requests, httpx, proprietary SDK or drag-and-drop package is
-introduced. File import never submits text to either backend automatically.
+  python -B -m unittest discover -s tests -q
+  Ran 210 tests in 0.037 s  —  OK
 
-2. DETAILED ARCHITECTURAL PROPOSALS
-==================================
+General logic health is good. Sections 1–5 remain import-safe and the
+headless suite is thorough on the data contract, token round-trips,
+backoff, correction JSON, tones, presets and history normalisation.
+The stale-id guard on `_deliver` / `_deliver_speech` / `_deliver_correction`
+is correctly `!=` against a monotonic counter, and worker callbacks wrap
+`winfo_exists()` + `tk.TclError`. Atomic save still refuses to clobber a
+malformed file. Status-bar / error strings in the tested helpers do not
+echo source text.
 
-2.1 Explorer drag-and-drop and shared file import
-------------------------------------------------
+The remaining defects are almost all in the *GUI lifecycle and the two
+writers of plume_history.json*, which the headless suite cannot see.
+Two of them violate stated invariants (stale-request protection;
+favourites must not vanish). The rest are surgical.
 
-Use DragAcceptFiles and a pointer-width-correct WNDPROC subclass on the real
-Tk Text child of input_box. This limits acceptance to the text surface rather
-than the whole window. Discover the Tk child through winfo_children(), avoiding
-CustomTkinter's private _textbox attribute. Scrollbars and margins are not drop
-targets in this first implementation; a visible Open file action is the fallback.
+No Critical crash-on-start issues. No raw API keys in titles. Drag-and-
+drop from notes_011 was not landed; it is out of scope here.
 
-The native callback copies exactly one Unicode file path into a bounded queue,
-calls DragFinish in a finally clause and returns promptly. It performs no Tk
-calls, file reads, dialogues or backend operations. Other Windows messages go
-to the previous procedure through CallWindowProcW. Use c_ssize_t for LRESULT
-and LPARAM, c_size_t for WPARAM and c_void_p for HWND; never default c_int for
-pointers. Use SetWindowLongW/GetWindowLongW only for 32-bit Python, where the
-Ptr names are C macros rather than guaranteed DLL exports. [S1–S5]
+------------------------------------------------------------------------
+2. Identified bugs and anomalies
+------------------------------------------------------------------------
 
-Retain the callback object for as long as native code can call it. Restore the
-previous procedure before destruction, but only if this callback is still at
-the head of the chain. If another subclass is above it, disable this handler
-and keep it pinned until process exit; overwriting the newer subclass is unsafe.
-For this one-window application, one small pinned object is a reasonable bounded
-trade-off. WM_NCDESTROY marks the native handle invalid and forwards the message.
-Do not detach when merely hiding to the system tray. [S3–S6]
+========================================================================
+CRITICAL
+========================================================================
 
-The Tk after pump consumes paths and worker results. Only one import worker is
-allowed at a time. Capture both an edit revision and request id before reading;
-discard a completion if editing, Clear, a translation request or another import
-superseded it. Capture state again after a modal replacement question, because
-Tk runs a nested event loop while the question is visible. The native queue is
-bounded; excess queued drops are ignored while an import is active.
-
-Read .txt/.md as UTF-8 (including BOM) or BOM-marked UTF-16. Reject unknown
-encodings rather than silently replacing French accents. Preserve Markdown as
-literal source text. Limit raw input to 2 MiB, ZIP expanded size to 8 MiB and
-extracted text to the configured input character limit, currently 2,000. Never
-truncate silently. Inspect a .docx ZIP before passing its in-memory bytes to
-python-docx; no archive member is extracted to disk.
-
-Word scope: body paragraphs and ordinary tables, in document order. The proposed
-reader rejects tracked revisions and nested tables to avoid a misleading partial
-import. Images, headers, footers, footnotes and text boxes are not reproduced;
-the import notice makes body-text-only behaviour explicit. python-docx 1.2's
-iter_inner_content provides paragraph/table order; older installations without
-that API receive an actionable message. [S7]
-
-WM_DROPFILES is the intended Explorer filesystem path flow, not a universal OLE
-drop target: Outlook attachments and virtual/cloud-only items can behave
-differently. Same-integrity Explorer/Plume, normal user privileges, the bundled
-Tk version and Windows scaling must be tested. Do not relax Windows message
-filters or run Plume elevated to work around a drag-and-drop problem.
-
-Performance: O(input bytes + extracted text), one bounded worker, one 75 ms
-queue pump, no backend call, no file path persisted. ZIP checks bound the proposed
-input, but do not claim to sandbox arbitrary Office documents.
-
-2.2 User presets, persistence and Scriptorium compatibility
----------------------------------------------------------
-
-Current conversation presets already save direction, French address form,
-speaker/recipient gender and situation. Add tones to that existing schema.
-Existing entries without tones naturally migrate to [] on load. Do not create a
-second catalogue or copy WRITING_PRESETS from an unrelated application.
-
-Current issues and severity:
-- P1 reliability: Save/Delete mutate config_data before saving; ConfigError is
-  swallowed and OSError is not handled (3278–3284, 3290–3298). The UI can claim
-  a preset exists when it was not persisted, or lose it from memory on failure.
-- P2 usability: names need not be unique but selection/deletion is by name.
-  Saving at the 12-entry cap can silently discard the new entry.
-- P2 consistency: preset normalisation discards tones (925–936).
-- P2 consistency: an already-open Settings dialogue holds a snapshot. Saving it
-  after a preset change can overwrite the newer preset list unless refreshed.
-
-Build a candidate config, persist it first using existing save_config(), then
-publish it to config_data and refresh the menu. Catch ConfigError and OSError
-with a generic, visible message. Never use force=True for normal preset edits.
-Use an explicit duplicate-name refusal and an explicit full-list refusal.
-An Update action can follow later; do not silently overwrite a namesake.
-
-Keep stable IDs in records. In the minimal phase, the menu remains name-based,
-so normalise legacy duplicate display names deterministically to unique names
-and reserve the placeholder label. New presets reject duplicate names using
-casefold(). Existing IDs are preserved. Display-name repairs become durable
-only at the next successful save; loading itself remains read-only.
-
-Use plume_config.json through config_path() for the current application. The
-brief explicitly requests scriptorium_config.json: support that exact filename
-as an OPTIONAL selected legacy destination, rather than accidentally writing two
-authoritative files. Snippet B4 shows a one-line filename switch if that is the
-chosen product requirement. It requires a deliberate migration of the existing
-Plume file and the credential exclusion in .gitignore; do not just change the
-constant and make current settings disappear. Recommended integration retains
-plume_config.json and offers an explicit preset-only legacy import/export later.
-Do not export backend keys, privacy acknowledgement or autostart settings with
-presets. No migration is performed as part of this report.
-
-Mode/Strength/Role are an optional, genuinely new second phase, not fields that
-can be referenced from today's UI. A narrowly scoped design is:
-- Mode: Translate; Correct English then translate (the existing correction flow).
-- Strength: Source-led; Light; Balanced. These control only permissible register
-  adjustment, never temperature, accuracy, added detail or factual freedom.
-- Role: General; Friend; Colleague; Customer. These are curated relationship
-  hints, never arbitrary system-prompt templates or claimed identities.
-- Tones: zero to three values from REGISTER_TONES.
-
-Example versioned record, nested in conversation_presets:
-{
-  "id": "example-stable-id", "name": "Courteous colleague",
-  "direction": "English → French", "french_formality": "Formal (vous)",
-  "speaker_gender": "Avoid where possible",
-  "recipient_gender": "Avoid where possible", "situation": "Work message",
-  "tones": ["Warm", "Precise", "Courteous"],
-  "writing": {"version": 1, "mode": "Translate", "strength": "Light",
-              "role": "Colleague"}
-}
-
-Use the same conversation preset store for this phase. Snippet B3 supplies the
-profile normaliser, prompt clause and dispatch method; its additional UI and
-snapshot wiring is explicitly listed in the insertion map. A saved mode must
-not trigger processing when applied. The primary action honours it only on a
-user click. Keep correction's language check and privacy flow intact.
-
-2.3 Three-tone composition and prompt evolution
------------------------------------------------
-
-No increase to MAX_TONES is needed. The current validator can raise TypeError
-for unhashable JSON entries such as a dict/list at line 1135. It stops examining
-inputs once three tones are selected; later conflicting inputs are ignored.
-The UI resolves by fixed slot order, so a new choice in slot one can lose to an
-old choice in slot three, despite the catalogue comment saying new choices win.
-
-Proposed deterministic policy: process only string catalogue values; for each
-new valid tone remove its duplicates and incompatible earlier tones, then append
-it and retain the most recent three. Idempotence, uniqueness, membership, cap
-and absence of all conflict pairs are testable invariants. In the UI, the changed
-slot is placed last before normalisation, so the newest user action wins. Saved
-order is preserved without pretending it records every historical click.
-
-Retain the existing conflict graph. It is editorial policy rather than a proven
-linguistic law. Verify all catalogue sequences of lengths 0–4 exhaustively and
-confirm both directions of each conflict pair. Warm/Precise/Courteous is a valid
-triple; Terse/Warm/Playful resolves to Warm/Playful. Announce conflict removal in
-the advisory label so choices do not appear to vanish silently.
-
-The source remains authoritative. Add explicit preservation of negation,
-uncertainty, attribution, quantities, deadlines and obligations. Warm/Reassuring
-cannot invent comfort or promises; Courteous cannot add gratitude/apologies;
-Playful cannot add jokes. The rule applies to the primary and all five variants.
-Prompt guards reduce risk but do not prove semantic fidelity. Existing JSON and
-placeholder validators remain mandatory. Do not market deterministic tone
-validation as deterministic model behaviour or hallucination prevention.
-
-Calibrate prompt changes separately from UI fixes. Compare baseline and candidate
-on fixed bilingual examples (negation, uncertain dates, promises, indirect
-requests, slang, gender ambiguity and protected names), across both backends.
-Record model/version/settings; human-review meaning retention before adopting
-the profile strength options. No calibration API calls were made for this note.
-
-2.4 Export, clipboard and metrics
----------------------------------
-
-A source/translation diff is a textual comparison across languages, not a measure
-of edits or translation quality. Label it accordingly. Use difflib.unified_diff
-inside a Markdown diff fence longer than every backtick run in its content.
-Normalise line endings for display and disclose that final-newline differences
-are ignored. This avoids raw Markdown interpretation and unsafe embedded HTML.
-
-The current export reads the LIVE input with the OLD result at 4153. Capture the
-submitted source and situation with accepted results, including history reopen,
-and use that snapshot for both existing study-sheet and new diff exports. Update
-the selected main translation from _current_main ("Use this" aware), but exclude
-finishing touches from the faithful diff. UI text changed since submission must
-never silently become the old result's export source.
-
-P1 clipboard correctness: OpenClipboard(None), then EmptyClipboard(), leaves
-no owner; Microsoft's SetClipboardData documentation identifies this as a failure
-case. The helper also ignores allocation, locking and transfer failures and can
-report True after publishing nothing. Pass a real Tk window HWND, check every
-allocation and transfer, and free only handles whose ownership did not transfer.
-Prepare both memory blocks before emptying the clipboard. Supply CF_UNICODETEXT
-and registered "HTML Format" data; HTML is the rich format, not an RTF payload.
-Retain the existing UTF-8 byte-offset CF_HTML builder. [S8]
-
-Clipboard contention should cause a visible retry/copy message or the existing
-plain-text fallback, not a sleeping loop on the GUI thread. If Windows accepts
-one format and rejects the other, an atomic rollback is not promised. The fallback
-may replace the partial publication with plain text. HTML escaping at 4172–4174
-already avoids treating translated content as markup; retain it.
-
-Metrics already count Python Unicode code points and whitespace-separated
-tokens, with 200 English / 180 French words per minute. These are explicit
-heuristics, not grapheme counts or measured reading speed. Retain them to avoid
-unrequested statistical churn. Add the same label beneath the primary translation
-and refresh it for "Use this" and finishing-touch changes. Bind the underlying
-Tk Text <<Modified>> event so mouse-paste/undo/programmatic edits are counted;
-the same edit revision supports safe asynchronous import. Coalesce updates if
-testing shows chatter; the default input size does not justify a metrics worker.
-
-2.5 Backend resilience and streaming preparation
--------------------------------------------------
-
-Current retries already cover HTTP 429/502/503/504 and broad network exceptions.
-Keep one shared transport helper; nested retries inside both backend wrappers
-would multiply attempts. Improve these concrete gaps:
-- Retry-After supports seconds and HTTP-date; the existing numeric-only parser
-  clamps even a long server-requested wait to eight seconds. A server minimum
-  must not be shortened: if it exceeds the retry-wait budget, stop and ask the
-  user to retry later. [S9]
-- Jitter must be inside the eight-second exponential cap, not added afterwards.
-- Close HTTPError responses before sleeping; never render backend response bodies
-  or arbitrary exception.reason text in UI diagnostics.
-- Catch IncompleteRead and RemoteDisconnected as transient response failures;
-  do not retry malformed JSON, authentication errors or certificate validation.
-- Bound attempts and accumulated retry waits; distinguish these from per-socket
-  timeouts. urllib's timeout is not a strict whole-request wall-clock deadline.
-- Add optional threading.Event cancellation to break waits and stop future
-  attempts when Clear/close supersedes work. An already-blocked urllib call may
-  continue until its socket timeout; stale request IDs still protect the UI.
-- Anthropic documents overload HTTP 529: opt it in only at the Claude call site,
-  not as an assumption about every backend. [S10]
-
-Retrying a POST after a lost response can duplicate server work and cost. The
-Messages/Ollama flows here have no verified exactly-once guarantee; state this
-engineering limitation. Do not invent an idempotency header. The proposed code
-keeps network-drop retries requested in the brief, bounded to four attempts.
-
-Streaming preparation only: preserve stream=False now. Future Claude SSE and
-Ollama NDJSON need different incremental parsers. Claude can emit an error after
-HTTP 200; Ollama's transport is newline-delimited JSON. Buffer UTF-8 correctly,
-bound event size and total text, ignore unknown permitted event types, and require
-the provider's terminal event. Parse the final assembled translation through the
-existing parser and restore placeholders before enabling Copy/Export/History.
-Never expose incomplete JSON as a finished translation. [S10–S12]
-
-Suggested internal stream event contract: (request_id, kind, payload), where
-kind is progress, complete or error. Only the Tk queue pump touches widgets.
-Coalesce progress to at most 10 updates/second and use a bounded queue. After
-any partial output, stop on failure and offer Restart; never transparently append
-a retry's new generation to the old one. Streaming changes require distinct
-provider tests and are deliberately not presented as a ready-to-enable patch.
-
-3. MODULAR CODE SNIPPETS
-========================
-
-These are proposed implementations, not edits already applied. Module blocks
-start at column zero. Method blocks below are dedented for readability: indent
-them by eight spaces inside the existing conditional PlumeApp class. Insert all
-integration statements at their surrounding method body's indentation. Do not
-paste the whole note as Python. Sections B3/B4 are optional product choices.
-
-A0 — Additional standard-library imports
------------------------------------------
-Add to the import group at 33–49 (keep the existing imports).
-
-```python
-import http.client
-import queue
-import socket
-import ssl
-import zipfile
-from email.utils import parsedate_to_datetime
-from datetime import timezone
-```
-
-A1 — Native drop receiver (module scope, before the GUI classes)
+C1. History window clobbers translations saved while it is open
 ----------------------------------------------------------------
+Invariant broken: "favourited items must not be silently deleted"; also
+ordinary history loss.
 
-```python
-class WindowsFileDrop:
-    """Queue one Explorer file path without entering Tk from WNDPROC."""
+HistoryDialog loads once (`self._entries = load_history()`, line 2514)
+and `_persist` (line 2692) writes *that list* back. PlumeApp._save_to_history
+(line 4052) and _favourite_current_result (line 4071) load-modify-save
+independently. The dialog's own docstring (lines 2500–2502) claims the
+two writers "never need to share in-memory state". That is false: they
+share the file, and the dialog holds a stale snapshot.
 
-    # Retain callbacks even if another subclass prevents safe early removal.
-    _pins = []
+Reproduction:
+  1. Enable local history. Open History. Leave it open.
+  2. Translate a new phrase in the main window.
+     _save_to_history inserts the entry on disk.
+  3. In the History window, favourite or delete any *older* card.
+     _persist writes the snapshot from step 1.
+  4. The translation from step 2 is gone. If the user had favourited
+     it from the main panel between 2 and 3, that favourite is gone too.
 
-    def __init__(self, hwnd: int, events):
-        if sys.platform != "win32":
-            raise OSError("File dropping is available on Windows only.")
-        self.hwnd = hwnd
-        self.events = events
-        self.enabled = True
-        self.user32 = ctypes.WinDLL("user32", use_last_error=True)
-        self.shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-        pointer = ctypes.c_void_p
-        signed = ctypes.c_ssize_t
-        unsigned = ctypes.c_size_t
-        suffix = "PtrW" if ctypes.sizeof(pointer) == 8 else "W"
-        self.set_proc = getattr(self.user32, "SetWindowLong" + suffix)
-        self.get_proc = getattr(self.user32, "GetWindowLong" + suffix)
-        self.set_proc.argtypes = [pointer, ctypes.c_int, signed]
-        self.set_proc.restype = signed
-        self.get_proc.argtypes = [pointer, ctypes.c_int]
-        self.get_proc.restype = signed
-        self.forward = self.user32.CallWindowProcW
-        self.forward.argtypes = [
-            pointer, pointer, ctypes.c_uint, unsigned, signed,
-        ]
-        self.forward.restype = signed
-        self.accept = self.shell32.DragAcceptFiles
-        self.accept.argtypes = [pointer, ctypes.c_int]
-        self.accept.restype = None
-        self.query = self.shell32.DragQueryFileW
-        self.query.argtypes = [
-            pointer, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_uint,
-        ]
-        self.query.restype = ctypes.c_uint
-        self.finish = self.shell32.DragFinish
-        self.finish.argtypes = [pointer]
-        self.finish.restype = None
-        prototype = ctypes.WINFUNCTYPE(
-            signed, pointer, ctypes.c_uint, unsigned, signed,
-        )
-        self.callback = prototype(self._window_proc)
-        self.address = ctypes.cast(self.callback, pointer).value
-        ctypes.set_last_error(0)
-        self.previous = self.set_proc(hwnd, -4, self.address)
-        error = ctypes.get_last_error()
-        if not self.previous and error:
-            raise ctypes.WinError(error)
-        self._pins.append(self)
-        self.accept(hwnd, True)
+The same last-writer-wins applies in reverse: History open, user
+favourites a card, a translation completes and save_history writes a
+list that still has the un-favourited flag.
 
-    def _window_proc(self, hwnd, message, wparam, lparam):
-        """Always release HDROP; forward every message we do not own."""
-        if message == 0x0233:  # WM_DROPFILES
-            try:
-                if self.enabled:
-                    if self.query(wparam, 0xFFFFFFFF, None, 0) != 1:
-                        self.events.put_nowait(("notice", "Drop one file."))
-                    else:
-                        length = self.query(wparam, 0, None, 0)
-                        if not 0 < length <= 32767:
-                            raise ValueError("Invalid dropped path.")
-                        buffer = ctypes.create_unicode_buffer(length + 1)
-                        copied = self.query(wparam, 0, buffer, length + 1)
-                        if copied != length:
-                            raise ValueError("Incomplete dropped path.")
-                        self.events.put_nowait(("path", buffer.value))
-            except Exception:
-                # No Python exception may escape through a native callback.
-                # A full queue means an earlier drop is already being handled.
-                pass
-            finally:
-                self.finish(wparam)
-            return 0
-        if message == 0x0082:  # WM_NCDESTROY
-            self.enabled = False
-            self.hwnd = None
-        return self.forward(self.previous, hwnd, message, wparam, lparam)
+Risk: silent data loss of the one store Plume treats as durable. Opt-in
+history being off by default limits blast radius, but this is exactly
+the path a daily user with history on will hit.
 
-    def close(self):
-        """Disable drops and restore only a chain that we still head."""
-        self.enabled = False
-        if self.hwnd is None:
-            return
-        self.accept(self.hwnd, False)
-        current = ctypes.c_void_p(self.get_proc(self.hwnd, -4)).value
-        if current == self.address:
-            ctypes.set_last_error(0)
-            previous = self.set_proc(self.hwnd, -4, self.previous)
-            if not previous and ctypes.get_last_error():
-                raise ctypes.WinError(ctypes.get_last_error())
-            self.hwnd = None
-        # The pinned object survives until process exit, including chain cases.
-
-
-def find_tk_text(widget):
-    """Find the public Tk Text child without using CTk private attributes."""
-    if isinstance(widget, tk.Text):
-        return widget
-    for child in widget.winfo_children():
-        found = find_tk_text(child)
-        if found is not None:
-            return found
-    return None
-```
-
-A2 — Bounded reader, with a lazy optional Word feature gate
-----------------------------------------------------------
-
-```python
-IMPORT_BYTE_LIMIT = 2 * 1024 * 1024
-DOCX_EXPANDED_LIMIT = 8 * 1024 * 1024
-
-
-def read_import_text(path: str, character_limit: int) -> str:
-    """Read a small source document; never truncate or extract ZIP files."""
-    extension = os.path.splitext(path)[1].casefold()
-    if extension not in {".txt", ".md", ".docx"}:
-        raise ValueError("Choose a .txt, .md or .docx file.")
-    if not os.path.isfile(path):
-        raise ValueError("Choose a file rather than a folder.")
-    with open(path, "rb") as source:
-        raw = source.read(IMPORT_BYTE_LIMIT + 1)
-    if len(raw) > IMPORT_BYTE_LIMIT:
-        raise ValueError("The file exceeds the 2 MiB import limit.")
-    if extension == ".docx":
-        try:
-            from docx import Document
-            from docx.text.paragraph import Paragraph
-        except ImportError as exc:
-            raise ValueError(
-                "Word import needs the optional python-docx extra."
-            ) from exc
-        try:
-            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                members = archive.infolist()
-                if len(members) > 512 or sum(
-                    item.file_size for item in members
-                ) > DOCX_EXPANDED_LIMIT:
-                    raise ValueError("The Word document is too large.")
-                if any(item.flag_bits & 1 for item in members):
-                    raise ValueError("Encrypted Word files are not supported.")
-            document = Document(io.BytesIO(raw))
-            if not hasattr(document, "iter_inner_content"):
-                raise ValueError("Word import needs python-docx 1.2 or newer.")
-            if document.element.xpath(".//w:ins | .//w:del"):
-                raise ValueError("Accept tracked changes before importing.")
-            if document.element.xpath(".//w:tbl//w:tbl"):
-                raise ValueError("Nested Word tables are not supported.")
-            parts = []
-            for block in document.iter_inner_content():
-                if isinstance(block, Paragraph):
-                    parts.append(block.text)
-                else:
-                    for row in block.rows:
-                        cells = (cell.text for cell in row.cells)
-                        parts.append("\t".join(cells))
-            text = "\n".join(parts)
-        except ValueError:
-            raise
-        except Exception as exc:
-            # Parser details can contain paths or document content.
-            raise ValueError("The Word document could not be read.") from exc
-    else:
-        has_utf16_bom = raw.startswith((b"\xff\xfe", b"\xfe\xff"))
-        encoding = "utf-16" if has_utf16_bom else "utf-8-sig"
-        try:
-            text = raw.decode(encoding)
-        except UnicodeError as exc:
-            raise ValueError(
-                "Save the text file as UTF-8, then import it."
-            ) from exc
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    if "\x00" in text:
-        raise ValueError("The file contains unsupported null characters.")
-    valid, message = validate_source_size(text, character_limit)
-    if not valid:
-        raise ValueError(message)
-    return text
-```
-
-A3 — PlumeApp import bridge methods
-------------------------------------
-Call _start_file_import_support with after_idle only after _build_status_bar.
-The ordinary Open file action remains usable if native subclassing is unavailable.
-
-```python
-def _start_file_import_support(self):
-    """Initialise file import after Tk has created the native text window."""
-    self._import_events = queue.Queue(maxsize=4)
-    self._import_results = queue.Queue(maxsize=1)
-    self._import_busy = False
-    self._import_stopping = False
-    self._input_revision = 0
-    self._file_drop = None
-    self._import_text_widget = find_tk_text(self.input_box)
-    if self._import_text_widget is not None:
-        self._import_text_widget.edit_modified(False)
-        self._import_text_widget.bind(
-            "<<Modified>>", self._on_text_modified, add="+",
-        )
-        if sys.platform == "win32":
-            try:
-                self._file_drop = WindowsFileDrop(
-                    self._import_text_widget.winfo_id(), self._import_events,
-                )
-            except (OSError, AttributeError):
-                self._import_notice(
-                    "File dropping is unavailable; use Open file."
-                )
-    self._import_after = self.after(75, self._poll_file_import)
-
-
-def _on_text_modified(self, _event=None):
-    """Track all edits, including menu paste, undo and programmatic changes."""
-    if self._import_text_widget.edit_modified():
-        self._input_revision += 1
-        self._import_text_widget.edit_modified(False)
-        self._on_input_change()
-
-
-def _import_notice(self, text):
-    self.advisory.configure(text=text)
-    self.advisory.grid()
-
-
-def _open_source_file(self):
-    """Reuse the same asynchronous reader as Explorer drops."""
-    path = filedialog.askopenfilename(
-        parent=self, title="Open source text",
-        filetypes=[("Source documents", "*.txt *.md *.docx")],
-    )
-    if path:
-        self._begin_file_import(path)
-
-
-def _begin_file_import(self, path):
-    if self._import_stopping:
-        return
-    if self._import_busy:
-        self._import_notice("A file is already being read.")
-        return
-    self._import_busy = True
-    revision = self._input_revision
-    request_id = self._request_id
-    limit = coerce_positive_int(
-        self.config_data.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS,
-    )
-    results = self._import_results
-
-    def worker():
-        try:
-            payload = (True, read_import_text(path, limit))
-        except ValueError as exc:
-            payload = (False, str(exc))
-        except Exception:
-            payload = (False, "The file could not be read.")
-        results.put((revision, request_id, path, payload))
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
-def _poll_file_import(self):
-    """Deliver work on Tk's thread and reject superseded imports."""
-    if self._import_stopping:
-        return
-    try:
-        while True:
-            kind, value = self._import_events.get_nowait()
-            if kind == "path":
-                self._begin_file_import(value)
-            else:
-                self._import_notice(value)
-    except queue.Empty:
-        pass
-    try:
-        revision, request_id, path, payload = self._import_results.get_nowait()
-    except queue.Empty:
-        pass
-    else:
-        ok, text = payload
-        current = (self._input_revision, self._request_id)
-        if current != (revision, request_id):
-            self._import_notice(
-                "Import discarded because the message changed."
-            )
-        elif not ok:
-            self._import_notice(text)
-        else:
-            replace = not self._input_text() or messagebox.askyesno(
-                "Replace source text",
-                "Replace the current source with this file?",
-                parent=self,
-            )
-            # Recheck after the modal question's nested event loop.
-            current = (self._input_revision, self._request_id)
-            if (
-                replace and not self._import_stopping
-                and current == (revision, request_id)
-            ):
-                self._clear()
-                self.input_box.insert("1.0", text)
-                self._on_input_change()
-                if path.casefold().endswith(".docx"):
-                    self._import_notice(
-                        "Imported body text and tables only. "
-                        "Review before translating."
-                    )
-        self._import_busy = False
-    if not self._import_stopping:
-        self._import_after = self.after(75, self._poll_file_import)
-
-
-def _stop_file_import_support(self):
-    """Stop Tk polling before the real window destruction path."""
-    self._import_stopping = True
-    token = getattr(self, "_import_after", None)
-    if token is not None:
-        self.after_cancel(token)
-    receiver = getattr(self, "_file_drop", None)
-    if receiver is not None:
-        try:
-            receiver.close()
-        except OSError:
-            # It remains pinned and disabled; WM_NCDESTROY completes teardown.
-            pass
-```
-
-A3 integration statements:
-- After 2753: self.after_idle(self._start_file_import_support)
-- Before 3375: self._stop_file_import_support()
-- Add an Open file button at a NEW row 8 of the existing left frame, before 3004,
-  command=self._open_source_file. Do not add it to the already crowded button row.
-- Only install the modified-event binding once. Keeping KeyRelease is harmless
-  but redundant; remove the 2924 binding once <<Modified>> is verified.
-- Route any future direct destroy() path through the same shutdown helper.
-
-B1 — Complete and canonicalise the preset records
--------------------------------------------------
-At 935, after the existing situation key, add:
-
-```python
-"tones": validate_tones(entry.get("tones")),
-```
-
-Replace normalise_conversation_presets at 939–956 with:
-
-```python
-def normalise_conversation_presets(value) -> list:
-    """Bound presets and repair ambiguous legacy display names predictably."""
-    if not isinstance(value, list):
-        return []
-    result = []
-    ids = set()
-    names = {CONVERSATION_PRESET_PLACEHOLDER.casefold()}
-    for item in value:
-        clean = normalise_conversation_preset(item)
-        if clean is None or clean["id"] in ids:
-            continue
-        base = clean["name"]
-        name = base
-        number = 2
-        while name.casefold() in names:
-            suffix = " ({})".format(number)
-            name = base[:PRESET_NAME_MAX - len(suffix)] + suffix
-            number += 1
-        clean["name"] = name
-        result.append(clean)
-        ids.add(clean["id"])
-        names.add(name.casefold())
-        if len(result) >= MAX_CONVERSATION_PRESETS:
-            break
-    return result
-```
-
-B2 — Transactional preset UI methods
---------------------------------------
-Replace the save and delete methods (3257–3298), and add _commit_presets.
-This code includes the optional profile only if B3's UI has been installed.
-
-```python
-def _commit_presets(self, presets, selection=CONVERSATION_PRESET_PLACEHOLDER):
-    """Publish a new preset list only after the atomic save succeeds."""
-    candidate = dict(self.config_data)
-    candidate["conversation_presets"] = presets
-    try:
-        save_config(candidate)
-    except (ConfigError, OSError):
-        messagebox.showerror(
-            "Presets", "Presets could not be saved. No changes were applied.",
-            parent=self,
-        )
-        return False
-    self.config_data = candidate
-    self._refresh_conversation_preset_menu(select=selection)
-    return True
-
-
-def _save_conversation_preset_dialog(self):
-    """Save a uniquely named snapshot without silently replacing an entry."""
-    dialog = ctk.CTkInputDialog(text="Name this preset:", title="Save preset")
-    name = _safe_short_string(dialog.get_input(), PRESET_NAME_MAX)
-    if not name:
-        return
-    presets = self.config_data.get("conversation_presets", [])
-    used = {item["name"].casefold() for item in presets}
-    used.add(CONVERSATION_PRESET_PLACEHOLDER.casefold())
-    if name.casefold() in used:
-        messagebox.showinfo(
-            "Presets", "Choose a different preset name.", parent=self,
-        )
-        return
-    if len(presets) >= MAX_CONVERSATION_PRESETS:
-        messagebox.showinfo(
-            "Presets", "Delete a preset before saving another.", parent=self,
-        )
-        return
-    entry = {
-        "name": name,
-        "direction": self.direction_var.get(),
-        "french_formality": self.formality_var.get(),
-        "speaker_gender": self.speaker_gender_var.get(),
-        "recipient_gender": self.recipient_gender_var.get(),
-        "situation": self._situation_text(),
-        "tones": self._current_tones(),
-    }
-    if hasattr(self, "_writing_vars"):
-        entry["writing"] = self._current_writing_profile()
-    preset = normalise_conversation_preset(entry)
-    if preset is not None:
-        self._commit_presets(presets + [preset], preset["name"])
-
-
-def _delete_conversation_preset(self):
-    """Delete from a candidate list; preserve the live list on save failure."""
-    name = self.preset_var.get()
-    if name == CONVERSATION_PRESET_PLACEHOLDER:
-        return
-    presets = [
-        item for item in self.config_data.get("conversation_presets", [])
-        if item["name"] != name
-    ]
-    self._commit_presets(presets)
-```
-
-In _apply_conversation_preset, after 3254 and before _on_toolbar_change():
-
-```python
-tones = validate_tones(preset.get("tones"))
-for index, variable in enumerate(self.tone_vars):
-    variable.set(tones[index] if index < len(tones) else TONE_NONE)
-```
-
-Settings reconciliation: SettingsDialog._save uses self._config, not new_config.
-After line 2497 and BEFORE the try/save_config at 2498–2499, insert:
-
-```python
-self._config["conversation_presets"] = normalise_conversation_presets(
-    master.config_data.get("conversation_presets", [])
-)
-```
-
-This preserves concurrent main-window preset changes. After
-PlumeApp._apply_settings line 3720, call
-self._refresh_conversation_preset_menu(). The Settings save also needs a visible
-OSError handler around both ordinary and recovery saves; never treat a disk
-write failure as a request to replace a malformed configuration file.
-
-B3 — OPTIONAL Mode/Strength/Role extension
-------------------------------------------
-These fields are meaningful only with all the following wiring. Do not persist
-decorative keys that the execution pipeline silently ignores.
-
-```python
-WRITING_MODES = ("Translate", "Correct English then translate")
-WRITING_STRENGTHS = ("Source-led", "Light", "Balanced")
-WRITING_ROLES = ("General", "Friend", "Colleague", "Customer")
-
-
-def normalise_writing_profile(value) -> dict:
-    """Use curated background choices, never arbitrary prompt templates."""
-    value = value if isinstance(value, dict) else {}
-    return {
-        "version": 1,
-        "mode": _coerce_choice(value.get("mode"), WRITING_MODES, "Translate"),
-        "strength": _coerce_choice(
-            value.get("strength"), WRITING_STRENGTHS, "Source-led",
-        ),
-        "role": _coerce_choice(value.get("role"), WRITING_ROLES, "General"),
-    }
-
-
-def build_writing_profile_instruction(value) -> str:
-    """Constrain style strength without changing the translation contract."""
-    profile = normalise_writing_profile(value)
-    if profile["strength"] == "Source-led":
-        return ""
-    degree = {
-        "Light": "Adjust register subtly, only where meaning permits.",
-        "Balanced": "Combine register hints, only where meaning permits.",
-    }[profile["strength"]]
-    return (
-        "\nBackground relationship: " + profile["role"].lower() + ". " + degree
-        + " Do not assume a relationship, identity, expertise or authority "
-        "that the source does not establish. Preserve facts, negation, "
-        "certainty "
-        "and obligations. Do not add explanations, gratitude or promises."
-    )
-```
-
-Optional PlumeApp methods:
-
-```python
-def _build_writing_profile_controls(self, parent):
-    """Place the optional profile below the existing actions."""
-    row = ctk.CTkFrame(parent, fg_color="transparent")
-    row.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 8))
-    self._writing_vars = {}
-    fields = (
-        ("mode", "Mode", WRITING_MODES),
-        ("strength", "Strength", WRITING_STRENGTHS),
-        ("role", "Role", WRITING_ROLES),
-    )
-    for index, (key, label, choices) in enumerate(fields):
-        variable = ctk.StringVar(value=choices[0])
-        self._writing_vars[key] = variable
-        ctk.CTkLabel(row, text=label).grid(row=index, column=0, sticky="w")
-        ctk.CTkOptionMenu(
-            row, values=list(choices), variable=variable, width=240,
-        ).grid(row=index, column=1, sticky="ew", padx=(8, 0))
-    row.grid_columnconfigure(1, weight=1)
-
-
-def _current_writing_profile(self):
-    return normalise_writing_profile({
-        key: variable.get() for key, variable in self._writing_vars.items()
-    })
-
-
-def _run_selected_mode(self):
-    """Dispatch an explicit action; selecting a preset never submits."""
-    profile = self._current_writing_profile()
-    if profile["mode"] == "Correct English then translate":
-        self._correct_then_translate()
-    else:
-        self._translate()
-```
-
-Optional integration:
-- Add "writing": normalise_writing_profile(entry.get("writing")) to B1's
-  normalise_conversation_preset return dictionary; missing profiles use defaults.
-- Call _build_writing_profile_controls(left) at the end of _build_left.
-- Set the main button's command (3000) and Ctrl+Enter handler (3726) to
-  _run_selected_mode. Keep _deliver_correction's direct _translate call unchanged
-  to avoid an infinite correction loop. The explicit Correct English button stays.
-- After applying a preset's tones, apply normalise_writing_profile to its writing
-  member and set each _writing_vars entry; this does not run a request.
-- In _translate after 3895, set snapshot["writing"] to
-  self._current_writing_profile(). Correction itself keeps its strict existing
-  correction prompt; profile settings apply to the later translation stage.
-- In translate after 1816, append build_writing_profile_instruction(
-  config_snapshot.get("writing")) to system_prompt.
-- Source-led means the profile contributes no extra relationship/strength clause;
-  selected tones continue to use their existing faithful constraints. Make this
-  clear in a tooltip/help label. Role affects prompting only for Light/Balanced.
-- This first extension inherits current correction behaviour: controls used for
-  the later translation are sampled when that translation starts. Freezing a
-  profile across both stages is a separate improvement to _deliver_correction.
-- Assess the three-row profile at 920x600 before enabling it; a collapsed Advanced
-  panel is the preferred shipping presentation if vertical space becomes tight.
-
-B4 — Exact legacy filename option, not part of the recommended patch
+C2. Reopen from History does not supersede an in-flight translation
 -------------------------------------------------------------------
-If the product decision is specifically to use the requested filename, replace
-the line-97 constant with the following only as part of a reviewed migration:
+Invariant broken: stale-request protection.
 
-```python
-CONFIG_FILENAME = "scriptorium_config.json"
-```
+_reopen_history_entry (line 3530) writes the input box, situation and
+result cards but does **not** increment `_request_id` or `_speech_request_id`,
+and does not re-enable/disable the Translate lock. HistoryDialog._reopen
+(line 2635) then destroys the dialog.
 
-Migration design: both paths resolve beneath config_dir(). If only the Plume
-file exists, validate it with the current load rules, offer an explicit move/copy
-to the chosen new destination, then use only that destination. If both exist,
-ask which configuration is authoritative; never merge credentials. A malformed
-destination must retain the existing recovery guard. Add the chosen secret-bearing
-filename to .gitignore BEFORE any save. This option requires configuration/docs
-edits outside this read-only mandate and is NOT performed or silently assumed.
+Reproduction:
+  1. Translate a long phrase (Claude in flight, Translate disabled).
+  2. Open History, Reopen an older entry.
+     UI now shows the old phrase and its five alternatives.
+  3. The in-flight worker completes. `_deliver` (line 3943) sees the
+     *same* `_request_id` it was born with, so it is not stale.
+  4. The reopened result is replaced by the late translation. The
+     input box is *not* overwritten (snap_text check at 3972) but the
+     right-hand pane and history-save are. The user is looking at a
+     translation of a different phrase than the one in the left pane,
+     with only the "Generated for an earlier message" advisory if the
+     reopened source text happened to differ — and if they reopened
+     an entry whose source accidentally equals the in-flight source,
+     there is no advisory at all.
 
-C — Tone resolver, prompt and UI event semantics
-------------------------------------------------
-Replace validate_tones and build_tone_instruction at 1122–1161:
+Clear and window-close *do* bump the id. Reopen is the missing sibling.
 
-```python
-def validate_tones(value) -> list:
-    """Keep the latest three compatible catalogue tones in stable order."""
-    if not isinstance(value, (list, tuple)):
-        return []
-    allowed = set(REGISTER_TONES) - {TONE_NONE}
-    chosen = []
-    for item in value:
-        if not isinstance(item, str) or item not in allowed:
-            continue
-        chosen = [
-            existing for existing in chosen
-            if existing != item
-            and frozenset({existing, item}) not in TONE_CONFLICTS
-        ]
-        chosen.append(item)
-        chosen = chosen[-MAX_TONES:]
-    return chosen
+========================================================================
+MODERATE
+========================================================================
 
+M1. Settings save wipes presets created while Settings is open
+--------------------------------------------------------------
+SettingsDialog copies config at open (`self._config = dict(config)`,
+line 2153 — a *shallow* copy). `_save_conversation_preset_dialog`
+(line 3243) rebinds `config_data["conversation_presets"]` to a new
+list and writes it immediately. Settings is not grab-set, so Save
+preset still works with Settings open.
 
-def build_tone_instruction(tones) -> str:
-    """Make register subordinate to the source and structured contract."""
-    tones = validate_tones(tones)
-    if not tones:
-        return ""
-    return (
-        "Register tones (background only): "
-        + ", ".join(tone.lower() for tone in tones)
-        + ". Apply these only to register and word choice when the source "
-        "permits. The source wins every conflict. Preserve facts, quantities, "
-        "negation, attribution, uncertainty, deadlines and obligations. Never "
-        "add or remove meaning, soften or intensify commitments, "
-        "invent jokes, "
-        "flirtation, offence, reassurance, gratitude, apologies or promises. "
-        "Do not embellish. Preserve placeholders exactly. Apply these limits "
-        "to the primary translation and all five alternatives. Keep the "
-        "required JSON output shape and requested language "
-        "direction unchanged."
-    )
-```
+On Settings Save (line 2483) `self._config["conversation_presets"]`
+still points at the list from dialog-open. That list is written back
+and the newly named preset disappears.
 
-At 2967 replace command=self._on_tone_change with:
-command=lambda value, slot=index: self._on_tone_change(value, slot)
-Replace the method at 3209–3221:
+M2. `_speak` bumps `_speech_request_id` before it is allowed to start
+---------------------------------------------------------------------
+Lines 3567–3585: the counter increments, *then* the missing-key return
+and the privacy `askokcancel`. Cancelling the privacy notice, or
+clicking Speak with no key configured, leaves the previous in-flight
+TTS worker stale. Its audio is dropped on `_deliver_speech` even
+though the user did not start a replacement.
 
-```python
-def _on_tone_change(self, _value=None, slot=None):
-    """The changed slot wins conflicts, regardless of its visual position."""
-    values = [variable.get() for variable in self.tone_vars]
-    if slot is not None:
-        changed = values.pop(slot)
-        values.append(changed)
-    resolved = validate_tones(values)
-    removed = {
-        value for value in values
-        if value != TONE_NONE and value not in resolved
-    }
-    padded = resolved + [TONE_NONE] * (MAX_TONES - len(resolved))
-    for variable, value in zip(self.tone_vars, padded):
-        variable.set(value)
-    if removed:
-        self.advisory.configure(
-            text="Conflicting tones removed: {}.".format(
-                ", ".join(sorted(removed))
-            ),
-        )
-        self.advisory.grid()
-```
+M3. Correction preservation warnings are never seen
+---------------------------------------------------
+`_deliver_correction` (3848–3851) puts correction notes on the advisory,
+then immediately calls `_translate()` which does `self.advisory.grid_remove()`
+at line 3915. A failed keep-as-is round-trip during Correct English is
+silent; auto-translate proceeds on text that may have dropped a name.
 
-D1 — Markdown textual diff
----------------------------
-Module helper near export_current_result_markdown (after its end, before 851):
+M4. Correction failure leaves "Use as input" disabled
+-----------------------------------------------------
+`_correct_then_translate` disables `use_as_input_btn` (3789).
+`_deliver_correction` on error (3825–3832) restores Translate, Correct
+and Reply, but not Use as input. After a failed correction the previous
+result is still on screen but the button stays dead until the next
+successful translate.
 
-```python
-def export_translation_diff(source_text: str, translation: str) -> str:
-    """Export a textual comparison; it is not a translation quality score."""
-    changes = "\n".join(difflib.unified_diff(
-        source_text.splitlines(), translation.splitlines(),
-        fromfile="Submitted source", tofile="Selected translation",
-        lineterm="",
-    ))
-    longest = max((len(run) for run in re.findall(r"`+", changes)), default=0)
-    fence = "`" * max(3, longest + 1)
-    explanation = (
-        "# Translation comparison\n\n"
-        "Textual comparison across languages; not an assessment of accuracy. "
-        "Line endings are normalised; "
-        "final-newline differences are ignored.\n\n"
-    )
-    if not changes:
-        return explanation + "No textual differences.\n"
-    return explanation + fence + "diff\n" + changes + "\n" + fence + "\n"
-```
+M5. Favourite and Export bind to the *live* input, not the translated source
+----------------------------------------------------------------------------
+`_save_to_history` correctly uses `snap_text`. `_favourite_current_result`
+(4107) and `_export_current_result` (4140) use `self._input_text()` /
+`self._situation_text()`. If the user has edited the left pane since
+the result arrived — including the C2 advisory path — a favourite is
+stored as (new source, old translation). Corrupt study data.
 
-PlumeApp method, before _export_current_result:
+There is no `self._current_source` today; `_current_result` does not
+carry the source either (make_history_entry puts it on the history
+record only).
 
-```python
-def _export_current_diff(self):
-    """Use the accepted source snapshot, never the edited live input."""
-    source = getattr(self, "_result_source_text", None)
-    if source is None or not self._current_main:
-        return
-    path = filedialog.asksaveasfilename(
-        parent=self, title="Export textual comparison",
-        defaultextension=".md", filetypes=[("Markdown diff", "*.md")],
-    )
-    if not path:
-        return
-    try:
-        with open(path, "w", encoding="utf-8", newline="\n") as destination:
-            destination.write(
-                export_translation_diff(source, self._current_main)
+M6. TTS temp-file leak on Windows
+---------------------------------
+`_play_wav_bytes` (3652) plays with `winsound.SND_FILENAME | SND_ASYNC`.
+The next Speak / Clear / close calls `_stop_speech` (SND_PURGE) then
+`_cleanup_tts_file`. On Windows the file handle is often still held
+for a beat after PURGE; `os.remove` raises OSError, which is swallowed,
+and `_tts_temp_path` is set to None anyway (3647–3650). The WAV is
+leaked in %TEMP%\plume_tts_*.wav. Repeated Speak clicks accumulate
+files. Rapid Speak also fires parallel ElevenLabs workers (M12).
+
+M7. New translation does not stop the previous playback
+-------------------------------------------------------
+`_clear_results` stops speech; `_render_result` (4023) does not. A
+Speak of alternative 3, then a new Translate, leaves the old audio
+playing over the new cards. Close-to-tray (M-minor below) has the
+same gap.
+
+M8. HTTPError body is not consumed before a retry
+-------------------------------------------------
+`_http_post_json` (1578) catches HTTPError, possibly sleeps, and
+retries. The error response's `fp` is never read or closed. urllib
+documents that this can leak the socket. Four attempts × a busy
+session is enough to matter. 401/403 already avoid the retry path.
+
+M9. Token restore skips `language_note` and `notes`
+---------------------------------------------------
+`restore_result_tokens` (1002–1020) restores main + five alternatives
+only. `language_note` and `notes` are parsed earlier and can still
+contain `⟦PH0⟧`. Those strings are shown on the advisory strip
+(`advisory_text_from_result`). The missing-token warning is generic
+and does not leak source, but a *present* token in a note *does*
+expose the marker, and a model that echoes a name into `notes`
+bypasses masking entirely. Also no post-restore scan for leftover
+`_PH_TOKEN_RE` matches on the visible fields.
+
+M10. Favourites with ≠ 5 alternatives are dropped, then deleted on save
+-----------------------------------------------------------------------
+`normalise_history_entry` (648–649) returns None unless
+`len(clean_variations) == VARIATION_COUNT`. A hand-edit, a partial
+write, or a future schema slip drops a *favourite* on load. The next
+`save_history` (History persist, or a new translation) writes the
+filtered list. The favourite is gone from disk. load_history itself
+is defensive; the combination with persist is not.
+
+M11. Autostart registry is written before config save
+-----------------------------------------------------
+SettingsDialog._save (2461–2465) calls `set_launch_at_sign_in` *then*
+`save_config`. If the user declines the damaged-file recovery prompt,
+the HKCU Run value already changed and `launch_at_sign_in` in the
+file did not. `launch_at_sign_in_is_set()` exists (line 507) but is
+never used to reconcile the checkbox with the registry.
+
+M12. Speak is not serialised
+----------------------------
+Unlike Translate, Speak never disables its buttons. Each click starts
+another ElevenLabs thread. Only the latest `_speech_request_id` plays;
+the rest are paid for and discarded. Combined with M6 this is the
+leak-and-spend path.
+
+M13. HTML clipboard: NULL lock and failed SetClipboardData
+----------------------------------------------------------
+`copy_html_to_windows_clipboard` (1967–1981) `GlobalAlloc`s then
+`GlobalLock`s without checking the lock pointer (memmove of NULL is a
+process crash) and does not `GlobalFree` if `SetClipboardData` fails
+(ownership does not transfer; the HGLOBAL leaks). Rare, but this is
+native code with no Python except around the inner block covering
+Lock. The outer `except Exception` will not catch an access violation.
+
+========================================================================
+MINOR
+========================================================================
+
+m1. Conversation presets do not snapshot tones. Current comments
+    (2864–2867) say "five controls plus Situation"; notes_011 asked
+    for tones too. Completeness gap, not a regression.
+
+m2. Presets are keyed by *name*. Duplicate names: apply hits the first,
+    delete removes all with that name.
+
+m3. Disabling both tray checkboxes does not stop an already-running
+    icon; it lingers until Quit.
+
+m4. Close-to-tray does not stop speech or bump request ids. Hiding is
+    not cancelling; worth documenting, or stopping audio on withdraw.
+
+m5. keep-as-is uses `(?!\w)` boundaries. "Marie" as a term will match
+    inside "Marie-Claire" when Marie-Claire is *not* itself a term.
+    Longest-first is tested when both are listed (test_keep_as_is_longest_term_wins);
+    the hyphen case with only the short term is not.
+
+m6. ElevenLabs `voice_id` is interpolated into the URL path unsanitised.
+    Not a host switch, but a junk id produces a confusing 404.
+
+m7. Reopen does not restore Direction / Me / You. Language label comes
+    from the record; the next Translate uses whatever the toolbar says.
+
+m8. Settings and History are transient but not `grab_set`. Ctrl+Enter
+    on the input box still fires. Mostly a UX choice; the stale-id
+    guard is what makes it safe, except C2.
+
+m9. `format_status` still says "N characters" while `char_label` uses
+    `format_metrics_label`. Harmless duplication.
+
+m10. `looks_like_english("café at 6")` is False (documented). Fine.
+
+------------------------------------------------------------------------
+3. Targeted bug fixes
+------------------------------------------------------------------------
+Minimal patches. British English. No architectural churn.
+
+------------------------------------------------------------------------
+3.1  C1 — reload history from disk before every mutation
+------------------------------------------------------------------------
+File : plume.py
+Class: HistoryDialog
+
+Replace the mutation helpers so they never persist a stale snapshot.
+Keep `_entries` as a display cache, refresh it from disk first.
+
+    def _reload_entries(self):
+        """Read the file afresh so a main-window save is not overwritten."""
+        self._entries = load_history()
+
+    def _toggle_favourite(self, entry_id):
+        self._reload_entries()
+        current = next((e for e in self._entries if e.get("id") == entry_id), None)
+        if current is None:
+            self._refresh_list()
+            return
+        set_favourite(self._entries, entry_id, not current.get("favourite"))
+        self._persist()
+        self._refresh_list()
+
+    def _delete_entry(self, entry_id):
+        self._reload_entries()
+        self._entries = remove_history_entry(self._entries, entry_id)
+        self._persist()
+        self._refresh_list()
+
+    def _clear_history(self):
+        if not messagebox.askyesno(
+            "Clear history",
+            "Remove all non-favourited history entries from this device? "
+            "Favourited entries are kept.",
+        ):
+            return
+        self._reload_entries()
+        self._entries = clear_history(self._entries)
+        self._persist()
+        self._refresh_list()
+
+    def _export_favourites(self):
+        self._reload_entries()
+        # ... existing body, using self._entries ...
+
+Optional belt: `_save_to_history` / `_favourite_current_result` could
+`lift()` / `_reload_entries` on an open History dialog after they
+save, so the window *shows* the new row. Not required to stop the
+loss; the reload-before-mutate is.
+
+------------------------------------------------------------------------
+3.2  C2 — Reopen supersedes in-flight work
+------------------------------------------------------------------------
+File : plume.py
+Class: PlumeApp
+Method: _reopen_history_entry  (line 3530)
+
+Insert at the top of the method, before touching widgets:
+
+        # Reopen is a user-visible replacement of the working result, the
+        # same class of action as Clear: in-flight translation and speech
+        # must not land on top of it.
+        self._request_id += 1
+        self._speech_request_id += 1
+        self._stop_speech()
+        self.translate_btn.configure(state="normal", text="Translate")
+        self.correct_btn.configure(state="normal", text="Correct English")
+        self.reply_btn.configure(state="normal")
+
+_clear already does this; Reopen should share that opening. Do not
+call `_clear()` itself — that would wipe the input we are about to
+fill and reset finishing touches twice.
+
+------------------------------------------------------------------------
+3.3  M2 / M12 — Speak: validate first, then lock
+------------------------------------------------------------------------
+File : plume.py
+Class: PlumeApp
+Method: _speak  (line 3555)
+
+Move `_speech_request_id += 1` to *after* the missing-key and privacy
+returns. Disable Speak while a request is in flight (optional but
+cheap — addresses M12):
+
+        def _speak(self, text):
+            text = (text or "").strip()
+            if not text:
+                return
+            snapshot = dict(self.config_data)
+            slow = bool(self.slow_speech_var.get())
+            if not snapshot.get("elevenlabs_api_key"):
+                self.advisory.configure(
+                    text="No ElevenLabs API key is set. Add one in Settings to "
+                         "hear translations spoken aloud."
+                )
+                self.advisory.grid()
+                return
+            if not snapshot.get("elevenlabs_privacy_ack"):
+                proceed = messagebox.askokcancel(
+                    "Privacy notice",
+                    "Reading this aloud sends the text to ElevenLabs to "
+                    "synthesise speech.\n\nContinue?",
+                )
+                if not proceed:
+                    return
+                self.config_data["elevenlabs_privacy_ack"] = True
+                snapshot["elevenlabs_privacy_ack"] = True
+                try:
+                    save_config(self.config_data)
+                except ConfigError:
+                    pass
+
+            self._speech_request_id += 1
+            speech_request_id = self._speech_request_id
+            # ... existing worker ...
+
+------------------------------------------------------------------------
+3.4  M3 — carry correction notes through the follow-on translate
+------------------------------------------------------------------------
+File : plume.py
+Class: PlumeApp
+
+On PlumeApp.__init__ (after `_current_favourited`, line 2720):
+
+            self._pending_correction_notes = []
+
+_deliver_correction, instead of showing notes then calling _translate
+(which hides them):
+
+            self._pending_correction_notes = list(data.get("notes") or [])
+            if self.direction_var.get() != DIR_EN_FR:
+                self.direction_var.set(DIR_EN_FR)
+                self._on_toolbar_change()
+            self._translate()
+
+_deliver success path (after `_show_result_advisories(data)`):
+
+            extra = list(self._pending_correction_notes or [])
+            self._pending_correction_notes = []
+            if extra:
+                self._show_result_advisories(data, extra_notes=extra)
+
+And clear the pending list in `_clear` / `_on_close_destroy`.
+
+------------------------------------------------------------------------
+3.5  M4 — restore Use as input on correction error
+------------------------------------------------------------------------
+File : plume.py
+Class: PlumeApp
+Method: _deliver_correction  (line 3817)
+
+In the common unlock block (currently 3825–3827), add:
+
+            self.use_as_input_btn.configure(
+                state="normal" if self._current_main else "disabled"
             )
-    except OSError:
-        self.advisory.configure(text="Could not write the comparison file.")
-        self.advisory.grid()
-```
 
-Source snapshot wiring is essential, not optional:
-- __init__, beside _current_result at 2735: initialise _result_source_text = None
-  and _result_situation = "".
-- _deliver, immediately BEFORE _render_result at 3978: set _result_source_text
-  to snap_text and _result_situation to situation, but only after the existing
-  request-id and error checks have passed.
-- _reopen_history_entry: before line 3549 increment self._request_id and
-  restore translation/correction button availability, so an old worker cannot
-  overwrite a reopened entry. Set both fields from the normalised entry before its
-  _render_result call; history's source_text and situation are the authoritative
-  historical values. Do not use the source widget as a surrogate snapshot.
-- _clear_results: reset both fields beside _current_result = None.
-- _export_current_result at 4153: pass _result_source_text and _result_situation
-  instead of _input_text() and _situation_text(); guard None before opening dialog.
-- Add "Export textual diff…" to an export menu or a separate secondary row;
-  do not replace the existing study-sheet action or add another main toolbar row.
+Matches `_deliver` line 3957.
 
-D2 — Ownership-safe HTML + Unicode clipboard replacement
----------------------------------------------------------
-Replace 1947–2002; keep _build_cf_html unchanged. Pass hwnd from the UI as below.
+------------------------------------------------------------------------
+3.6  M5 — remember the source that produced the working result
+------------------------------------------------------------------------
+File : plume.py
+Class: PlumeApp
 
-```python
-def copy_html_to_windows_clipboard(
-    html_fragment: str, plain_text: str, hwnd=None,
-) -> bool:
-    """Transfer prepared memory blocks; free only untransferred handles."""
-    if sys.platform != "win32" or not hwnd or "\x00" in plain_text:
-        return False
-    owned = []
-    opened = False
-    try:
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        pointer = ctypes.c_void_p
-        user32.RegisterClipboardFormatW.argtypes = [ctypes.c_wchar_p]
-        user32.RegisterClipboardFormatW.restype = ctypes.c_uint
-        user32.OpenClipboard.argtypes = [pointer]
-        user32.OpenClipboard.restype = ctypes.c_int
-        user32.EmptyClipboard.argtypes = []
-        user32.EmptyClipboard.restype = ctypes.c_int
-        user32.CloseClipboard.argtypes = []
-        user32.CloseClipboard.restype = ctypes.c_int
-        user32.SetClipboardData.argtypes = [ctypes.c_uint, pointer]
-        user32.SetClipboardData.restype = pointer
-        kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
-        kernel32.GlobalAlloc.restype = pointer
-        kernel32.GlobalLock.argtypes = [pointer]
-        kernel32.GlobalLock.restype = pointer
-        kernel32.GlobalUnlock.argtypes = [pointer]
-        kernel32.GlobalUnlock.restype = ctypes.c_int
-        kernel32.GlobalFree.argtypes = [pointer]
-        kernel32.GlobalFree.restype = pointer
-        html_format = user32.RegisterClipboardFormatW("HTML Format")
-        if not html_format:
-            return False
-        plain_text = plain_text.replace("\r\n", "\n").replace("\r", "\n")
-        formats = (
-            (
-                13,
-                (plain_text.replace("\n", "\r\n") + "\0").encode("utf-16-le"),
-            ),
-            (html_format, _build_cf_html(html_fragment) + b"\0"),
-        )
-        prepared = []
-        for format_id, data in formats:
-            handle = kernel32.GlobalAlloc(0x0042, len(data))
-            if not handle:
-                return False
-            owned.append(handle)
-            address = kernel32.GlobalLock(handle)
-            if not address:
-                return False
+__init__: `self._current_source = ""` and `self._current_situation = ""`.
+
+_clear_results: set both to "".
+
+_deliver, on kind == "ok", before _save_to_history:
+
+            self._current_source = snap_text
+            self._current_situation = situation
+
+_reopen_history_entry, after filling the input:
+
+            self._current_source = entry.get("source_text", "")
+            self._current_situation = entry.get("situation", "")
+
+_favourite_current_result / _export_current_result: use
+`self._current_source` and `self._current_situation` instead of
+`_input_text()` / `_situation_text()`.
+
+------------------------------------------------------------------------
+3.7  M6 / M7 — TTS cleanup retry; stop speech on new result
+------------------------------------------------------------------------
+File : plume.py
+Class: PlumeApp
+
+_cleanup_tts_file — if unlink fails, keep the path so a later call
+retries, and do not forget the file:
+
+        def _cleanup_tts_file(self):
+            if not self._tts_temp_path:
+                return
             try:
-                ctypes.memmove(address, data, len(data))
-            finally:
-                kernel32.GlobalUnlock(handle)
-            prepared.append((format_id, handle))
-        if not user32.OpenClipboard(hwnd):
-            return False
-        opened = True
-        if not user32.EmptyClipboard():
-            return False
-        for format_id, handle in prepared:
-            if not user32.SetClipboardData(format_id, handle):
-                return False
-            owned.remove(handle)
-        return True
-    except Exception:
-        return False
-    finally:
-        if opened:
-            user32.CloseClipboard()
-        for handle in owned:
-            kernel32.GlobalFree(handle)
-```
+                os.remove(self._tts_temp_path)
+            except OSError:
+                return  # still playing; try again next stop/close
+            self._tts_temp_path = None
 
-At 4175 use:
-if not copy_html_to_windows_clipboard(fragment, text, self.winfo_id()):
-    self._copy(text)
+_play_wav_bytes: after SND_PURGE, a 50 ms `self.after` before unlink
+is nicer on Windows but is harder to sequence with the following
+mkstemp. The "do not forget the path" change is the surgical fix;
+leaked files then at least get another chance on the next Speak/Clear.
 
-D3 — Existing metrics on the translated text
---------------------------------------------
-After line 3118 in _build_right, before language_label at 3120, add a frame at
-the unused primary_card row 5. This supplies both D1's action and D3's label:
+_render_result: first line, `self._stop_speech()`.
 
-```python
-export_details = ctk.CTkFrame(self.primary_card, fg_color="transparent")
-export_details.grid(row=5, column=0, sticky="ew", padx=12, pady=(0, 8))
-ctk.CTkButton(
-    export_details, text="Export textual diff…", width=170,
-    command=self._export_current_diff, fg_color="gray30",
-).grid(row=0, column=0, sticky="w")
-self.output_metrics_label = ctk.CTkLabel(
-    export_details, text=format_metrics_label(text_metrics("")),
-    text_color="gray70",
-)
-self.output_metrics_label.grid(row=1, column=0, sticky="w")
-```
+------------------------------------------------------------------------
+3.8  M8 — close HTTPError before retry
+------------------------------------------------------------------------
+File : plume.py
+Function: _http_post_json  (line 1559)
 
-The export method safely ignores a click without a result. A disabled/enabled
-button tied to _clear_results/_render_result is an optional further UI refinement.
+Inside `except urllib.error.HTTPError as exc:`, before the retry
+branch:
 
-```python
-def _refresh_output_metrics(self):
-    """Count the same composed text that the Copy action uses."""
-    result = self._current_result or {}
-    text = append_finishing_touch(self._current_main, self._current_touch())
-    self.output_metrics_label.configure(text=format_metrics_label(
-        text_metrics(text, language=result.get("target_language")),
-    ))
-```
+                try:
+                    exc.read()
+                except Exception:
+                    pass
+                try:
+                    exc.close()
+                except Exception:
+                    pass
 
-Call this at the end of _refresh_primary_display (3173–3184), guarded with
-hasattr(self, "output_metrics_label") during construction. In _clear_results,
-set the label to format_metrics_label(text_metrics("")) so no old count survives.
+------------------------------------------------------------------------
+3.9  M9 — restore tokens in notes; scan for leftovers
+------------------------------------------------------------------------
+File : plume.py
+Function: restore_result_tokens  (line 990)
 
-E — Shared HTTP retry hardening
---------------------------------
-Replace _backoff_delay and _http_post_json at 1556–1630. Keep BackendError,
-backend response parsers and the existing service-specific credential checks.
+After restoring main + variations:
 
-```python
-def _backoff_delay(attempt, retry_after=None) -> float:
-    """Honour a valid server minimum; otherwise use capped equal jitter."""
-    if isinstance(retry_after, str):
-        value = retry_after.strip()
-        if re.fullmatch(r"[0-9]{1,9}", value):
-            return float(value)
-        try:
-            instant = parsedate_to_datetime(value)
-            if instant.tzinfo is None:
-                instant = instant.replace(tzinfo=timezone.utc)
-            return max(0.0, instant.timestamp() - time.time())
-        except (TypeError, ValueError, OverflowError):
-            pass
-    ceiling = min(HTTP_BACKOFF_CAP, HTTP_BACKOFF_BASE * 2 ** attempt)
-    return secrets.SystemRandom().uniform(ceiling / 2.0, ceiling)
-
-
-def _http_post_json(
-    url, payload, headers, timeout, service_name="backend",
-    max_attempts=HTTP_MAX_ATTEMPTS, *, cancel_event=None,
-    retryable_codes=None, max_retry_wait=30.0,
-):
-    """Retry transient failures without exposing sensitive content."""
-    attempts = min(HTTP_MAX_ATTEMPTS, max(1, int(max_attempts or 1)))
-    codes = (
-        HTTP_RETRYABLE_CODES if retryable_codes is None else retryable_codes
-    )
-    encoded = json.dumps(payload).encode("utf-8")
-    waited = 0.0
-    network_message = (
-        "Could not reach the translation backend. "
-        "Check your connection and retry."
-    )
-    transient_errors = (
-        TimeoutError, ConnectionError, socket.gaierror,
-        http.client.IncompleteRead, http.client.RemoteDisconnected,
-    )
-
-    def check_cancelled():
-        if cancel_event is not None and cancel_event.is_set():
-            raise BackendError("The request was cancelled.")
-
-    for attempt in range(attempts):
-        check_cancelled()
-        retry_after = None
-        failure = network_message
-        request = urllib.request.Request(
-            url, data=encoded, headers=headers, method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                raw = response.read(2 * 1024 * 1024 + 1)
-            if len(raw) > 2 * 1024 * 1024:
-                raise BackendError("The backend response was too large.")
-            check_cancelled()
-            try:
-                return json.loads(raw.decode("utf-8"))
-            except (UnicodeError, ValueError) as exc:
-                raise BackendError(
-                    "The backend response could not be read."
-                ) from exc
-        except urllib.error.HTTPError as exc:
-            code = exc.code
-            retry_after = (
-                exc.headers.get("Retry-After") if exc.headers else None
+            result["language_note"] = restore_tokens(
+                result.get("language_note", ""), mapping
             )
-            exc.close()
-            failure = _friendly_http_message(code, service_name)
-            if code not in codes:
-                raise BackendError(failure) from None
-        except urllib.error.URLError as exc:
-            if isinstance(exc.reason, ssl.SSLError):
-                raise BackendError(
-                    "The secure connection could not be verified."
-                ) from None
-            if not isinstance(exc.reason, transient_errors):
-                raise BackendError(network_message) from None
-        except ssl.SSLError:
-            raise BackendError(
-                "The secure connection could not be verified."
-            ) from None
-        except transient_errors:
-            pass
-        except OSError:
-            # Unknown local/socket failures are not assumed to be transient.
-            raise BackendError(network_message) from None
-        if attempt + 1 == attempts:
-            raise BackendError(failure)
-        delay = _backoff_delay(attempt, retry_after)
-        if delay > max_retry_wait - waited:
-            raise BackendError(
-                "The backend needs a longer pause. Please retry later."
-            )
-        if cancel_event is None:
-            time.sleep(delay)
-        elif cancel_event.wait(delay):
-            raise BackendError("The request was cancelled.")
-        waited += delay
-    raise BackendError(network_message)
-```
+            result["notes"] = [
+                restore_tokens(note, mapping) for note in result.get("notes", [])
+            ]
+            visible = [result.get("main_translation", ""),
+                       result.get("language_note", "")]
+            visible.extend(result.get("notes", []))
+            for variation in result.get("variations", []):
+                visible.append(variation.get("translation", ""))
+                visible.append(variation.get("english_meaning_check", ""))
+            if _PH_TOKEN_RE.search("\n".join(visible)):
+                warnings.append(
+                    "A protected placeholder marker was still present after "
+                    "restore. Please check names, links and dates before sending."
+                )
 
-At call_anthropic's _http_post_json call (1682–1685), add:
-retryable_codes=HTTP_RETRYABLE_CODES | {529},
-cancel_event=config_snapshot.get("_cancel_event"),
+Keep the existing missing-token warning; it still must not echo source.
 
-At call_ollama's _http_post_json call (1723–1725), add:
-cancel_event=config_snapshot.get("_cancel_event"),
+Apply the same leftover scan in `correct_english` (line 1504) on
+`corrected_text` after restore.
 
-Cancellation UI preparation:
-- Create a fresh threading.Event per started translation or correction request,
-  store it on self._backend_cancel and in that worker's snapshot["_cancel_event"].
-- Set an existing event before replacing it. Set it in _clear and
-  _on_close_destroy before bumping request IDs. Do not save the event in config.
-- Keep all existing request-id checks. No socket object is manipulated by Tk.
-- In the correction flow create its event before worker launch at 3805; when it
-  starts the translation phase the old event can be set and replaced normally.
-- Direct calls without cancellation retain the compatible default signature.
+------------------------------------------------------------------------
+3.10  M10 — keep favourites even when alternatives are short
+------------------------------------------------------------------------
+File : plume.py
+Function: normalise_history_entry  (line 612)
 
-4. INSERTION MAP AND VERIFICATION
-==================================
+Replace the hard `return None` on `len(clean_variations) != VARIATION_COUNT`
+with: if it is a favourite and has a usable main translation, keep it
+with however many well-formed alternatives survived (renderer already
+iterates whatever `_render_result` is given). Non-favourites may still
+be dropped.
 
-Every production insertion target below is C:\Plume\plume.py. Names and original
-line numbers, rather than post-edit offsets, are authoritative. Re-resolve the
-surrounding method if the file hash differs from the header of this note.
+        if not clean_variations and not (isinstance(main, str) and main.strip()):
+            return None
+        if len(clean_variations) != VARIATION_COUNT and not entry.get("favourite"):
+            return None
+        if not clean_variations:
+            # Favourite with a main translation but no usable alternatives:
+            # keep the main so it is not silently deleted.
+            clean_variations = []
 
-Block   Scope / precise surrounding anchor                 Operation
-------  ------------------------------------------------  ----------------------
-A0      Module imports 33–49                              Add stdlib imports
-A1–A2   After adopt_main_translation ends; before          Add native class,
-        GUI_AVAILABLE / SettingsDialog at 2163            reader and helper
-A3      PlumeApp, before _paste at 3352                    Add bridge methods
-A3      PlumeApp.__init__, after _bind_shortcuts 2753      after_idle start
-A3      PlumeApp._build_left, after 3002, before 3004      Open file at new row 8
-A3      PlumeApp._on_close_destroy, before 3375            Stop import support
-B1      normalise_conversation_preset, dict 925–936        Add tones; optional writing
-B1      normalise_conversation_presets 939–956             Replace normaliser
-B2      PlumeApp._save/_delete presets 3257–3298           Replace/add transaction
-B2      PlumeApp._apply_conversation_preset, 3254–3255     Apply tone/profile values
-B2      SettingsDialog._save, after 2497, before 2498     Merge live presets
-B2      PlumeApp._apply_settings, after 3720               Refresh menu
-B3      Module, before preset normalisers at 910           Add profile helpers
-B3      PlumeApp._build_left, after actions                Optional row 9 controls
-B3      PlumeApp._translate, after tones snapshot 3895    Profile snapshot
-B3      translate, after build_translation_prompt 1816    Append profile clause
-B3      Main button 3000 / shortcut 3726                  Dispatch selected mode
-B4      CONFIG_FILENAME 97                               Optional migration only
-C       validate_tones/build_tone_instruction 1122–1161    Replace helpers
-C       _build_left menu callback 2967                    Capture slot in lambda
-C       PlumeApp._on_tone_change 3209–3221                Replace event handler
-D1      Module, after export_current_result_markdown      Add diff builder
-        and before normalise_for_uniqueness 851
-D1      PlumeApp, before _export_current_result 4132       Add export method
-D1      __init__ 2735 / _deliver 3978                      Initialise/capture source
-D1      _reopen_history_entry, before _render_result 3559 Capture history source
-D1      _clear_results 3461 onward                        Clear source snapshot
-D1      _export_current_result 4152–4154                  Use captured source
-D2      copy_html_to_windows_clipboard 1947–2002           Replace helper
-D2      _copy_current_result_as_html 4175                 Pass self.winfo_id()
-D3      _build_right, after 3118, primary_card row 5       Add output metrics label
-D3      _refresh_primary_display 3173 onward              Refresh output metrics
-D3      _clear_results 3461 onward                        Clear output metrics
-E       _backoff_delay/_http_post_json 1556–1630            Replace transport helpers
-E       call_anthropic 1682–1685 / call_ollama 1723–1725    Supply retry/cancel args
-E       _translate/_correct_then_translate worker setup  New Event per request
-E       _clear 3360 / _on_close_destroy 3373               Set cancellation Event
+_render_result already loops `result["variations"]` with no assertion
+that there are five. Reopen of a short favourite would show fewer
+cards; that is preferable to deleting it.
 
-Implementation checklist (all implementation remains proposed):
-[design complete] Inventory current capabilities and resolve legacy naming.
-[design complete] Define schema changes, lifecycle, bounds and failure behaviour.
-[design complete] Supply modular snippets and source-relative insertion map.
-[verified] Existing headless suite: 213 tests passed on Python 3.11.1.
-[verified] All 20 Python blocks parse; snippet lines are at most 79 characters.
-[verified] Proposed tone invariants passed for 4,681 sequences of length 0–4.
-[verified] Duplicate preset-name repair, failed-save memory preservation and
-  missing clipboard-owner refusal passed in isolated checks.
-[verified] plume.py SHA-256 matches the source hash recorded above.
-[verified] In-memory checks passed for malformed tone data, retry HTTP-date,
-  long-wait refusal, transient/permanent errors, cancellation, Markdown fences
-  and UTF-8/BOM/UTF-16 text imports. No proposed production code was installed.
-[pending implementation] Apply selected proposals in small, independent changes.
-[pending integration QA] Real Explorer drop, clipboard targets and Tk lifecycle.
-[pending calibration] Compare baseline/candidate prompt meaning retention.
-[deferred] Streaming protocol adapters and partial-result UI.
+------------------------------------------------------------------------
+3.11  M1 / M11 — Settings persist live presets; registry after file
+------------------------------------------------------------------------
+File : plume.py
+Class: SettingsDialog
+Method: _save  (line 2432)
 
-Focused acceptance tests for implementation:
-- Native drop: accents, emoji paths, spaces, long paths, uppercase suffix,
-  multiple files, directories, repeated drops, hide/show tray, exit with a pending
-  drop, repeated startup/shutdown, 100/150/200% scaling and the packaged build.
-- Import: UTF-8/BOM/UTF-16, invalid bytes, null bytes, exact/over-limit text,
-  missing Word extra, corrupt/encrypted/oversized ZIP, body/table ordering,
-  tracked changes refusal, edit/Clear/request during read, replacement cancelled.
-- Presets: absent tones, malformed tone entries, duplicate names/IDs, cap,
-  ConfigError/OSError save failure leaves memory unchanged, Settings snapshot
-  cannot revert newer presets, optional profile round-trip and dispatch guard.
-- Tones: enumerate catalogue sequences of length 0–4; test malformed list/dict
-  members, idempotence, membership, uniqueness, cap and every conflict edge.
-  Click each conflicting choice in each of the three slots to confirm recency.
-- Exports: embedded backticks/HTML, accents, blank lines, equal inputs, adopted
-  alternative, edited live input and reopened history all retain provenance.
-- Clipboard: allocation/lock/transfer failure frees only caller-owned handles;
-  contention leaves existing clipboard alone before EmptyClipboard; paste into
-  Notepad and an HTML-aware target; validate CF_HTML UTF-8 offsets with emoji.
-- Retry: 429/503 then success, terminal 401/403/404, HTTP-date and long
-  Retry-After, bounded jitter/waits, closed HTTPError, IncompleteRead, certificate
-  error with no retry, malformed JSON with no retry, cancellation before and
-  during wait, no response-body leakage, Claude 529 versus Ollama policy.
+Before `save_config`, copy the live preset list and keep-as-is from
+the master so a Save-preset during the dialog is not reverted:
 
-Changing retry/tone contracts deliberately changes some current test expectations.
-In particular, the old numeric Retry-After cap test must become a server-minimum
-test plus wait-budget refusal. Do not alter tests merely to make failures vanish;
-assert the documented new behaviour. Existing tests do not exercise live native
-clipboard ownership or WNDPROC subclassing; a green headless suite is insufficient
-evidence to ship those native features.
+            if hasattr(master, "config_data"):
+                self._config["conversation_presets"] = list(
+                    master.config_data.get("conversation_presets") or []
+                )
 
-Primary references (consulted 5 September 2026)
-----------------------------------------------
-[S1] Microsoft, DragAcceptFiles:
-https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-dragacceptfiles
-[S2] Microsoft, DragQueryFileW:
-https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-dragqueryfilew
-[S3] Microsoft, SetWindowLongPtrW:
-https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw
-[S4] Microsoft, CallWindowProcW:
-https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-callwindowprocw
-[S5] Microsoft, DragFinish:
-https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-dragfinish
-[S6] Python, ctypes callback lifetime and native types:
-https://docs.python.org/3/library/ctypes.html
-[S7] python-docx, Document and iter_inner_content:
-https://python-docx.readthedocs.io/en/latest/api/document.html
-[S8] Microsoft, SetClipboardData ownership and memory rules:
-https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setclipboarddata
-[S9] RFC 9110 section 10.2.3, Retry-After:
-https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after
-[S10] Anthropic, Claude API errors:
-https://platform.claude.com/docs/en/api/errors
-[S11] Anthropic, Streaming messages:
-https://platform.claude.com/docs/en/build-with-claude/streaming
-[S12] Ollama, Streaming:
-https://docs.ollama.com/api/streaming
+Move `set_launch_at_sign_in(want_launch)` to *after* a successful
+`save_config`. If save is declined, leave the registry untouched.
+Optionally set the launch checkbox from `launch_at_sign_in_is_set()`
+when the dialog opens, so drift is visible.
+
+------------------------------------------------------------------------
+3.12  M13 — HTML clipboard lock/free
+------------------------------------------------------------------------
+File : plume.py
+Function: copy_html_to_windows_clipboard  (line 1931)
+
+After each GlobalLock:
+
+                if not ptr:
+                    kernel32.GlobalFree(hmem_html)
+                    return False
+
+If SetClipboardData returns NULL, GlobalFree that handle. Only skip
+GlobalFree on success (ownership passed to the system).
+
+------------------------------------------------------------------------
+4. Insertion map
+------------------------------------------------------------------------
+Fix     File / symbol                              Around
+------  -----------------------------------------  ------
+C1      HistoryDialog._toggle_favourite            2622
+        HistoryDialog._delete_entry                2630
+        HistoryDialog._clear_history               2639
+        HistoryDialog._export_favourites           2650
+        (new) HistoryDialog._reload_entries        next to _persist 2692
+C2      PlumeApp._reopen_history_entry             3530
+M1      SettingsDialog._save                       2471–2483
+M2/M12  PlumeApp._speak                            3567 vs 3571–3585
+M3      PlumeApp.__init__                          2720
+        PlumeApp._deliver_correction               3848–3858
+        PlumeApp._deliver                          3966
+M4      PlumeApp._deliver_correction               3825
+M5      PlumeApp.__init__, _clear_results,         2720, 3449
+        _deliver, _reopen_history_entry,           3966, 3530
+        _favourite_current_result,                 4107
+        _export_current_result                     4140
+M6      PlumeApp._cleanup_tts_file                 3642
+M7      PlumeApp._render_result                    4023
+M8      _http_post_json                            1578
+M9      restore_result_tokens                      1015
+        correct_english                            1525
+M10     normalise_history_entry                    648
+M11     SettingsDialog._save                       2461 then 2482
+M13     copy_html_to_windows_clipboard             1967–1981
+
+Tests to add (all headless, tests\test_translator_logic.py):
+
+  * restore_result_tokens restores language_note and notes
+  * leftover ⟦PH0⟧ after restore produces a generic warning with no
+    source echo
+  * normalise_history_entry keeps a favourite with 4 alternatives
+  * normalise_history_entry still drops a non-favourite with 4
+  * _http_post_json closes HTTPError (mock exc.read / exc.close)
+
+GUI races C1/C2 cannot be asserted headless without Tk. After
+implementation, the manual reproduction in C1 and C2 is the gate.
+
+------------------------------------------------------------------------
+5. What was checked and is sound
+------------------------------------------------------------------------
+* `_request_id` / `_speech_request_id` monotonic `!=` guard on
+  `_deliver`, `_deliver_speech`, `_deliver_correction`. Clear and
+  window-destroy bump both. Ctrl+Enter respects the disabled Translate
+  button. Correction uses the same lock.
+* Worker callbacks: `winfo_exists()` then `after(0, …)` with
+  `tk.TclError` swallowed on Settings detect, translate, correct, TTS.
+* `save_config` / `save_history`: tempfile → flush → fsync → replace;
+  refuse malformed unless `force=True`.
+* `parse_translation_result`: empty / non-object / wrong arity / missing
+  meaning checks / duplicates-after-normalise / same source and target /
+  forced-direction mismatch all raise. Trailing prose fails `json.loads`.
+  210 tests cover this.
+* `protect_text` extra_terms longest-first, `re.escape` in
+  `keep_as_is_pattern`. Missing-token warning does not echo source
+  (`test_warning_does_not_leak_original_value`).
+* `format_status` / `mask_api_key` / BackendError paths: no source in
+  the tested strings. Ollama `error` field is not interpolated.
+* Tray callbacks hop to Tk via `after(0, …)`. Autostart refuses to
+  enable without pystray+Pillow, so login cannot hide a window with
+  no icon.
+* `result_is_stale` is a pure `!=`; Python ints do not overflow.
+
+------------------------------------------------------------------------
+6. Verification this session
+------------------------------------------------------------------------
+Read-only. Core files not modified, moved or deleted. The only writes
+are this report and its mirrors.
+
+  python -B -m unittest discover -s tests -q
+  Ran 210 tests in 0.037 s — OK
+
+No Claude / Ollama / ElevenLabs calls. No git commit or push.
+
+When implementation is authorised, land C1 and C2 first (data loss and
+the stale-request invariant), then M2–M5 (one sitting: Speak order,
+correction notes, Use-as-input unlock, current_source), then the rest.
+
+End of notes_012.
