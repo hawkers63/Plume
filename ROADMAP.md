@@ -1088,6 +1088,54 @@ schema impact beyond one constants tuple:
   in source is correctly refused with an on-screen advisory rather than
   silently inserting nothing. Full suite: 338 tests pass.
 
+## v1.35 — User Situation catalogue (notes_015 2.B)
+
+- **User-defined Situation shortcuts**, alongside the five hard-coded
+  presets: a "Save…"/"Delete" pair next to the existing Situation preset
+  menu. Save stores the current Situation text as a reusable local-only
+  entry (`user_situation_presets` in `plume_config.json`, up to 12
+  entries, 80 characters each); Delete removes whichever one is
+  currently selected in the menu. Closes the one inconsistency users
+  would actually notice: conversation presets (v1.19) are already
+  user-defined, but Situation itself was still hard-coded five options.
+- **`normalise_user_situations`**: de-duplicated (casefold), length- and
+  count-bounded, and a user entry that casefold-matches a built-in
+  preset name (or the menu's own placeholder/heading text) is dropped on
+  load — so a saved situation can never shadow a built-in or produce two
+  identically-labelled menu rows. **`situation_menu_values`** builds the
+  full menu: placeholder, the five built-ins, then — only when the user
+  has saved at least one — a non-selectable "(My situations)" heading
+  (CTkOptionMenu has no real separator; `_apply_situation_preset` treats
+  a click on it as a no-op, the same as the placeholder) followed by the
+  user's own entries.
+- **Save is refused outright**, never silently discarded, on a name
+  already used by a built-in preset, a duplicate of an existing saved
+  entry, an oversized label, or a full list — matching the existing
+  conversation-preset Save's own convention (v1.24). **Delete** likewise
+  refuses with an explanation if the menu isn't currently showing one of
+  the user's own entries, rather than deleting the wrong thing or doing
+  nothing unexplained. Both use the same transactional
+  save-then-publish pattern as conversation presets: `save_config()` is
+  attempted first, and `config_data`/the menu are only updated on
+  success.
+- No prompt change: selecting a saved situation still just writes its
+  text into `situation_entry`, exactly like a built-in preset already
+  does.
+- 14 new unit tests (normalisation: plain list and newline-separated
+  string input, whitespace/blank handling, built-in/placeholder/heading
+  reservation, case-insensitive de-duplication, oversized-entry and
+  count-cap rejection, non-list/non-string input; menu construction:
+  placeholder-then-built-ins ordering, heading omitted when empty,
+  heading-and-entries appended when present; config load-time
+  coercion). Verified live against the real `PlumeApp`: Save persists
+  the entry to the actual config file and the menu updates to show it
+  selected; reopening the menu shows the correct placeholder/built-ins/
+  heading/user-entry order; selecting the saved entry fills Situation;
+  Delete removes it from the config file and resets the menu; Delete
+  with nothing valid selected shows the refusal advisory rather than
+  deleting anything. Layout verified clean at both the default and
+  documented 1000x600 minimum window sizes. Full suite: 352 tests pass.
+
 ---
 
 ### Notes on sequencing

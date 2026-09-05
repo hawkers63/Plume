@@ -712,6 +712,16 @@ class TestConfigCoercion(unittest.TestCase):
         config, _ = self._load_with({})
         self.assertIs(config["send_to_shortcut"], False)
 
+    def test_user_situation_presets_normalised_on_load(self):
+        config, _ = self._load_with(
+            {"user_situation_presets": ["Guild raid chat", "close friend"]}
+        )
+        self.assertEqual(config["user_situation_presets"], ["Guild raid chat"])
+
+    def test_user_situation_presets_defaults_empty(self):
+        config, _ = self._load_with({})
+        self.assertEqual(config["user_situation_presets"], [])
+
     def test_coerce_positive_int(self):
         self.assertEqual(plume.coerce_positive_int("5000", 2000), 5000)
         self.assertEqual(plume.coerce_positive_int("banana", 2000), 2000)
@@ -928,6 +938,75 @@ class TestResourceDir(unittest.TestCase):
                 plume.resource_dir(),
                 os.path.dirname(os.path.abspath(plume.__file__)),
             )
+
+
+class TestUserSituations(unittest.TestCase):
+    def test_accepts_a_plain_list(self):
+        self.assertEqual(
+            plume.normalise_user_situations(["Guild raid chat"]),
+            ["Guild raid chat"],
+        )
+
+    def test_accepts_newline_separated_string(self):
+        self.assertEqual(
+            plume.normalise_user_situations("Guild raid chat\nSchool gate"),
+            ["Guild raid chat", "School gate"],
+        )
+
+    def test_strips_whitespace_and_drops_blanks(self):
+        self.assertEqual(
+            plume.normalise_user_situations(["  Guild raid chat  ", "", "   "]),
+            ["Guild raid chat"],
+        )
+
+    def test_drops_entries_matching_a_built_in_preset_case_insensitively(self):
+        self.assertEqual(plume.normalise_user_situations(["close friend"]), [])
+        self.assertEqual(plume.normalise_user_situations(["CLOSE FRIEND"]), [])
+
+    def test_drops_entries_matching_the_placeholder_or_heading(self):
+        self.assertEqual(
+            plume.normalise_user_situations(
+                [plume.SITUATION_PRESET_PLACEHOLDER, plume.USER_SITUATION_HEADING]
+            ),
+            [],
+        )
+
+    def test_drops_case_insensitive_duplicates_keeping_the_first(self):
+        self.assertEqual(
+            plume.normalise_user_situations(["Guild raid chat", "guild RAID chat"]),
+            ["Guild raid chat"],
+        )
+
+    def test_drops_oversized_entry(self):
+        long_entry = "x" * (plume.USER_SITUATION_MAX_CHARS + 1)
+        self.assertEqual(plume.normalise_user_situations([long_entry]), [])
+
+    def test_caps_at_max_entries(self):
+        many = ["Situation {}".format(i) for i in range(plume.MAX_USER_SITUATIONS + 5)]
+        result = plume.normalise_user_situations(many)
+        self.assertEqual(len(result), plume.MAX_USER_SITUATIONS)
+        self.assertEqual(result, many[: plume.MAX_USER_SITUATIONS])
+
+    def test_rejects_non_list_non_string(self):
+        self.assertEqual(plume.normalise_user_situations(42), [])
+        self.assertEqual(plume.normalise_user_situations(None), [])
+
+
+class TestSituationMenuValues(unittest.TestCase):
+    def test_starts_with_placeholder_then_built_ins(self):
+        values = plume.situation_menu_values([])
+        self.assertEqual(
+            values[: 1 + len(plume.SITUATION_PRESETS)],
+            [plume.SITUATION_PRESET_PLACEHOLDER] + list(plume.SITUATION_PRESETS),
+        )
+
+    def test_omits_heading_when_no_user_entries(self):
+        values = plume.situation_menu_values([])
+        self.assertNotIn(plume.USER_SITUATION_HEADING, values)
+
+    def test_appends_heading_and_user_entries_when_present(self):
+        values = plume.situation_menu_values(["Guild raid chat"])
+        self.assertEqual(values[-2:], [plume.USER_SITUATION_HEADING, "Guild raid chat"])
 
 
 class TestAutostart(unittest.TestCase):

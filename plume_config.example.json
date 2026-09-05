@@ -22,5 +22,6 @@
   "launch_at_sign_in": false,
   "start_minimised_to_tray": false,
   "close_to_tray": false,
-  "send_to_shortcut": false
+  "send_to_shortcut": false,
+  "user_situation_presets": []
 }

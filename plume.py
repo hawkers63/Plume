@@ -163,6 +163,62 @@ SITUATION_PRESETS = (
     "Close friend", "Formal work email", "Neighbour", "Appointment", "Dating/chat",
 )
 
+# --- User Situation catalogue (v1.35, notes_015 2.B) ------------------------
+# The built-in presets above are hard-coded; users also want their own
+# situation-only shortcuts ("Guild raid chat", "School gate") without
+# minting a full conversation preset (which also snapshots direction, form,
+# gender and tones). Local-only, like the built-ins: no prompt change,
+# selecting one just writes its text into situation_entry.
+MAX_USER_SITUATIONS = 12
+USER_SITUATION_MAX_CHARS = 80
+USER_SITUATION_HEADING = "(My situations)"
+
+
+def normalise_user_situations(value) -> list:
+    """Short, de-duplicated user situation labels; built-in names reserved.
+
+    Accepts a list or a newline-separated string. A user entry that
+    casefold-matches a built-in preset, the menu placeholder or this
+    heading is dropped on load, so the menu can never show two rows with
+    the same label or let a user shadow/hide a built-in preset.
+    """
+    if isinstance(value, str):
+        value = value.splitlines()
+    if not isinstance(value, list):
+        return []
+    reserved = {item.casefold() for item in SITUATION_PRESETS}
+    reserved.add(SITUATION_PRESET_PLACEHOLDER.casefold())
+    reserved.add(USER_SITUATION_HEADING.casefold())
+    seen = set()
+    out = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text or len(text) > USER_SITUATION_MAX_CHARS:
+            continue
+        key = text.casefold()
+        if key in reserved or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= MAX_USER_SITUATIONS:
+            break
+    return out
+
+
+def situation_menu_values(user_items) -> list:
+    """Menu values: placeholder, built-ins, then a heading and user entries.
+
+    CTkOptionMenu has no real separator, so the heading is a plain,
+    non-selectable-in-effect row: _apply_situation_preset treats it (like
+    the placeholder) as a no-op rather than valid Situation text.
+    """
+    values = [SITUATION_PRESET_PLACEHOLDER] + list(SITUATION_PRESETS)
+    clean = normalise_user_situations(user_items)
+    if clean:
+        values.append(USER_SITUATION_HEADING)
+        values.extend(clean)
+    return values
+
 # --- User conversation presets (v1.19, notes_011 Feature D) -----------------
 # A different object from the local-only Situation presets above: a named
 # snapshot of the live toolbar controls (direction, French form, Me/You,
@@ -564,6 +620,7 @@ DEFAULT_CONFIG = {
     "start_minimised_to_tray": False,
     "close_to_tray": False,
     "send_to_shortcut": False,
+    "user_situation_presets": [],
 }
 
 
@@ -674,6 +731,9 @@ def load_config():
     config["start_minimised_to_tray"] = bool(config.get("start_minimised_to_tray"))
     config["close_to_tray"] = bool(config.get("close_to_tray"))
     config["send_to_shortcut"] = bool(config.get("send_to_shortcut"))
+    config["user_situation_presets"] = normalise_user_situations(
+        config.get("user_situation_presets")
+    )
 
     return config, None
 
@@ -3877,12 +3937,21 @@ if GUI_AVAILABLE:
             )
             self.situation_entry.grid(row=0, column=1, sticky="ew")
             self.situation_preset_var = ctk.StringVar(value=SITUATION_PRESET_PLACEHOLDER)
-            ctk.CTkOptionMenu(
+            self.situation_preset_menu = ctk.CTkOptionMenu(
                 situation_row,
-                values=[SITUATION_PRESET_PLACEHOLDER] + list(SITUATION_PRESETS),
+                values=self._situation_menu_values(),
                 variable=self.situation_preset_var, width=130,
                 command=self._apply_situation_preset,
-            ).grid(row=0, column=2, padx=(6, 0))
+            )
+            self.situation_preset_menu.grid(row=0, column=2, padx=(6, 0))
+            ctk.CTkButton(
+                situation_row, text="Save…", width=56, fg_color="gray30",
+                command=self._save_user_situation,
+            ).grid(row=0, column=3, padx=(6, 0))
+            ctk.CTkButton(
+                situation_row, text="Delete", width=56, fg_color="gray30",
+                command=self._delete_user_situation,
+            ).grid(row=0, column=4, padx=(6, 0))
 
             # Register tones (v1.20): background context for the translator,
             # the same class of information as Situation — never outranks
@@ -4248,10 +4317,99 @@ if GUI_AVAILABLE:
 
         def _apply_situation_preset(self, value):
             """Fill Situation from a local-only preset menu selection."""
-            if value == SITUATION_PRESET_PLACEHOLDER:
+            if value in (SITUATION_PRESET_PLACEHOLDER, USER_SITUATION_HEADING):
+                # The heading is a plain, non-selectable-in-effect row (no
+                # real separator exists for CTkOptionMenu); reset the menu
+                # rather than writing it into Situation as if it were text.
+                self.situation_preset_var.set(SITUATION_PRESET_PLACEHOLDER)
                 return
             self.situation_entry.delete(0, "end")
             self.situation_entry.insert(0, value)
+
+        # --- user Situation catalogue (v1.35, notes_015 2.B) ---------------
+
+        def _situation_menu_values(self):
+            return situation_menu_values(self.config_data.get("user_situation_presets"))
+
+        def _refresh_situation_menu(self, select=SITUATION_PRESET_PLACEHOLDER):
+            self.situation_preset_menu.configure(values=self._situation_menu_values())
+            self.situation_preset_var.set(select)
+
+        def _save_user_situation(self):
+            """Save the current Situation text as a reusable local-only entry.
+
+            Refused outright (with an explanation), never silently
+            discarded, on a name already used by a built-in preset, a
+            duplicate of an existing saved entry, an oversized label or a
+            full list — matching the conversation-preset Save's own
+            refuse-rather-than-silently-drop convention (v1.24).
+            """
+            text = self._situation_text()
+            if not text:
+                return
+            if text.casefold() in {item.casefold() for item in SITUATION_PRESETS}:
+                messagebox.showinfo(
+                    "Save situation",
+                    "That situation is already a built-in preset.", parent=self,
+                )
+                return
+            existing = list(self.config_data.get("user_situation_presets") or [])
+            candidate_list = normalise_user_situations(existing + [text])
+            if text.casefold() not in {item.casefold() for item in candidate_list}:
+                messagebox.showinfo(
+                    "Save situation",
+                    "That situation could not be saved (a duplicate, too "
+                    "long, or the list of {} is full).".format(
+                        MAX_USER_SITUATIONS
+                    ),
+                    parent=self,
+                )
+                return
+            candidate = dict(self.config_data)
+            candidate["user_situation_presets"] = candidate_list
+            try:
+                save_config(candidate)
+            except (ConfigError, OSError):
+                messagebox.showerror(
+                    "Save situation",
+                    "That situation could not be saved. No changes were applied.",
+                    parent=self,
+                )
+                return
+            self.config_data = candidate
+            self._refresh_situation_menu(select=text)
+
+        def _delete_user_situation(self):
+            """Delete the menu's current selection; built-ins cannot be deleted."""
+            value = self.situation_preset_var.get()
+            if (
+                value in (SITUATION_PRESET_PLACEHOLDER, USER_SITUATION_HEADING)
+                or value in SITUATION_PRESETS
+            ):
+                messagebox.showinfo(
+                    "Delete situation",
+                    "Choose one of your own saved situations from the menu "
+                    "first; built-in situations cannot be deleted.",
+                    parent=self,
+                )
+                return
+            remaining = [
+                item for item in (self.config_data.get("user_situation_presets") or [])
+                if item.casefold() != value.casefold()
+            ]
+            candidate = dict(self.config_data)
+            candidate["user_situation_presets"] = remaining
+            try:
+                save_config(candidate)
+            except (ConfigError, OSError):
+                messagebox.showerror(
+                    "Delete situation",
+                    "That situation could not be deleted. No changes were applied.",
+                    parent=self,
+                )
+                return
+            self.config_data = candidate
+            self._refresh_situation_menu()
 
         # --- register tones (v1.20) -----------------------------------
 

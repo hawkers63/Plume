@@ -58,7 +58,10 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   greeting or parting depending on context. Nothing here is sent to the
   model or changes the translation itself.
 - **Copy source** and **Situation presets** (Close friend, Formal work
-  email, Neighbour, Appointment, Dating/chat) for faster back-and-forth.
+  email, Neighbour, Appointment, Dating/chat) for faster back-and-forth,
+  plus up to 12 of your own **saved situations** (Save…/Delete beside the
+  menu) for a shortcut the built-in list doesn't cover, e.g. "Guild raid
+  chat" or "School gate".
 - **Open file…** imports a `.txt` or `.md` file (up to 2 MiB, UTF-8 or
   UTF-16) straight into the input box, asking before it replaces anything
   already there. Three more crash-safe ways in, none of them native
