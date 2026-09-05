@@ -1217,6 +1217,69 @@ schema impact beyond one constants tuple:
   untouched; layout re-verified clean at the documented 1000x600
   minimum. Full suite: 371 tests pass.
 
+## v1.38 — Transport hardening, cooperative cancel, Ollama fallback (notes_014 G, notes_015 2.E)
+
+- **Bounded response reads.** `_http_post_json` no longer reads a
+  successful response fully into memory: capped at
+  `HTTP_MAX_RESPONSE_BYTES` (2 MiB), raising a clear `BackendError`
+  rather than accepting an unbounded body from a malfunctioning backend.
+  An `HTTPError`'s body is no longer drained before `close()` either —
+  retrying must not wait for a potentially unbounded error body, and
+  `close()` alone already releases the connection.
+- **SSL/TLS failures are never retried.** A bare `ssl.SSLError`, or a
+  `URLError` wrapping one, now gets its own explicit handler with a
+  dedicated message ("The secure connection could not be verified.")
+  instead of falling through to the generic transient-`OSError` retry
+  path (`ssl.SSLError` *is* an `OSError` subclass, so it was silently
+  retried before this version) — retrying a certificate failure will not
+  fix it and could mask a genuine MITM condition.
+- **The generic network-failure message no longer echoes the raw
+  exception reason**, matching the existing `HTTPError` path, which
+  never displayed raw exception detail either.
+- **Cooperative HTTP cancel.** Clear, closing the window, and the start
+  of a newer `_translate`/`_correct_then_translate` now call
+  `_new_http_cancel()`, which sets the previous request's
+  `threading.Event` and installs a fresh one. `_http_post_json` (a new
+  `cancel_event` parameter) checks it before each attempt, before
+  sleeping in backoff, and once immediately after a request completes —
+  so an abandoned request stops retrying and is not delivered once
+  superseded. Honest limitation, stated in code and here: urllib cannot
+  abort a blocked read portably without closing the socket, so a request
+  already inside `urlopen()` may still finish; it simply will not be
+  retried or delivered. Threaded through via `config_snapshot["_cancel_event"]`
+  (already a private per-request copy) rather than a new parameter on
+  every function in the call chain. ElevenLabs/Speak is explicitly out of
+  scope this version (notes_015's own deferral) — its own direct
+  `urlopen` call is untouched.
+- **Opt-in one-shot local Ollama fallback**, a new Settings checkbox ("If
+  Claude is unavailable, retry once with local Ollama",
+  `fallback_to_ollama`, off by default). After Claude exhausts retries
+  with a genuine `BackendError`, `run_backend` tries Ollama once — only
+  when the checkbox is on, a non-blank `ollama_model` is configured, and
+  the failure was not itself a cancellation. Never the other way round
+  (Ollama is never retried against Claude). Marks
+  `config_snapshot["_used_fallback"]` rather than changing
+  `run_backend`'s return type; `translate()` appends a single, honest
+  notes[] advisory ("Claude was unavailable; translated with local
+  Ollama.") when that flag is set.
+- 18 new unit tests (response-size bounding, HTTPError body never read
+  before close, bare/wrapped SSL errors not retried, the raw URLError
+  reason omitted from the message, cancellation before an attempt/during
+  backoff/after a completed read, an uncancelled request still
+  delivering normally, the fallback decision matrix — opted in, no
+  model configured, a cancelled failure, Ollama never falling back to
+  Claude — and translate()'s conditional advisory). Verified live: the
+  real Settings checkbox renders correctly and persists
+  `fallback_to_ollama` to the actual config file; a scripted check
+  against the real `PlumeApp` (no live API calls) confirmed
+  `_new_http_cancel()` genuinely invalidates the previous event object
+  and that `_clear()`/`_translate()`/`_on_close_destroy()` all call it at
+  the right point. Not exercised: cancelling a request against a real,
+  slow-responding backend end-to-end — that would need a live Claude/
+  Ollama endpoint deliberately made to hang, which this session did not
+  have available; the mechanism itself is unit-tested directly instead.
+  Full suite: 389 tests pass.
+
 ---
 
 ### Notes on sequencing

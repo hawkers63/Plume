@@ -26,5 +26,6 @@
   "user_situation_presets": [],
   "default_tones": [],
   "default_writing_profile": {},
-  "french_typography": false
+  "french_typography": false,
+  "fallback_to_ollama": false
 }

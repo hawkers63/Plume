@@ -13,8 +13,10 @@ Run from the project root:
 import io
 import json
 import os
+import ssl
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.error
 import wave
@@ -754,6 +756,14 @@ class TestConfigCoercion(unittest.TestCase):
         config, _ = self._load_with({})
         self.assertIs(config["french_typography"], False)
 
+    def test_fallback_to_ollama_coerced_to_bool(self):
+        config, _ = self._load_with({"fallback_to_ollama": "yes"})
+        self.assertIs(config["fallback_to_ollama"], True)
+
+    def test_fallback_to_ollama_defaults_false(self):
+        config, _ = self._load_with({})
+        self.assertIs(config["fallback_to_ollama"], False)
+
     def test_coerce_positive_int(self):
         self.assertEqual(plume.coerce_positive_int("5000", 2000), 5000)
         self.assertEqual(plume.coerce_positive_int("banana", 2000), 2000)
@@ -1279,6 +1289,90 @@ class TestBackendHardening(unittest.TestCase):
         return _raise
 
 
+class TestRunBackendFallback(unittest.TestCase):
+    """v1.38, notes_015 2.E: opt-in one-shot Ollama fallback after Claude."""
+
+    def test_no_fallback_by_default(self):
+        snapshot = {"backend": "anthropic", "ollama_model": "llama3"}
+        with mock.patch.object(
+            plume, "call_anthropic", side_effect=plume.BackendError("down")
+        ), mock.patch.object(plume, "call_ollama") as ollama:
+            with self.assertRaises(plume.BackendError):
+                plume.run_backend(snapshot, "sys", "user")
+        ollama.assert_not_called()
+
+    def test_falls_back_when_opted_in_with_a_model_configured(self):
+        snapshot = {
+            "backend": "anthropic", "ollama_model": "llama3",
+            "fallback_to_ollama": True,
+        }
+        with mock.patch.object(
+            plume, "call_anthropic", side_effect=plume.BackendError("down")
+        ), mock.patch.object(plume, "call_ollama", return_value="Bonjour"):
+            result = plume.run_backend(snapshot, "sys", "user")
+        self.assertEqual(result, "Bonjour")
+        self.assertTrue(snapshot["_used_fallback"])
+
+    def test_no_fallback_without_an_ollama_model(self):
+        snapshot = {
+            "backend": "anthropic", "ollama_model": "  ",
+            "fallback_to_ollama": True,
+        }
+        with mock.patch.object(
+            plume, "call_anthropic", side_effect=plume.BackendError("down")
+        ), mock.patch.object(plume, "call_ollama") as ollama:
+            with self.assertRaises(plume.BackendError):
+                plume.run_backend(snapshot, "sys", "user")
+        ollama.assert_not_called()
+
+    def test_no_fallback_for_a_cancelled_request(self):
+        snapshot = {
+            "backend": "anthropic", "ollama_model": "llama3",
+            "fallback_to_ollama": True,
+        }
+        with mock.patch.object(
+            plume, "call_anthropic",
+            side_effect=plume.BackendError("The request was cancelled."),
+        ), mock.patch.object(plume, "call_ollama") as ollama:
+            with self.assertRaises(plume.BackendError):
+                plume.run_backend(snapshot, "sys", "user")
+        ollama.assert_not_called()
+
+    def test_ollama_never_falls_back_to_claude(self):
+        snapshot = {
+            "backend": "ollama", "ollama_model": "llama3",
+            "fallback_to_ollama": True,
+        }
+        with mock.patch.object(
+            plume, "call_ollama", side_effect=plume.BackendError("down")
+        ), mock.patch.object(plume, "call_anthropic") as anthropic:
+            with self.assertRaises(plume.BackendError):
+                plume.run_backend(snapshot, "sys", "user")
+        anthropic.assert_not_called()
+
+    def test_translate_appends_fallback_note(self):
+        snapshot = {"default_direction": plume.DIR_AUTO}
+
+        def fake_run_backend(config_snapshot, system_prompt, user_text):
+            config_snapshot["_used_fallback"] = True
+            return as_json(valid_result())
+
+        with mock.patch.object(plume, "run_backend", side_effect=fake_run_backend):
+            result = plume.translate(snapshot, "Hello")
+        self.assertTrue(
+            any("Ollama" in note for note in result["notes"])
+        )
+
+    def test_translate_omits_fallback_note_when_not_used(self):
+        snapshot = {"default_direction": plume.DIR_AUTO}
+
+        with mock.patch.object(
+            plume, "run_backend", return_value=as_json(valid_result())
+        ):
+            result = plume.translate(snapshot, "Hello")
+        self.assertFalse(any("Ollama" in note for note in result["notes"]))
+
+
 class TestHttpBackoff(unittest.TestCase):
     def test_retries_transient_failure_then_succeeds(self):
         calls = {"n": 0}
@@ -1292,7 +1386,7 @@ class TestHttpBackoff(unittest.TestCase):
             return mock.MagicMock(
                 __enter__=lambda s: s,
                 __exit__=lambda *a: None,
-                read=lambda: b'{"ok": true}',
+                read=lambda *a, **k: b'{"ok": true}',
             )
 
         with mock.patch.object(plume, "time"), \
@@ -1345,7 +1439,7 @@ class TestHttpBackoff(unittest.TestCase):
             return mock.MagicMock(
                 __enter__=lambda s: s,
                 __exit__=lambda *a: None,
-                read=lambda: b'{"ok": true}',
+                read=lambda *a, **k: b'{"ok": true}',
             )
 
         with mock.patch.object(plume, "time"), \
@@ -1419,7 +1513,7 @@ class TestHttpBackoff(unittest.TestCase):
                 )
             return mock.MagicMock(
                 __enter__=lambda s: s, __exit__=lambda *a: None,
-                read=lambda: b'{"ok": true}',
+                read=lambda *a, **k: b'{"ok": true}',
             )
 
         with mock.patch.object(plume, "time"), \
@@ -1438,7 +1532,7 @@ class TestHttpBackoff(unittest.TestCase):
                 raise plume.http.client.IncompleteRead(b"partial")
             return mock.MagicMock(
                 __enter__=lambda s: s, __exit__=lambda *a: None,
-                read=lambda: b'{"ok": true}',
+                read=lambda *a, **k: b'{"ok": true}',
             )
 
         with mock.patch.object(plume, "time"), \
@@ -1474,7 +1568,7 @@ class TestHttpBackoff(unittest.TestCase):
                 )
             return mock.MagicMock(
                 __enter__=lambda s: s, __exit__=lambda *a: None,
-                read=lambda: b'{"ok": true}',
+                read=lambda *a, **k: b'{"ok": true}',
             )
 
         with mock.patch.object(plume, "time"), \
@@ -1482,6 +1576,171 @@ class TestHttpBackoff(unittest.TestCase):
             data = plume._http_post_json(
                 "https://x", {}, {"content-type": "application/json"}, 5,
                 retryable_codes=plume.HTTP_RETRYABLE_CODES | {529},
+            )
+        self.assertEqual(data, {"ok": True})
+
+    def test_oversized_response_is_rejected_without_retry(self):
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda *a, **k: b"x" * (plume.HTTP_MAX_RESPONSE_BYTES + 1),
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5
+                )
+        self.assertIn("size limit", str(ctx.exception))
+        self.assertEqual(calls["n"], 1)
+
+    def test_http_error_body_is_not_read_before_close(self):
+        # v1.38: retrying must not wait for a potentially unbounded error
+        # body to drain; only close() is called, never read().
+        read_calls = {"n": 0}
+
+        class TrackedBody(io.BytesIO):
+            def read(self_inner, *a, **k):
+                read_calls["n"] += 1
+                return super().read(*a, **k)
+
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise urllib.error.HTTPError(
+                    "https://x", 503, "busy", {}, TrackedBody(b"error detail"),
+                )
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda *a, **k: b'{"ok": true}',
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            plume._http_post_json(
+                "https://x", {}, {"content-type": "application/json"}, 5
+            )
+        self.assertEqual(read_calls["n"], 0)
+
+    def test_ssl_error_is_not_retried(self):
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            raise ssl.SSLError("certificate verify failed")
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5
+                )
+        self.assertIn("secure connection", str(ctx.exception).lower())
+        self.assertEqual(calls["n"], 1)
+
+    def test_urlerror_wrapping_ssl_error_is_not_retried(self):
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            raise urllib.error.URLError(ssl.SSLError("certificate verify failed"))
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5
+                )
+        self.assertIn("secure connection", str(ctx.exception).lower())
+        self.assertEqual(calls["n"], 1)
+
+    def test_url_error_message_omits_raw_reason(self):
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.URLError("a secret internal detail")
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5,
+                    max_attempts=1,
+                )
+        self.assertNotIn("a secret internal detail", str(ctx.exception))
+
+    def test_cancelled_before_first_attempt_raises_immediately(self):
+        event = threading.Event()
+        event.set()
+
+        def fake_urlopen(request, timeout=None):
+            self.fail("urlopen should not be called when already cancelled")
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5,
+                    cancel_event=event,
+                )
+        self.assertIn("cancelled", str(ctx.exception).lower())
+
+    def test_cancelled_during_backoff_wait_stops_retry(self):
+        event = threading.Event()
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            # Simulate a cancel arriving while this attempt was in flight.
+            event.set()
+            raise urllib.error.HTTPError(
+                "https://x", 503, "busy", {}, io.BytesIO(b""),
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5,
+                    cancel_event=event,
+                )
+        self.assertEqual(calls["n"], 1)
+        self.assertIn("cancelled", str(ctx.exception).lower())
+
+    def test_cancelled_after_successful_read_is_not_delivered(self):
+        event = threading.Event()
+
+        def fake_urlopen(request, timeout=None):
+            event.set()
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda *a, **k: b'{"ok": true}',
+            )
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5,
+                    cancel_event=event,
+                )
+        self.assertIn("cancelled", str(ctx.exception).lower())
+
+    def test_not_cancelled_delivers_normally(self):
+        event = threading.Event()  # never set
+
+        def fake_urlopen(request, timeout=None):
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda *a, **k: b'{"ok": true}',
+            )
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            data = plume._http_post_json(
+                "https://x", {}, {"content-type": "application/json"}, 5,
+                cancel_event=event,
             )
         self.assertEqual(data, {"ok": True})
 

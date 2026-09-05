@@ -39,6 +39,7 @@ import json
 import os
 import re
 import secrets
+import ssl
 import sys
 import tempfile
 import threading
@@ -538,6 +539,9 @@ HTTP_RETRYABLE_CODES = frozenset({429, 502, 503, 504})
 HTTP_MAX_ATTEMPTS = 4
 HTTP_BACKOFF_BASE = 0.6
 HTTP_BACKOFF_CAP = 8.0
+# Bounds the successful-response read (v1.38, notes_014 G): a malfunctioning
+# backend sending an unbounded body must not be read fully into memory.
+HTTP_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 # One-shot Text-to-Speech only (not the Conversational-AI agent API): "read
 # this exact text aloud", nothing more.
@@ -624,6 +628,7 @@ DEFAULT_CONFIG = {
     "default_tones": [],
     "default_writing_profile": {},
     "french_typography": False,
+    "fallback_to_ollama": False,
 }
 
 
@@ -742,6 +747,7 @@ def load_config():
         config.get("default_writing_profile")
     )
     config["french_typography"] = bool(config.get("french_typography"))
+    config["fallback_to_ollama"] = bool(config.get("fallback_to_ollama"))
 
     return config, None
 
@@ -2222,7 +2228,7 @@ _TRANSIENT_RESPONSE_ERRORS = (TimeoutError, OSError, http.client.IncompleteRead)
 
 def _http_post_json(url, payload, headers, timeout, service_name="backend",
                      max_attempts=HTTP_MAX_ATTEMPTS, retryable_codes=None,
-                     max_retry_wait=30.0):
+                     max_retry_wait=30.0, cancel_event=None):
     """POST *payload* as JSON and return the decoded JSON response.
 
     Retries transient failures (by default 429/502/503/504, dropped
@@ -2237,7 +2243,16 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
     exponential cap and the per-socket *timeout*: a Retry-After minimum
     that would blow this budget is refused with a clear message rather
     than silently honoured for an arbitrarily long wait or silently
-    shortened.
+    shortened. A successful response is bounded to HTTP_MAX_RESPONSE_BYTES
+    rather than read fully into memory (v1.38, notes_014 G).
+
+    *cancel_event* (v1.38, notes_015 2.E), if given, is checked before each
+    attempt, before sleeping in backoff, and once immediately after a
+    request completes — so Clear/close/a newer request can stop a
+    superseded one from retrying or being delivered. urllib cannot abort
+    a blocked read portably without closing the socket, so a request
+    already inside urlopen() may still finish; it simply will not be
+    retried or returned once it does. That is the honest contract.
     """
     codes = HTTP_RETRYABLE_CODES if retryable_codes is None else retryable_codes
     data = json.dumps(payload).encode("utf-8")
@@ -2245,9 +2260,14 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
     attempts = max(1, int(max_attempts or 1))
     waited = 0.0
 
+    def cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
     def wait_or_give_up(attempt, retry_after=None):
         """Sleep for the next backoff delay, or raise if it blows the budget."""
         nonlocal waited
+        if cancelled():
+            raise BackendError("The request was cancelled.")
         delay = _backoff_delay(attempt, retry_after)
         if delay > max_retry_wait - waited:
             raise BackendError(
@@ -2258,10 +2278,22 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
         waited += delay
 
     for attempt in range(attempts):
+        if cancelled():
+            raise BackendError("The request was cancelled.")
         request = urllib.request.Request(url, data=data, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                body = response.read().decode("utf-8")
+                raw = response.read(HTTP_MAX_RESPONSE_BYTES + 1)
+            if cancelled():
+                raise BackendError("The request was cancelled.")
+            if len(raw) > HTTP_MAX_RESPONSE_BYTES:
+                raise BackendError("The backend response exceeds the size limit.")
+            try:
+                body = raw.decode("utf-8")
+            except UnicodeError as exc:
+                raise BackendError(
+                    "The backend response could not be read."
+                ) from exc
             break
         except urllib.error.HTTPError as exc:
             # HTTPError is a subclass of URLError, so it must be caught first.
@@ -2270,12 +2302,9 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
                 retry_after = exc.headers.get("Retry-After")
             except Exception:
                 retry_after = None
-            # The response body/socket must be released before any retry
-            # (or the raise below) rather than left open (M8).
-            try:
-                exc.read()
-            except Exception:
-                pass
+            # Release the connection without draining a potentially unbounded
+            # error body into memory (v1.38, notes_014 G) — retrying must not
+            # wait for that either.
             try:
                 exc.close()
             except Exception:
@@ -2284,10 +2313,24 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
                 wait_or_give_up(attempt, retry_after)
                 continue
             raise BackendError(_friendly_http_message(exc.code, service_name))
+        except ssl.SSLError:
+            # A certificate/handshake failure will not resolve itself on
+            # retry, and retrying it could mask a genuine MITM condition.
+            raise BackendError(
+                "The secure connection could not be verified."
+            ) from None
         except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ssl.SSLError):
+                raise BackendError(
+                    "The secure connection could not be verified."
+                ) from None
+            # Generic message only: the raw exception reason is a low-level
+            # network diagnostic, not user-facing prompt text, but there is
+            # no need to surface it either (matches the HTTPError path,
+            # which never displays raw exception detail).
             last_network_message = (
                 "Could not reach the translation backend. Please check your "
-                "connection and try again. ({})".format(_reason_text(exc))
+                "connection and try again."
             )
             if attempt < attempts - 1:
                 wait_or_give_up(attempt)
@@ -2367,6 +2410,7 @@ def call_anthropic(config_snapshot, system_prompt, user_text):
         # 529 (overloaded) is documented Claude API behaviour, not assumed
         # to apply to every backend this app talks to.
         retryable_codes=HTTP_RETRYABLE_CODES | {529},
+        cancel_event=config_snapshot.get("_cancel_event"),
     )
     return _anthropic_text_from_response(data)
 
@@ -2406,7 +2450,8 @@ def call_ollama(config_snapshot, system_prompt, user_text):
     }
     try:
         data = _http_post_json(
-            url, payload, headers, OLLAMA_TIMEOUT, service_name="Ollama"
+            url, payload, headers, OLLAMA_TIMEOUT, service_name="Ollama",
+            cancel_event=config_snapshot.get("_cancel_event"),
         )
     except BackendError as exc:
         # Give a more specific hint for the common "Ollama not running" case.
@@ -2460,11 +2505,34 @@ def list_ollama_models(base_url=OLLAMA_BASE_URL):
 
 
 def run_backend(config_snapshot, system_prompt, user_text):
-    """Dispatch to the configured backend using a copied config snapshot."""
-    backend = config_snapshot.get("backend", "anthropic")
-    if backend == "ollama":
-        return call_ollama(config_snapshot, system_prompt, user_text)
-    return call_anthropic(config_snapshot, system_prompt, user_text)
+    """Dispatch to the configured backend using a copied config snapshot.
+
+    Optional one-shot Ollama fallback (v1.38, notes_015 2.E): if the
+    primary backend is Claude and it exhausts retries with a BackendError,
+    and the user opted in (fallback_to_ollama) with an Ollama model
+    configured, try Ollama once. Never the other way round — Ollama must
+    not silently ship text to Anthropic — and a cancelled request is never
+    retried on a different backend. config_snapshot is already a private
+    per-request copy (see _translate), so marking it here is safe; sets
+    "_used_fallback" rather than changing this function's return type, so
+    translate() can append a single notes[] advisory.
+    """
+    backend = normalise_backend(config_snapshot.get("backend"))
+    try:
+        if backend == "ollama":
+            return call_ollama(config_snapshot, system_prompt, user_text)
+        return call_anthropic(config_snapshot, system_prompt, user_text)
+    except BackendError as exc:
+        if (
+            backend == "ollama"
+            or not config_snapshot.get("fallback_to_ollama")
+            or not (config_snapshot.get("ollama_model") or "").strip()
+            or "cancelled" in str(exc).casefold()
+        ):
+            raise
+        text = call_ollama(config_snapshot, system_prompt, user_text)
+        config_snapshot["_used_fallback"] = True
+        return text
 
 
 def translate(config_snapshot, text, situation=""):
@@ -2509,6 +2577,10 @@ def translate(config_snapshot, text, situation=""):
     raw = run_backend(config_snapshot, system_prompt, user_envelope)
     result = parse_translation_result(raw, forced_direction=direction)
     result, warnings = restore_result_tokens(result, mapping)
+    if config_snapshot.get("_used_fallback"):
+        warnings = warnings + [
+            "Claude was unavailable; translated with local Ollama."
+        ]
     if warnings:
         result["notes"] = warnings + result.get("notes", [])
     return result
@@ -3017,6 +3089,21 @@ if GUI_AVAILABLE:
             self.detect_btn.grid(row=0, column=1)
             row += 1
 
+            # Opt-in one-shot fallback (v1.38, notes_015 2.E): only after
+            # Claude exhausts retries with a genuine failure, and only once
+            # — this never nests a retry storm across two backends, and
+            # never runs the other way round (a local Ollama result is
+            # never re-sent to Claude).
+            self.fallback_to_ollama_var = ctk.BooleanVar(
+                value=bool(self._config.get("fallback_to_ollama", False))
+            )
+            ctk.CTkCheckBox(
+                body,
+                text="If Claude is unavailable, retry once with local Ollama",
+                variable=self.fallback_to_ollama_var,
+            ).grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+
             # ElevenLabs (Speak / text-to-speech). Optional: Speak stays
             # disabled with no key, exactly like the other opt-in features.
             ctk.CTkLabel(body, text="ElevenLabs API key").grid(row=row, column=0, sticky="w", padx=16)
@@ -3267,6 +3354,7 @@ if GUI_AVAILABLE:
             self._config["elevenlabs_privacy_ack"] = bool(self.elevenlabs_privacy_var.get())
             self._config["always_on_top"] = bool(self.always_on_top_var.get())
             self._config["french_typography"] = bool(self.french_typography_var.get())
+            self._config["fallback_to_ollama"] = bool(self.fallback_to_ollama_var.get())
             self._config["keep_as_is_terms"] = normalise_keep_as_is_terms(
                 self.keep_as_is_box.get("1.0", "end")
             )
@@ -3777,6 +3865,7 @@ if GUI_AVAILABLE:
             self._import_busy = False
             self._tray_icon = None
             self._slang_reference = None
+            self._http_cancel = threading.Event()
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
@@ -4937,11 +5026,25 @@ if GUI_AVAILABLE:
             self.input_box.insert("1.0", value)
             self._on_input_change()
 
+        def _new_http_cancel(self):
+            """Invalidate in-flight HTTP waits; return a fresh event for the
+            next request (v1.38, notes_015 2.E).
+
+            urllib cannot abort a blocked read portably without closing the
+            socket, so a request already inside urlopen() may still finish
+            — it simply will not be retried or delivered once it does (the
+            existing stale-request-id guard already covers delivery).
+            """
+            self._http_cancel.set()
+            self._http_cancel = threading.Event()
+            return self._http_cancel
+
         def _clear(self):
             # Bump the request id so any in-flight worker result is treated as
             # stale, honouring the spec's "Clear supersedes a pending request".
             self._request_id += 1
             self._speech_request_id += 1
+            self._new_http_cancel()
             self.translate_btn.configure(state="normal", text="Translate")
             self.correct_btn.configure(state="normal", text="Correct English")
             self.reply_btn.configure(state="normal")
@@ -4953,6 +5056,7 @@ if GUI_AVAILABLE:
         def _on_close_destroy(self):
             """Invalidate in-flight work, stop playback, then destroy the window."""
             self._request_id += 1
+            self._new_http_cancel()
             self._speech_request_id += 1
             self._stop_speech()
             self._cleanup_tts_file()
@@ -5417,6 +5521,7 @@ if GUI_AVAILABLE:
 
             self._request_id += 1
             rid = self._request_id
+            snapshot["_cancel_event"] = self._new_http_cancel()
             self.translate_btn.configure(state="disabled", text="Translate")
             self.correct_btn.configure(state="disabled", text="Correcting…")
             self.reply_btn.configure(state="disabled")
@@ -5559,6 +5664,7 @@ if GUI_AVAILABLE:
 
             self._request_id += 1
             rid = self._request_id
+            snapshot["_cancel_event"] = self._new_http_cancel()
 
             self.translate_btn.configure(state="disabled", text="Translating\u2026")
             self.correct_btn.configure(state="disabled")
