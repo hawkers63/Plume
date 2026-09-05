@@ -432,6 +432,7 @@ DEFAULT_CONFIG = {
     "launch_at_sign_in": False,
     "start_minimised_to_tray": False,
     "close_to_tray": False,
+    "send_to_shortcut": False,
 }
 
 
@@ -541,6 +542,7 @@ def load_config():
     config["launch_at_sign_in"] = bool(config.get("launch_at_sign_in"))
     config["start_minimised_to_tray"] = bool(config.get("start_minimised_to_tray"))
     config["close_to_tray"] = bool(config.get("close_to_tray"))
+    config["send_to_shortcut"] = bool(config.get("send_to_shortcut"))
 
     return config, None
 
@@ -1319,6 +1321,106 @@ def read_import_text(path: str, character_limit: int) -> str:
     if not ok:
         raise ValueError(message)
     return text
+
+
+# ---------------------------------------------------------------------------
+# Crash-safe file intake (v1.32, notes_015 2.A). Three ways to hand
+# read_import_text() a path without touching Explorer drag-and-drop: a
+# command-line --import argument, an Explorer "Send to" shortcut, and a
+# pasted filesystem path. None of this subclasses a window procedure — the
+# v1.18 WM_DROPFILES crash is why native drop stays out of scope.
+# ---------------------------------------------------------------------------
+
+SENDTO_SHORTCUT_NAME = "Plume.cmd"
+_IMPORTABLE_EXTENSIONS = {".txt", ".md"}
+
+
+def parse_import_path(argv):
+    """Return (path, extra_ignored) for the first importable file in *argv*.
+
+    Recognises an explicit "--import PATH" pair and any bare .txt/.md
+    argument (so an Explorer Send to shortcut can pass %1 with no flag).
+    Only the first candidate found is used; *extra_ignored* is True when a
+    further candidate existed, so the caller can show one advisory rather
+    than importing several files. Never raises.
+    """
+    args = list(argv or [])
+    candidates = []
+    index = 0
+    while index < len(args):
+        item = args[index]
+        if item == "--import":
+            if index + 1 < len(args):
+                candidates.append(args[index + 1])
+                index += 1
+            index += 1
+            continue
+        if not item.startswith("-") and (
+            os.path.splitext(item)[1].casefold() in _IMPORTABLE_EXTENSIONS
+        ):
+            candidates.append(item)
+        index += 1
+    if not candidates:
+        return "", False
+    return candidates[0], len(candidates) > 1
+
+
+def send_to_cmd_path() -> str:
+    """Path of the Explorer 'Send to' command file, real or not yet written."""
+    appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(
+        appdata, "Microsoft", "Windows", "SendTo", SENDTO_SHORTCUT_NAME
+    )
+
+
+def set_send_to_shortcut(enabled: bool) -> None:
+    """Create or delete the Explorer 'Send to Plume' command. Raises ConfigError.
+
+    A plain .cmd file, not a .lnk: no pywin32/COM shortcut object is needed.
+    It launches the same command autostart_command() would, minus
+    --start-minimised (a file the user is actively sending should open a
+    visible window), plus --import "%~1".
+    """
+    path = send_to_cmd_path()
+    if not enabled:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise ConfigError(
+                "Could not remove the Send to shortcut."
+            ) from exc
+        return
+    folder = os.path.dirname(path)
+    command = autostart_command().replace(" --start-minimised", "")
+    body = (
+        "@echo off\r\n"
+        "start \"\" {command} --import \"%~1\"\r\n"
+    ).format(command=command)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with open(path, "w", encoding="ascii", newline="") as fh:
+            fh.write(body)
+    except OSError as exc:
+        raise ConfigError(
+            "Could not write the Send to shortcut."
+        ) from exc
+
+
+def looks_like_importable_path(text: str) -> str:
+    """Return *text* stripped/unquoted if it names one existing .txt/.md file.
+
+    Used by Paste to offer opening a copied path as a file rather than
+    inserting the path string itself as source text. Returns "" for
+    anything else, including a path to a missing or wrong-extension file.
+    """
+    candidate = (text or "").strip().strip('"')
+    if os.path.splitext(candidate)[1].casefold() not in _IMPORTABLE_EXTENSIONS:
+        return ""
+    if not os.path.isfile(candidate):
+        return ""
+    return candidate
 
 
 def _safe_short_string(value, limit: int = MAX_NOTE_CHARS) -> str:
@@ -2788,6 +2890,17 @@ if GUI_AVAILABLE:
                 ).grid(row=row, column=0, sticky="w", padx=16)
                 row += 1
 
+            # Explorer "Send to" file intake (v1.32). Independent of the tray
+            # extras above: it is a plain .cmd file, not a pystray feature.
+            self.send_to_var = ctk.BooleanVar(
+                value=bool(self._config.get("send_to_shortcut"))
+            )
+            ctk.CTkCheckBox(
+                body, text="Add 'Send to Plume' to Explorer's right-click menu",
+                variable=self.send_to_var,
+            ).grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+
             ctk.CTkLabel(body, text="Maximum message length").grid(
                 row=row, column=0, sticky="w", padx=16
             )
@@ -2915,6 +3028,14 @@ if GUI_AVAILABLE:
             self._config["close_to_tray"] = want_close_to_tray
             try:
                 set_launch_at_sign_in(want_launch)
+            except ConfigError as exc:
+                self.status_label.configure(text=str(exc))
+                return
+
+            want_send_to = bool(self.send_to_var.get())
+            self._config["send_to_shortcut"] = want_send_to
+            try:
+                set_send_to_shortcut(want_send_to)
             except ConfigError as exc:
                 self.status_label.configure(text=str(exc))
                 return
@@ -3218,6 +3339,7 @@ if GUI_AVAILABLE:
             self._bind_shortcuts()
             self._apply_always_on_top()
             self._maybe_start_tray()
+            self._maybe_start_import(sys.argv)
 
             # Invalidate any in-flight worker when the window is closed so a
             # late callback cannot run against a destroyed widget tree.
@@ -3986,8 +4108,34 @@ if GUI_AVAILABLE:
                 clip = self.clipboard_get()
             except Exception:
                 return
+            path = looks_like_importable_path(clip)
+            if path and messagebox.askyesno(
+                "Open file",
+                "The clipboard holds a file path. Open it as source text?",
+                parent=self,
+            ):
+                self._begin_file_import(path)
+                return
             self.input_box.insert("insert", clip)
             self._on_input_change()
+
+        def _maybe_start_import(self, argv):
+            """Import a startup file from --import or a bare SendTo path (v1.32).
+
+            Deliberately not native drag-and-drop: see the v1.18 WM_DROPFILES
+            crash record. Runs once, after the window exists, so an import
+            error can be shown in the advisory rather than lost before the
+            widgets are built.
+            """
+            path, extra_ignored = parse_import_path(argv)
+            if not path:
+                return
+            if extra_ignored:
+                self.advisory.configure(
+                    text="Only the first file on the command line was imported."
+                )
+                self.advisory.grid()
+            self.after(0, lambda p=path: self._begin_file_import(p))
 
         def _open_source_file(self):
             """Import a .txt/.md file into the input box (v1.28)."""

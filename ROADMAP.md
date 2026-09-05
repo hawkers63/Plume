@@ -929,6 +929,57 @@ schema impact beyond one constants tuple:
   screenshots of the real running app (main window and the scrolled
   Settings dialog). Full suite: 289 tests pass.
 
+## v1.32 — Crash-safe file intake: argv, Send to, paste-as-path (notes_015 2.A)
+
+- **Three routes into the existing v1.28 `read_import_text()` reader,
+  none of them native drag-and-drop:** the v1.18 record stands — this
+  Tcl/Tk build has a demonstrated, unresolved `WM_DROPFILES` crash risk,
+  so a conversation helper still cannot catch an Explorer drop directly.
+  Every other Windows 11 path that does not subclass a window procedure
+  remains open:
+  1. **Command line**, `--import "path"` or a bare `.txt`/`.md` argument
+     (so a Send to shortcut can pass `%1` with no flag).
+     `parse_import_path()` scans all of `argv` and returns the first
+     candidate plus whether a second one was ignored, so multiple files
+     are never silently merged — one advisory names the situation instead.
+     Read on `PlumeApp.__init__`, after the tray starts, via the existing
+     `_begin_file_import()` worker; an empty window always accepts it
+     with no "replace?" prompt, same as importing into an empty box today.
+  2. **Explorer "Send to Plume"**, a new disabled-by-default Settings
+     checkbox next to the tray/autostart group (independent of
+     `TRAY_AVAILABLE` — it is a plain `.cmd` file, not a pystray feature).
+     `set_send_to_shortcut()` writes/removes
+     `%APPDATA%\Microsoft\Windows\SendTo\Plume.cmd`, one line reusing
+     `autostart_command()` minus `--start-minimised` (a file the user is
+     actively sending should open a visible window) plus
+     `--import "%~1"`. No `.lnk`, no `pywin32`, no COM.
+  3. **Paste-as-path.** `looks_like_importable_path()` recognises a
+     clipboard value that is one quoted/raw existing `.txt`/`.md` path;
+     `_paste()` now offers "Open this file as source text?" before
+     falling back to today's behaviour of inserting the clipboard text
+     verbatim.
+  All three still go through the unmodified v1.28 pipeline: bounded to
+  2 MiB, UTF-8/UTF-16 only, never truncated, never auto-translated, and
+  a stale-input race still discards a superseded import with an advisory.
+- New `send_to_shortcut` config key (`DEFAULT_CONFIG` and
+  `plume_config.example.json`), coerced to `bool` on load like every
+  other toggle.
+- 24 new unit tests (`parse_import_path` against `--import`, a bare
+  path, other flags, no candidate, an ignored extra candidate, and a
+  dangling `--import` with no value; `looks_like_importable_path`
+  against a real quoted path, prose, a missing file and a wrong
+  extension; `send_to_cmd_path`/`set_send_to_shortcut` create/remove
+  against a temporary `APPDATA`; config coercion). Verified live against
+  the real `PlumeApp`: `--import` against an isolated copy of the app
+  loads an empty box with no prompt; pasting a quoted path to an
+  existing file shows the Open file dialog, then (since the box was
+  non-empty for that run) the existing v1.28 replace-confirmation, and
+  the file's text lands correctly; the Settings checkbox renders
+  correctly-placed and enabled in the scrolled dialog. The real
+  `%APPDATA%\...\SendTo` folder was deliberately left untouched by this
+  manual pass — that behaviour is covered by the mocked-`APPDATA` unit
+  tests instead. Full suite: 307 tests pass.
+
 ---
 
 ### Notes on sequencing

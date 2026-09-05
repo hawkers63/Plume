@@ -687,6 +687,14 @@ class TestConfigCoercion(unittest.TestCase):
         config, _ = self._load_with({"max_input_chars": "5000"})
         self.assertEqual(config["max_input_chars"], 5000)
 
+    def test_send_to_shortcut_coerced_to_bool(self):
+        config, _ = self._load_with({"send_to_shortcut": "yes"})
+        self.assertIs(config["send_to_shortcut"], True)
+
+    def test_send_to_shortcut_defaults_false(self):
+        config, _ = self._load_with({})
+        self.assertIs(config["send_to_shortcut"], False)
+
     def test_coerce_positive_int(self):
         self.assertEqual(plume.coerce_positive_int("5000", 2000), 5000)
         self.assertEqual(plume.coerce_positive_int("banana", 2000), 2000)
@@ -970,6 +978,107 @@ class TestAutostart(unittest.TestCase):
         with mock.patch.object(plume, "WINREG_AVAILABLE", True), \
                 mock.patch.object(plume, "_winreg", fake_winreg):
             self.assertFalse(plume.launch_at_sign_in_is_set())
+
+
+class TestSendToShortcut(unittest.TestCase):
+    def test_send_to_cmd_path_uses_appdata(self):
+        with mock.patch.dict(os.environ, {"APPDATA": r"C:\Fake\AppData"}):
+            path = plume.send_to_cmd_path()
+        self.assertTrue(path.startswith(r"C:\Fake\AppData"))
+        self.assertTrue(path.endswith(plume.SENDTO_SHORTCUT_NAME))
+        self.assertIn("SendTo", path)
+
+    def test_set_send_to_shortcut_writes_import_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"APPDATA": tmp}):
+                plume.set_send_to_shortcut(True)
+                path = plume.send_to_cmd_path()
+                self.assertTrue(os.path.isfile(path))
+                with open(path, "r", encoding="ascii") as fh:
+                    body = fh.read()
+        self.assertIn("--import", body)
+        self.assertIn('"%~1"', body)
+        self.assertNotIn("--start-minimised", body)
+
+    def test_set_send_to_shortcut_removes_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"APPDATA": tmp}):
+                plume.set_send_to_shortcut(True)
+                plume.set_send_to_shortcut(False)
+                self.assertFalse(os.path.isfile(plume.send_to_cmd_path()))
+
+    def test_set_send_to_shortcut_disable_tolerates_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"APPDATA": tmp}):
+                plume.set_send_to_shortcut(False)  # must not raise
+
+
+class TestParseImportPath(unittest.TestCase):
+    def test_finds_explicit_import_flag(self):
+        path, extra = plume.parse_import_path(
+            ["plume.py", "--import", r"D:\draft.txt"]
+        )
+        self.assertEqual(path, r"D:\draft.txt")
+        self.assertFalse(extra)
+
+    def test_finds_bare_markdown_argument(self):
+        path, extra = plume.parse_import_path(["plume.py", r"D:\notes.md"])
+        self.assertEqual(path, r"D:\notes.md")
+        self.assertFalse(extra)
+
+    def test_ignores_other_flags(self):
+        path, extra = plume.parse_import_path(
+            ["plume.py", "--start-minimised", r"D:\a.txt"]
+        )
+        self.assertEqual(path, r"D:\a.txt")
+        self.assertFalse(extra)
+
+    def test_no_candidate_returns_empty(self):
+        path, extra = plume.parse_import_path(["plume.py", "--start-minimised"])
+        self.assertEqual(path, "")
+        self.assertFalse(extra)
+
+    def test_extra_bare_paths_are_flagged_not_dropped_silently(self):
+        path, extra = plume.parse_import_path(
+            ["plume.py", r"D:\a.txt", r"D:\b.md"]
+        )
+        self.assertEqual(path, r"D:\a.txt")
+        self.assertTrue(extra)
+
+    def test_import_flag_without_a_value_is_ignored(self):
+        path, extra = plume.parse_import_path(["plume.py", "--import"])
+        self.assertEqual(path, "")
+        self.assertFalse(extra)
+
+    def test_empty_argv_returns_empty(self):
+        path, extra = plume.parse_import_path([])
+        self.assertEqual(path, "")
+        self.assertFalse(extra)
+
+
+class TestLooksLikeImportablePath(unittest.TestCase):
+    def test_accepts_existing_quoted_txt_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "a.txt")
+            open(path, "w").close()
+            self.assertEqual(
+                plume.looks_like_importable_path('"{}"'.format(path)), path
+            )
+
+    def test_rejects_prose(self):
+        self.assertEqual(plume.looks_like_importable_path("Bonjour tout le monde"), "")
+
+    def test_rejects_missing_file(self):
+        self.assertEqual(plume.looks_like_importable_path(r"D:\missing.txt"), "")
+
+    def test_rejects_wrong_extension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "a.docx")
+            open(path, "w").close()
+            self.assertEqual(plume.looks_like_importable_path(path), "")
+
+    def test_rejects_empty_string(self):
+        self.assertEqual(plume.looks_like_importable_path(""), "")
 
 
 class TestBackendHardening(unittest.TestCase):

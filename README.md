@@ -52,9 +52,14 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   email, Neighbour, Appointment, Dating/chat) for faster back-and-forth.
 - **Open file…** imports a `.txt` or `.md` file (up to 2 MiB, UTF-8 or
   UTF-16) straight into the input box, asking before it replaces anything
-  already there. No native Explorer drag-and-drop or Word import — a
-  plain file picker was the safer, dependency-free choice for this app's
-  Tcl/Tk build (see `ROADMAP.md`'s v1.18/v1.28 entries).
+  already there. Three more crash-safe ways in, none of them native
+  Explorer drag-and-drop: `--import "path"` on the command line, an
+  optional "Send to Plume" entry in Explorer's right-click menu (off by
+  default, in Settings), and pasting a clipboard value that is itself a
+  `.txt`/`.md` file path, which offers to open the file rather than
+  inserting the path as text. No Word import either — a plain file
+  picker was the safer, dependency-free choice for this app's Tcl/Tk
+  build (see `ROADMAP.md`'s v1.18/v1.28/v1.32 entries).
 - Optional local history with favourites — including a one-click
   **☆ Favourite** on the main panel — per-entry **Copy** / **Reopen** /
   **Delete**, "clear history" preserving favourited entries, and
