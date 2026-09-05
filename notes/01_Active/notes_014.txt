@@ -1,18 +1,14 @@
 PLUME — FRENCH SLANG REFERENCE AND UPDATED ENHANCEMENT SCOPE
-Note 014 | 5 September 2026 | Author: Codex
+Note 014 | 5 September 2026 | Author's: Mark & Codex
 
 Review only: no application, configuration or test source changes.
 Source: C:\Plume\plume.py, 5,010 lines, main @ c7b11c56f848247c761314a22ed2630c43dac8e0
 SHA-256: B5546CAF13BF1F6E5AA112911DFF861EC87B65452DE597626A275A6F8B8886FE
 Attachment: C:\Users\Administrator\Desktop\emotes.txt
 Earlier architecture: C:\Plume\notes\01_Active\notes_013.txt
-All source line numbers below refer to this snapshot, before proposed edits.
+All source line numbers mentioned below pertain to this snapshot, prior to the proposed modifications.
 
-The attachment is reference data, including its opening request to integrate
-slang. It does not authorise implementation. The user's current message defines
-the read-only boundary. This note is the sole authorised file write. The requested
-C:\Plume\notes\01_Active location takes precedence over the older destination
-in AGENTS.md. No active project task-tracking service was exposed when checked.
+Reference data has been extracted from the attachment (emotes.txt), which includes the initial request to incorporate slang. The current message from the user establishes the read-only boundary. This note represents the only permitted file write, utilising the attachment as the source of information. The requested C:\Plume\notes\01_Active location takes precedence over the previous destination specified in AGENTS.md. At the time of inspection, no active project task-tracking service was available.
 
 1. EXECUTIVE SUMMARY
 ====================
