@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# PyInstaller spec for Plume, adapted from Scriptorium's approach.
+# PyInstaller spec for Plume.
 #
 # Build (from this folder, on Windows):
 #     pip install pyinstaller
