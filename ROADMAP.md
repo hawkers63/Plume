@@ -683,6 +683,40 @@ schema impact beyond one constants tuple:
   pass (no new pure-function unit tests this version; these are all GUI
   lifecycle fixes, covered by the live-code script instead).
 
+## v1.26 — Clipboard ownership-safe rewrite (notes_012 M13, notes_013 D2)
+
+- **M13, `OpenClipboard(None)`, an unchecked `GlobalLock`, and no
+  `GlobalFree` on failure:** `copy_html_to_windows_clipboard` established
+  no clipboard owner (Microsoft's own `SetClipboardData` documentation
+  names this a failure case), never checked whether `GlobalLock`'s
+  returned pointer was NULL before an unconditional `ctypes.memmove` into
+  it (a real, if narrow, process-crash risk that no Python `except` clause
+  can catch), and never freed a `GlobalAlloc` handle when
+  `SetClipboardData` failed, leaking it. Rewritten: the function now
+  requires a real window handle (refuses outright without one, rather than
+  falling back to `None`), allocates and locks both payloads *before*
+  `EmptyClipboard` runs (so a preparation failure never leaves the
+  clipboard emptied with nothing published), checks every allocation,
+  lock and transfer, and frees only the handles whose ownership did not
+  actually transfer to the system. `_copy_current_result_as_html` now
+  passes `self.winfo_id()` as that handle.
+- 3 new unit tests (missing/zero handle refused, embedded NUL in the
+  plain-text fallback refused). This is native ctypes code with no Python
+  exception path for a genuine access violation, so — per the existing
+  clipboard risk record — it was also verified against the real Windows
+  clipboard: writing through the actual `PlumeApp._copy_current_result_as_html`
+  call path (real `winfo_id()`), then reading both `HTML Format` and
+  plain text back independently via .NET's `System.Windows.Forms.Clipboard`
+  from a separate PowerShell process while the writing process stayed
+  alive. Both formats round-tripped exactly, including accented and
+  HTML-escaped characters. (An initial attempt that destroyed the Tk
+  window immediately after copying showed the plain-text format missing
+  on readback; keeping the window alive for even a moment afterward — the
+  same as real usage, where the app stays open — showed both formats
+  present via both a same-process ctypes readback and the independent
+  .NET readback, so this was a test-script artefact, not an application
+  bug.) Full suite: 227 tests pass.
+
 ---
 
 ### Notes on sequencing

@@ -1467,6 +1467,18 @@ class TestCfHtml(unittest.TestCase):
         with mock.patch.object(plume.sys, "platform", "linux"):
             self.assertFalse(plume.copy_html_to_windows_clipboard("<p>hi</p>", "hi"))
 
+    def test_missing_window_handle_returns_false(self):
+        # v1.26: a real hwnd is required; OpenClipboard(None) establishes
+        # no owner, so the function must refuse rather than fall back to
+        # that, regardless of platform.
+        self.assertFalse(plume.copy_html_to_windows_clipboard("<p>hi</p>", "hi"))
+        self.assertFalse(plume.copy_html_to_windows_clipboard("<p>hi</p>", "hi", hwnd=0))
+
+    def test_embedded_nul_in_plain_text_returns_false(self):
+        self.assertFalse(
+            plume.copy_html_to_windows_clipboard("<p>hi</p>", "hi\x00there", hwnd=12345)
+        )
+
 
 class TestHistoryPersistence(unittest.TestCase):
     def test_atomic_save_round_trip(self):

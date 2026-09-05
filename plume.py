@@ -1993,13 +1993,25 @@ def _build_cf_html(html_fragment: str) -> bytes:
     return (header + html_prefix + html_fragment + html_suffix).encode("utf-8")
 
 
-def copy_html_to_windows_clipboard(html_fragment: str, plain_text: str) -> bool:
+def copy_html_to_windows_clipboard(html_fragment: str, plain_text: str, hwnd=None) -> bool:
     """Best-effort: put CF_HTML and a Unicode plain-text fallback on the
     clipboard. Returns False (never raises) on any failure or off Windows,
     so the caller can fall back to the existing plain-text copy path.
+
+    Ownership discipline (v1.25 rewrite): a caller-owned GlobalAlloc handle
+    passes to the system only once SetClipboardData succeeds for that
+    exact handle. Every allocation is locked and checked for a NULL
+    pointer before the memmove that writes into it (an unchecked NULL
+    write there is a process crash, not a catchable Python exception);
+    any handle whose transfer did not succeed is GlobalFree'd here rather
+    than leaked or left dangling. A real window handle is required:
+    OpenClipboard(None) establishes no owner, which is a documented
+    Windows failure mode rather than a merely cosmetic omission.
     """
-    if sys.platform != "win32":
+    if sys.platform != "win32" or not hwnd or "\x00" in plain_text:
         return False
+    owned = []
+    opened = False
     try:
         payload = _build_cf_html(html_fragment)
         user32 = ctypes.windll.user32
@@ -2012,43 +2024,74 @@ def copy_html_to_windows_clipboard(html_fragment: str, plain_text: str) -> bool:
 
         user32.OpenClipboard.restype = ctypes.c_int
         user32.OpenClipboard.argtypes = [ctypes.c_void_p]
-        if not user32.OpenClipboard(None):
+        user32.EmptyClipboard.restype = ctypes.c_int
+        user32.EmptyClipboard.argtypes = []
+        user32.CloseClipboard.restype = ctypes.c_int
+        user32.CloseClipboard.argtypes = []
+        kernel32.GlobalAlloc.restype = ctypes.c_void_p
+        kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalUnlock.restype = ctypes.c_int
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalFree.restype = ctypes.c_void_p
+        kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+        user32.SetClipboardData.restype = ctypes.c_void_p
+        user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        GMEM_MOVEABLE_ZEROINIT = 0x0042
+
+        def prepare(data: bytes):
+            """Allocate + lock + copy one payload; None on any failure.
+
+            A successfully allocated but never-locked/transferred handle
+            is tracked in *owned* immediately, so the outer finally block
+            frees it even if this function returns early below.
+            """
+            handle = kernel32.GlobalAlloc(GMEM_MOVEABLE_ZEROINIT, len(data))
+            if not handle:
+                return None
+            owned.append(handle)
+            ptr = kernel32.GlobalLock(handle)
+            if not ptr:
+                return None
+            try:
+                ctypes.memmove(ptr, data, len(data))
+            finally:
+                kernel32.GlobalUnlock(handle)
+            return handle
+
+        # Both payloads are prepared before EmptyClipboard runs, so a
+        # preparation failure never leaves the clipboard emptied with
+        # nothing successfully published in its place.
+        hmem_html = prepare(payload + b"\x00")  # CF_HTML: raw UTF-8, NUL-terminated.
+        if hmem_html is None:
             return False
-        try:
-            user32.EmptyClipboard()
+        hmem_text = prepare((plain_text + "\0").encode("utf-16-le"))  # CF_UNICODETEXT
+        if hmem_text is None:
+            return False
 
-            kernel32.GlobalAlloc.restype = ctypes.c_void_p
-            kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
-            kernel32.GlobalLock.restype = ctypes.c_void_p
-            kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
-            kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
-            user32.SetClipboardData.restype = ctypes.c_void_p
-            user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
-            GMEM_MOVEABLE_ZEROINIT = 0x0042
+        if not user32.OpenClipboard(hwnd):
+            return False
+        opened = True
+        if not user32.EmptyClipboard():
+            return False
 
-            # CF_HTML: raw UTF-8 bytes, NUL-terminated.
-            html_bytes = payload + b"\x00"
-            hmem_html = kernel32.GlobalAlloc(GMEM_MOVEABLE_ZEROINIT, len(html_bytes))
-            if hmem_html:
-                ptr = kernel32.GlobalLock(hmem_html)
-                ctypes.memmove(ptr, html_bytes, len(html_bytes))
-                kernel32.GlobalUnlock(hmem_html)
-                # Ownership passes to the system on success; never GlobalFree.
-                user32.SetClipboardData(cf_html, hmem_html)
+        if not user32.SetClipboardData(cf_html, hmem_html):
+            return False
+        owned.remove(hmem_html)  # ownership transferred to the system; do not free
 
-            # CF_UNICODETEXT = 13: plain-text fallback for non-HTML targets.
-            text_bytes = (plain_text + "\0").encode("utf-16-le")
-            hmem_text = kernel32.GlobalAlloc(GMEM_MOVEABLE_ZEROINIT, len(text_bytes))
-            if hmem_text:
-                ptr = kernel32.GlobalLock(hmem_text)
-                ctypes.memmove(ptr, text_bytes, len(text_bytes))
-                kernel32.GlobalUnlock(hmem_text)
-                user32.SetClipboardData(13, hmem_text)
-        finally:
-            user32.CloseClipboard()
+        if not user32.SetClipboardData(13, hmem_text):  # CF_UNICODETEXT
+            return False
+        owned.remove(hmem_text)
+
         return True
     except Exception:  # pragma: no cover - defensive, platform dependent
         return False
+    finally:
+        if opened:
+            user32.CloseClipboard()
+        for handle in owned:
+            kernel32.GlobalFree(handle)
 
 
 # ===========================================================================
@@ -4405,7 +4448,7 @@ if GUI_AVAILABLE:
             fragment = "<p>{}</p>".format(
                 html.escape(text).replace("\n", "<br>")
             )
-            if not copy_html_to_windows_clipboard(fragment, text):
+            if not copy_html_to_windows_clipboard(fragment, text, self.winfo_id()):
                 self._copy(text)
 
 
