@@ -509,6 +509,14 @@ class TestTones(unittest.TestCase):
     def test_rejects_non_list(self):
         self.assertEqual(plume.validate_tones("Warm"), [])
 
+    def test_unhashable_member_does_not_raise(self):
+        # v1.33: a hand-edited config could hold a stray list/dict entry;
+        # this must be dropped, not crash config loading with a TypeError.
+        self.assertEqual(
+            plume.validate_tones(["Warm", ["nested"], {"a": 1}, "Precise"]),
+            ["Warm", "Precise"],
+        )
+
     def test_all_conflict_pairs_resolve_to_later(self):
         for a, b in (
             ("Terse", "Playful"), ("Terse", "Warm"),
@@ -525,6 +533,15 @@ class TestTones(unittest.TestCase):
         self.assertIn("source text wins", text.lower())
         self.assertIn("warm", text)
         self.assertIn("precise", text)
+
+    def test_instruction_forbids_uninvited_embellishment(self):
+        # v1.33: source slang licenses translating slang faithfully, not
+        # inventing reassurance/gratitude/agreement the source never said.
+        text = plume.build_tone_instruction(["Warm"])
+        self.assertIn("Preserve negation", text)
+        self.assertIn("Do not introduce reassurance", text)
+        self.assertIn("Source slang is content to translate faithfully", text)
+        self.assertIn("all five alternatives", text)
 
     def test_prompt_omits_tone_clause_when_empty(self):
         prompt = plume.build_translation_prompt(tones=[])
@@ -1694,8 +1711,20 @@ class TestCasualSignoff(unittest.TestCase):
             display = plume.casual_signoff_display(term)
             self.assertEqual(plume.casual_signoff_raw_value(display), term)
 
-    def test_raw_value_falls_back_to_input_if_unrecognised(self):
-        self.assertEqual(plume.casual_signoff_raw_value("not a real label"), "not a real label")
+    def test_raw_value_resolves_unrecognised_to_none_sentinel(self):
+        # v1.33: an unrecognised label (a stale value from a since-changed
+        # catalogue) must never be passed through as if it were a term.
+        self.assertEqual(
+            plume.casual_signoff_raw_value("not a real label"),
+            plume.CASUAL_SIGNOFF_NONE,
+        )
+
+    def test_raw_value_resolves_non_string_to_none_sentinel(self):
+        self.assertEqual(plume.casual_signoff_raw_value(None), plume.CASUAL_SIGNOFF_NONE)
+        self.assertEqual(plume.casual_signoff_raw_value(42), plume.CASUAL_SIGNOFF_NONE)
+
+    def test_raw_value_also_accepts_the_bare_raw_term(self):
+        self.assertEqual(plume.casual_signoff_raw_value("tkt"), "tkt")
 
     def test_only_the_raw_term_is_composed_not_the_gloss(self):
         display = plume.casual_signoff_display("tkt")
@@ -1737,6 +1766,12 @@ class TestMmorpgTerms(unittest.TestCase):
         for term in plume.MMORPG_TERMS:
             display = plume.mmorpg_term_display(term)
             self.assertEqual(plume.mmorpg_term_raw_value(display), term)
+
+    def test_raw_value_resolves_unrecognised_to_none_sentinel(self):
+        self.assertEqual(
+            plume.mmorpg_term_raw_value("not a real label"), plume.MMORPG_TERM_NONE
+        )
+        self.assertEqual(plume.mmorpg_term_raw_value(None), plume.MMORPG_TERM_NONE)
 
     def test_compose_joins_all_three_pickers(self):
         composed = plume.compose_finishing_touch(":)", "tkt", "rez")

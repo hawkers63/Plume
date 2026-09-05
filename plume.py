@@ -246,8 +246,15 @@ def _glossed_display(term: str, catalogue) -> str:
 
 
 def _glossed_raw_lookup(catalogue) -> dict:
-    """Reverse of _glossed_display: dropdown label -> raw term."""
-    return {_glossed_display(raw, catalogue): raw for raw, _gloss in catalogue}
+    """Every known display label and raw term in *catalogue*, mapped to its
+    raw term. Covers both forms so a value already holding the bare raw
+    term (rather than the bracketed display label) still resolves.
+    """
+    lookup = {}
+    for raw, _gloss in catalogue:
+        lookup[raw] = raw
+        lookup[_glossed_display(raw, catalogue)] = raw
+    return lookup
 
 
 _CASUAL_SIGNOFF_DISPLAY_TO_RAW = _glossed_raw_lookup(CASUAL_SIGNOFF_CATALOGUE)
@@ -258,18 +265,29 @@ def casual_signoff_display(term: str) -> str:
     return _glossed_display(term, CASUAL_SIGNOFF_CATALOGUE)
 
 
-def casual_signoff_raw_value(display: str) -> str:
-    """Reverse of casual_signoff_display; the input unchanged if unrecognised."""
-    return _CASUAL_SIGNOFF_DISPLAY_TO_RAW.get(display, display)
+def casual_signoff_raw_value(display) -> str:
+    """Reverse of casual_signoff_display.
+
+    A value that is not a currently-known display label or raw term (a
+    stale label left over from a since-changed catalogue, or a non-string)
+    resolves to the None sentinel rather than being passed through
+    unchanged, so it can never silently reach the copied/spoken text as
+    if it were a deliberately chosen term.
+    """
+    if not isinstance(display, str):
+        return CASUAL_SIGNOFF_NONE
+    return _CASUAL_SIGNOFF_DISPLAY_TO_RAW.get(display, CASUAL_SIGNOFF_NONE)
 
 
 def mmorpg_term_display(term: str) -> str:
     return _glossed_display(term, MMORPG_TERM_CATALOGUE)
 
 
-def mmorpg_term_raw_value(display: str) -> str:
-    """Reverse of mmorpg_term_display; the input unchanged if unrecognised."""
-    return _MMORPG_TERM_DISPLAY_TO_RAW.get(display, display)
+def mmorpg_term_raw_value(display) -> str:
+    """Reverse of mmorpg_term_display; see casual_signoff_raw_value."""
+    if not isinstance(display, str):
+        return MMORPG_TERM_NONE
+    return _MMORPG_TERM_DISPLAY_TO_RAW.get(display, MMORPG_TERM_NONE)
 
 # --- Register tones (v1.20, notes_011 Feature E) ----------------------------
 # Background register hints for the translator — the same class of
@@ -1505,7 +1523,10 @@ def validate_tones(value) -> list:
     allowed = set(REGISTER_TONES) - {TONE_NONE}
     chosen = []
     for item in value:
-        if item not in allowed or item in chosen:
+        # isinstance guards the `in allowed` set-membership test below: an
+        # unhashable item (a hand-edited config's stray list/dict) would
+        # otherwise raise TypeError and crash config loading outright.
+        if not isinstance(item, str) or item not in allowed or item in chosen:
             continue
         chosen = [
             existing for existing in chosen
@@ -1530,7 +1551,13 @@ def build_tone_instruction(tones) -> str:
         "shape, add or remove fields, override the requested direction, "
         "add facts, jokes, flirtation or offence, soften or intensify "
         "commitments, or embellish the source. If they conflict with what "
-        "the source text itself conveys, the source text wins."
+        "the source text itself conveys, the source text wins. Preserve "
+        "negation, quantities, attribution, uncertainty and obligations. "
+        "Do not introduce reassurance, gratitude, apologies, availability "
+        "or agreement that the source does not express. Source slang is "
+        "content to translate faithfully, not permission to invent "
+        "further slang. Apply these constraints to the main translation "
+        "and all five alternatives."
     )
 
 

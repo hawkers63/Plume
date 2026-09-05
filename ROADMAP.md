@@ -980,6 +980,50 @@ schema impact beyond one constants tuple:
   manual pass — that behaviour is covered by the mocked-`APPDATA` unit
   tests instead. Full suite: 307 tests pass.
 
+## v1.33 — Correctness hardening: raw-value boundary, tone validator (notes_014 B, E)
+
+- **Strict raw-value boundary for Casual sign-off and MMORPG chat.**
+  `casual_signoff_raw_value()`/`mmorpg_term_raw_value()` previously fell
+  back to returning an unrecognised input unchanged; a stale label left
+  over from a since-changed catalogue could then reach the copied/spoken
+  text, English gloss and all. Both now resolve anything that is not a
+  currently-known display label or raw term — including a non-string —
+  to that picker's `None` sentinel instead. Not a reproduced user-facing
+  bug (the dropdowns only ever set a value they generated themselves),
+  but a real data-boundary tightening ahead of any future path that could
+  set these some other way.
+- **`validate_tones()` no longer crashes on a malformed entry.** A
+  hand-edited `plume_config.json` conversation preset whose `"tones"`
+  list held a stray list or dict — `{"tones": ["Warm", ["nested"]]}` —
+  raised an uncaught `TypeError` from the set-membership check
+  (`item not in allowed`), crashing config load and the app with it. The
+  loop now checks `isinstance(item, str)` first, so a malformed entry is
+  dropped like any other unknown value rather than raising. Order/cap/
+  conflict-resolution semantics are otherwise unchanged from v1.24.
+- **Tone instruction now also guards against uninvited embellishment:**
+  appended to the existing background-only register clause — "Preserve
+  negation, quantities, attribution, uncertainty and obligations. Do not
+  introduce reassurance, gratitude, apologies, availability or agreement
+  that the source does not express. Source slang is content to translate
+  faithfully, not permission to invent further slang.", applied to the
+  main translation and all five alternatives alike. This is a prompt-text
+  change, not a deterministic one: it constrains generation but cannot
+  prove the absence of hallucination, and — per notes_014's own
+  acceptance criteria — still wants a human bilingual calibration pass
+  (negation, quantities, humour, uncertain deadlines) independently of
+  this session's syntax/unit verification.
+- 6 new/changed unit tests (unrecognised label, non-string input and a
+  bare raw term for the raw-value boundary on both pickers; a stray
+  list/dict tone member no longer raising; the new instruction clause's
+  presence). One pre-existing test that asserted the old pass-through
+  behaviour was updated to assert the new sentinel-fallback contract
+  instead. No live screenshot pass for this version: both fixes tighten
+  an internal fallback path the real dropdowns cannot reach (they only
+  ever set a value they generated themselves), so a click-through would
+  exercise unchanged UI rather than the actual change — the existing
+  round-trip tests (`test_raw_value_reverses_display` for both pickers)
+  already cover the path real clicks do take. Full suite: 312 tests pass.
+
 ---
 
 ### Notes on sequencing
