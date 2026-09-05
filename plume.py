@@ -2513,9 +2513,12 @@ if GUI_AVAILABLE:
     class HistoryDialog(ctk.CTkToplevel):
         """Browse, favourite and delete locally stored translation history.
 
-        Entries are loaded fresh from disk on open and re-persisted after each
-        mutation, so this window and the automatic per-translation save in
-        PlumeApp never need to share in-memory state.
+        This window and PlumeApp's own per-translation/favourite saves are
+        two independent writers of the same file. Every mutation here
+        reloads from disk immediately beforehand (`_reload_entries`), so a
+        save made from the main window while this dialog is open is never
+        clobbered by a stale in-memory snapshot on the next Favourite,
+        Delete or Clear click.
         """
 
         def __init__(self, master):
@@ -2635,15 +2638,23 @@ if GUI_AVAILABLE:
             self.clipboard_clear()
             self.clipboard_append(text)
 
+        def _reload_entries(self):
+            """Read the file afresh so a concurrent main-window save is not
+            overwritten by this dialog's older in-memory snapshot."""
+            self._entries = load_history()
+
         def _toggle_favourite(self, entry_id):
+            self._reload_entries()
             current = next((e for e in self._entries if e.get("id") == entry_id), None)
             if current is None:
+                self._refresh_list()
                 return
             set_favourite(self._entries, entry_id, not current.get("favourite"))
             self._persist()
             self._refresh_list()
 
         def _delete_entry(self, entry_id):
+            self._reload_entries()
             self._entries = remove_history_entry(self._entries, entry_id)
             self._persist()
             self._refresh_list()
@@ -2659,6 +2670,7 @@ if GUI_AVAILABLE:
                 "Favourited entries are kept.",
             ):
                 return
+            self._reload_entries()
             self._entries = clear_history(self._entries)
             self._persist()
             self._refresh_list()
@@ -2671,6 +2683,7 @@ if GUI_AVAILABLE:
             Local file only, written via tkinter.filedialog; nothing is sent
             anywhere.
             """
+            self._reload_entries()
             favourites = [e for e in self._entries if e.get("favourite")]
             if not favourites:
                 messagebox.showinfo(
@@ -3545,7 +3558,20 @@ if GUI_AVAILABLE:
             No network request is made: _render_result already accepts any
             dict with "main_translation" and "variations", which is exactly
             the shape make_history_entry() produces.
+
+            Reopen is a user-visible replacement of the working result, the
+            same class of action as Clear: an in-flight translation or
+            speech worker must not be allowed to land on top of it. Bump
+            both request ids and stop any playback before touching widgets,
+            without calling _clear()/_clear_results() itself, which would
+            wipe the input and cards this method is about to fill.
             """
+            self._request_id += 1
+            self._speech_request_id += 1
+            self._stop_speech()
+            self.translate_btn.configure(state="normal", text="Translate")
+            self.correct_btn.configure(state="normal", text="Correct English")
+            self.reply_btn.configure(state="normal")
             self.input_box.delete("1.0", "end")
             self.input_box.insert("1.0", entry.get("source_text", ""))
             self.situation_entry.delete(0, "end")

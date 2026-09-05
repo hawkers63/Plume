@@ -531,6 +531,32 @@ schema impact beyond one constants tuple:
   text and the `HTML Format` payload round-tripped correctly, with
   .NET's own independent reader confirming the byte offsets were exact.
 
+## v1.22 — History race + stale Reopen (notes_012 C1, C2)
+
+- **C1, History window clobbers concurrent saves:** `HistoryDialog` loaded
+  `self._entries` once at construction and every mutation (`_toggle_favourite`,
+  `_delete_entry`, `_clear_history`, `_export_favourites`) wrote that same
+  in-memory snapshot back via `_persist`. A translation saved or favourited
+  from the main window while the dialog was open, followed by any mutation
+  in the dialog, silently discarded the main window's write — the exact
+  "favourited items must not vanish" invariant the class docstring claimed
+  to preserve. Fixed with `_reload_entries()`, called at the top of every
+  mutation before touching `self._entries`, so this dialog and PlumeApp's
+  own writers can never share a stale snapshot.
+- **C2, Reopen doesn't supersede in-flight work:** `_reopen_history_entry`
+  filled the input/result from a saved entry but never bumped `_request_id`/
+  `_speech_request_id` or reset the Translate/Correct/Reply lock, unlike
+  `_clear` and window-close. A translate or Speak request started before
+  Reopen could complete afterwards and silently overwrite the reopened
+  result. Fixed by giving Reopen the same opening `_clear()` uses (bump
+  both ids, stop speech, re-enable the three buttons) without wiping the
+  input/cards it is about to fill.
+- Verified with a script that drives the real `PlumeApp`/`HistoryDialog`
+  classes (not mocks) against an isolated temp config directory: a
+  concurrent main-window save survives a stale-dialog favourite click, and
+  a request issued before Reopen is correctly dropped as stale when it
+  completes afterwards. Full suite: 213 tests pass.
+
 ---
 
 ### Notes on sequencing
