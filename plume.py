@@ -2807,6 +2807,7 @@ if GUI_AVAILABLE:
             self._current_favourited = False
             self._result_source_text = ""
             self._result_situation = ""
+            self._pending_correction_notes = []
             self._tray_icon = None
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
@@ -3732,8 +3733,6 @@ if GUI_AVAILABLE:
             text = (text or "").strip()
             if not text:
                 return
-            self._speech_request_id += 1
-            speech_request_id = self._speech_request_id
             snapshot = dict(self.config_data)
             slow = bool(self.slow_speech_var.get())
             if not snapshot.get("elevenlabs_api_key"):
@@ -3759,6 +3758,12 @@ if GUI_AVAILABLE:
                     # Best-effort; the notice may reappear next time, which is
                     # safe and matches the equivalent Claude privacy flow.
                     pass
+
+            # Bumped only once Speak is actually going ahead (M2): a missing
+            # key or a declined privacy notice must not invalidate a
+            # previous, still-in-flight TTS request via this same counter.
+            self._speech_request_id += 1
+            speech_request_id = self._speech_request_id
 
             def worker():
                 try:
@@ -3808,13 +3813,20 @@ if GUI_AVAILABLE:
                 pass
 
         def _cleanup_tts_file(self):
-            """Remove Plume's temporary TTS file if one is currently tracked."""
+            """Remove Plume's temporary TTS file if one is currently tracked.
+
+            If the file is still locked (Windows can briefly hold the
+            handle for a beat after SND_PURGE), the path is kept rather
+            than forgotten, so the next Speak/Clear/close gets another
+            chance to remove it instead of leaking it permanently in
+            %TEMP% (M6).
+            """
             if not self._tts_temp_path:
                 return
             try:
                 os.remove(self._tts_temp_path)
             except OSError:
-                pass
+                return
             self._tts_temp_path = None
 
         def _play_wav_bytes(self, wav_bytes):
@@ -3994,6 +4006,11 @@ if GUI_AVAILABLE:
             self.translate_btn.configure(state="normal", text="Translate")
             self.correct_btn.configure(state="normal", text="Correct English")
             self.reply_btn.configure(state="normal")
+            # _correct_then_translate disables this alongside the other three;
+            # restore it here too, matching _deliver's equivalent line, so a
+            # failed correction doesn't leave it dead until the next
+            # successful translate (M4).
+            self.use_as_input_btn.configure(state="normal" if self._current_main else "disabled")
             kind, data = payload
             if kind == "error":
                 self.advisory.configure(text=data)
@@ -4014,10 +4031,14 @@ if GUI_AVAILABLE:
             self.input_box.delete("1.0", "end")
             self.input_box.insert("1.0", corrected)
             self._on_input_change()
-            notes = data.get("notes") or []
-            if notes:
-                self.advisory.configure(text="  •  ".join(notes))
-                self.advisory.grid()
+            # Hand any correction notes (e.g. a preserved name) to the
+            # translate this triggers next, rather than showing them now:
+            # _translate() immediately hides the advisory strip on its own
+            # next line, so displaying them here would just be overwritten
+            # a moment later (M3). _translate() captures this list itself
+            # as soon as it starts its own request, so a later, unrelated
+            # translate can never pick up a stale correction's notes.
+            self._pending_correction_notes = list(data.get("notes") or [])
             # Proceed to French. Pin the direction so Auto-detect cannot bounce
             # a short corrected phrase into French -> English.
             if self.direction_var.get() != DIR_EN_FR:
@@ -4026,6 +4047,14 @@ if GUI_AVAILABLE:
             self._translate()
 
         def _translate(self):
+            # Captured (and cleared) unconditionally as soon as _translate is
+            # called, however it returns: a correction's notes must not
+            # linger in shared state for some later, unrelated translate to
+            # pick up if this particular call turns out to be refused below
+            # (M3). Used only if a worker actually gets dispatched.
+            correction_notes = self._pending_correction_notes
+            self._pending_correction_notes = []
+
             # Refuse to start a second request while one is in flight. The
             # Translate button is disabled during a run; Ctrl+Enter would
             # otherwise still reach this method and start a duplicate worker.
@@ -4096,7 +4125,7 @@ if GUI_AVAILABLE:
 
                 def _deliver_safe():
                     try:
-                        self._deliver(rid, text, situation, payload)
+                        self._deliver(rid, text, situation, payload, correction_notes)
                     except tk.TclError:  # pragma: no cover - window closed
                         pass
 
@@ -4109,7 +4138,7 @@ if GUI_AVAILABLE:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def _deliver(self, rid, snap_text, situation, payload):
+        def _deliver(self, rid, snap_text, situation, payload, correction_notes=None):
             # The window may have been destroyed between scheduling and running.
             try:
                 if not self.winfo_exists():
@@ -4138,14 +4167,22 @@ if GUI_AVAILABLE:
             self._show_result_advisories(data)
             self._save_to_history(snap_text, situation, data)
 
+            extra_notes = []
             # If the input changed since this request began, keep the result but
             # flag it clearly rather than overwriting the source text.
             if self._input_text() != snap_text:
-                warning = (
+                extra_notes.append(
                     "Generated for an earlier message. Your input has changed "
                     "since this translation was requested."
                 )
-                self._show_result_advisories(data, extra_notes=[warning])
+            # Correct English's own preservation notes (M3), carried through
+            # from _translate() rather than shown earlier, where they would
+            # have been immediately overwritten by this same method's first
+            # (extra_notes-less) _show_result_advisories call above.
+            if correction_notes:
+                extra_notes.extend(correction_notes)
+            if extra_notes:
+                self._show_result_advisories(data, extra_notes=extra_notes)
             self._refresh_status(state="ready")
 
         def _build_variation_card(self, index, variation):
@@ -4192,6 +4229,10 @@ if GUI_AVAILABLE:
             return card
 
         def _render_result(self, result):
+            # A new result replaces what's on screen; any audio still
+            # reading the previous one aloud must not keep playing over it
+            # (M7). _clear_results already does this for the Clear path.
+            self._stop_speech()
             self._current_main = result["main_translation"]
             self._current_result = result
             self._refresh_primary_display()

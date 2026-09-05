@@ -638,6 +638,51 @@ schema impact beyond one constants tuple:
   leaving memory unchanged, and the exact M1 reproduction (Settings held
   open across a preset save) now surviving. Full suite: 225 tests pass.
 
+## v1.25 — Speak/TTS and correction-flow reliability (notes_012 M2, M3, M4, M6, M7, M12)
+
+- **M2/M12, Speak could invalidate a previous in-flight request without
+  actually starting a new one:** `_speak` bumped `_speech_request_id`
+  *before* the missing-API-key and privacy-decline early returns. Clicking
+  Speak with no key configured, or declining the privacy notice, still
+  invalidated whatever TTS request was already playing, silently dropping
+  its audio on delivery. The bump now happens only once Speak is actually
+  going ahead.
+- **M3, correction preservation notes were shown then immediately hidden:**
+  `_deliver_correction` displayed `notes` (e.g. "kept 'Alex' as-is") on the
+  advisory strip, then called `_translate()`, whose very next line hides
+  the advisory unconditionally — so a failed keep-as-is round-trip during
+  Correct English was never actually seen; auto-translate proceeded
+  silently. Fixed by having `_translate()` capture (and clear)
+  `self._pending_correction_notes` as the very first thing it does,
+  regardless of which path it takes, and carrying that snapshot through to
+  `_deliver`, which now merges it into the final result's advisory instead
+  of the notes being overwritten. Capturing it per-call (not read later
+  from shared state) also means a later, unrelated translate can never
+  pick up notes left over from an earlier one that got superseded.
+- **M4, a failed correction left "Use as input" dead:** `_correct_then_translate`
+  disables `use_as_input_btn` alongside three other buttons; `_deliver_correction`'s
+  error path restored the other three but not this one, matching `_deliver`'s
+  own equivalent line, so a failed correction left the button disabled
+  until the next successful translate even though the previous result was
+  still on screen. Fixed to match `_deliver`.
+- **M6, a locked TTS temp file was forgotten, not retried:** `_cleanup_tts_file`
+  cleared `self._tts_temp_path` even when `os.remove` failed (Windows can
+  briefly hold the handle right after `SND_PURGE`), leaking the WAV file
+  in `%TEMP%` permanently rather than trying again on the next Speak/Clear/close.
+  Now the path is only cleared on a successful remove.
+- **M7, a new result didn't stop the previous one's audio:** Speaking an
+  alternative, then starting a new translation, left the old audio playing
+  over the new result. `_render_result` now calls `_stop_speech()` first,
+  matching what `_clear_results` already did for the Clear path.
+- Verified live against the real `PlumeApp` class (isolated temp config
+  dir; `correct_english`/`translate` mocked to avoid network calls;
+  background workers run synchronously via a fake `Thread` to sidestep
+  this Tcl/Tk build's "main thread not in main loop" restriction on
+  cross-thread Tk calls when no `mainloop()` is running — a scripted-test
+  artefact, not a change to production threading). Full suite: 225 tests
+  pass (no new pure-function unit tests this version; these are all GUI
+  lifecycle fixes, covered by the live-code script instead).
+
 ---
 
 ### Notes on sequencing
