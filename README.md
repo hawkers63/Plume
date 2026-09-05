@@ -33,14 +33,21 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   in Settings extends this to your own names or terms (up to 20, 40
   characters each), matched longest-first so e.g. "Marie-Claire" is not
   swallowed by "Marie".
+- A **Glossary** in Settings (up to 20 pairs) for terms that *should* be
+  translated, just consistently — e.g. always "délai" for "deadline" —
+  unlike Keep as-is, which never translates a term at all. A background-
+  only prompt hint, same as tones/situation: the source text still wins.
 - A copy button on every result, with a prominent **Copy main translation**;
   alternatives can be promoted with **Use this**, and the current result can
   be re-sent as new input with **Use as input**.
-- Two optional, independent **finishing touches** appended only at copy
+- Three optional, independent **finishing touches** appended only at copy
   time — never sent to the model, so the translation itself stays faithful:
-  an **Emotes & Reactions** picker (`:)` `:p` `;)` `xD` `mdr` `ptdr` `jpp`)
-  and a separate **Casual sign-off** picker (`tkt`, `grave`) labelled as
-  changing register and meaning, not just tone.
+  an **Emotes & Reactions** picker (`:)` `:p` `;)` `xD` `mdr` `ptdr` `jpp`),
+  a **Casual sign-off** picker (`tkt`, `grave`) labelled as changing
+  register and meaning, not just tone, and an **MMORPG chat** picker
+  (`dispo`, `rez`, `bj`, `osef`, `oklm`, `aïe`) for online-gaming chat.
+  Both slang pickers show an English gloss in brackets (e.g. "tkt (don't
+  worry)") — only the term itself is ever appended, never the gloss.
 - **Copy source** and **Situation presets** (Close friend, Formal work
   email, Neighbour, Appointment, Dating/chat) for faster back-and-forth.
 - **Open file…** imports a `.txt` or `.md` file (up to 2 MiB, UTF-8 or

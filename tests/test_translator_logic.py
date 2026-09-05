@@ -305,6 +305,90 @@ class TestPlaceholders(unittest.TestCase):
         self.assertEqual(got, ["Kes", "Hawkeye"])
 
 
+class TestTranslationGlossary(unittest.TestCase):
+    def test_accepts_list_of_dicts(self):
+        got = plume.normalise_glossary_entries(
+            [{"term": "deadline", "translation": "délai"}]
+        )
+        self.assertEqual(got, [{"term": "deadline", "translation": "délai"}])
+
+    def test_parses_settings_textbox_format(self):
+        got = plume.normalise_glossary_entries("deadline = délai\nmeeting = réunion")
+        self.assertEqual(
+            got,
+            [
+                {"term": "deadline", "translation": "délai"},
+                {"term": "meeting", "translation": "réunion"},
+            ],
+        )
+
+    def test_line_without_equals_is_skipped(self):
+        got = plume.normalise_glossary_entries("deadline = délai\njust some text\n")
+        self.assertEqual(got, [{"term": "deadline", "translation": "délai"}])
+
+    def test_blank_translation_or_term_is_dropped(self):
+        got = plume.normalise_glossary_entries("deadline =\n= délai\nok = fine")
+        self.assertEqual(got, [{"term": "ok", "translation": "fine"}])
+
+    def test_dedupes_by_term_case_insensitively_first_wins(self):
+        got = plume.normalise_glossary_entries(
+            [
+                {"term": "deadline", "translation": "délai"},
+                {"term": "Deadline", "translation": "date limite"},
+            ]
+        )
+        self.assertEqual(got, [{"term": "deadline", "translation": "délai"}])
+
+    def test_oversized_entry_dropped(self):
+        got = plume.normalise_glossary_entries(
+            [{"term": "x" * 41, "translation": "y"}]
+        )
+        self.assertEqual(got, [])
+
+    def test_caps_at_max_entries(self):
+        many = [{"term": "t{}".format(i), "translation": "x{}".format(i)} for i in range(30)]
+        got = plume.normalise_glossary_entries(many)
+        self.assertEqual(len(got), plume.GLOSSARY_MAX_ENTRIES)
+
+    def test_rejects_non_list_non_string(self):
+        self.assertEqual(plume.normalise_glossary_entries(42), [])
+
+    def test_entries_to_text_round_trips(self):
+        entries = [{"term": "deadline", "translation": "délai"}]
+        text = plume.glossary_entries_to_text(entries)
+        self.assertEqual(plume.normalise_glossary_entries(text), entries)
+
+    def test_instruction_omitted_when_empty(self):
+        self.assertEqual(plume.build_glossary_instruction([]), "")
+        self.assertEqual(plume.build_glossary_instruction(None), "")
+
+    def test_instruction_is_background_only_and_names_the_pair(self):
+        text = plume.build_glossary_instruction(
+            [{"term": "deadline", "translation": "délai"}]
+        )
+        self.assertIn("background only", text)
+        self.assertIn("deadline", text)
+        self.assertIn("délai", text)
+        self.assertIn("source text's own meaning always wins", text.lower())
+
+    def test_prompt_omits_glossary_clause_when_empty(self):
+        prompt = plume.build_translation_prompt(glossary=[])
+        self.assertNotIn("Preferred translations", prompt)
+
+    def test_prompt_includes_glossary_clause(self):
+        prompt = plume.build_translation_prompt(
+            glossary=[{"term": "deadline", "translation": "délai"}]
+        )
+        self.assertIn("Preferred translations", prompt)
+        self.assertIn("deadline", prompt)
+        self.assertIn("délai", prompt)
+
+    def test_prompt_defaults_to_no_glossary_clause(self):
+        self.assertEqual(
+            plume.build_translation_prompt(), plume.build_translation_prompt(glossary=None)
+        )
+
+
 class TestPromptConstruction(unittest.TestCase):
     def test_prompt_mentions_key_constraints(self):
         prompt = plume.build_translation_prompt(
@@ -635,6 +719,22 @@ class TestConfigCoercion(unittest.TestCase):
             {"keep_as_is_terms": ["Kes", "kes", "  ", "A" * 41]}
         )
         self.assertEqual(config["keep_as_is_terms"], ["Kes"])
+
+    def test_translation_glossary_default_empty(self):
+        config, _ = self._load_with({})
+        self.assertEqual(config["translation_glossary"], [])
+
+    def test_translation_glossary_normalised_on_load(self):
+        config, _ = self._load_with({
+            "translation_glossary": [
+                {"term": "deadline", "translation": "délai"},
+                {"not": "a valid entry"},
+            ]
+        })
+        self.assertEqual(
+            config["translation_glossary"],
+            [{"term": "deadline", "translation": "délai"}],
+        )
 
     def test_conversation_presets_default_empty(self):
         config, _ = self._load_with({})
@@ -1468,6 +1568,85 @@ class TestCasualSignoff(unittest.TestCase):
             plume.append_finishing_touch("On se voit demain", composed),
             "On se voit demain :) tkt",
         )
+
+    def test_display_shows_bracketed_gloss(self):
+        self.assertEqual(plume.casual_signoff_display("tkt"), "tkt (don't worry)")
+        self.assertEqual(
+            plume.casual_signoff_display("grave"), "grave (seriously / totally)"
+        )
+
+    def test_display_of_none_has_no_bracket(self):
+        self.assertEqual(
+            plume.casual_signoff_display(plume.CASUAL_SIGNOFF_NONE), "None"
+        )
+
+    def test_raw_value_reverses_display(self):
+        for term in plume.CASUAL_SIGNOFFS:
+            display = plume.casual_signoff_display(term)
+            self.assertEqual(plume.casual_signoff_raw_value(display), term)
+
+    def test_raw_value_falls_back_to_input_if_unrecognised(self):
+        self.assertEqual(plume.casual_signoff_raw_value("not a real label"), "not a real label")
+
+    def test_only_the_raw_term_is_composed_not_the_gloss(self):
+        display = plume.casual_signoff_display("tkt")
+        composed = plume.compose_finishing_touch(
+            plume.FINISHING_TOUCH_NONE, plume.casual_signoff_raw_value(display)
+        )
+        self.assertEqual(composed, "tkt")
+        self.assertNotIn("don't worry", composed)
+
+
+class TestMmorpgTerms(unittest.TestCase):
+    def test_catalogue_starts_with_none_and_holds_curated_terms(self):
+        self.assertEqual(plume.MMORPG_TERMS[0], plume.MMORPG_TERM_NONE)
+        for term in ("dispo", "rez", "bj", "osef", "oklm", "aïe"):
+            self.assertIn(term, plume.MMORPG_TERMS)
+
+    def test_catalogue_excludes_domain_nouns_and_standalone_replies(self):
+        # Same curation bar as Casual sign-off: gaming NOUNS describing
+        # gear/content (not an appendable mood tag) and standalone replies/
+        # comments about someone else's play stay out.
+        banned = (
+            "le stuff", "l'aggro", "les trash", "HL", "dj", "voc", "abo",
+            "kikimeter", "bg", "rede", "wé", "ouai",
+        )
+        for term in banned:
+            self.assertNotIn(term, plume.MMORPG_TERMS)
+
+    def test_catalogue_disjoint_from_other_pickers(self):
+        mmorpg = set(plume.MMORPG_TERMS) - {plume.MMORPG_TERM_NONE}
+        signoffs = set(plume.CASUAL_SIGNOFFS) - {plume.CASUAL_SIGNOFF_NONE}
+        emotes = set(plume.FINISHING_TOUCHES) - {plume.FINISHING_TOUCH_NONE}
+        self.assertFalse(mmorpg & signoffs)
+        self.assertFalse(mmorpg & emotes)
+
+    def test_display_shows_bracketed_gloss(self):
+        self.assertEqual(plume.mmorpg_term_display("rez"), "rez (resurrect me)")
+
+    def test_raw_value_reverses_display(self):
+        for term in plume.MMORPG_TERMS:
+            display = plume.mmorpg_term_display(term)
+            self.assertEqual(plume.mmorpg_term_raw_value(display), term)
+
+    def test_compose_joins_all_three_pickers(self):
+        composed = plume.compose_finishing_touch(":)", "tkt", "rez")
+        self.assertEqual(composed, ":) tkt rez")
+
+    def test_compose_mmorpg_only(self):
+        composed = plume.compose_finishing_touch(
+            plume.FINISHING_TOUCH_NONE, plume.CASUAL_SIGNOFF_NONE, "dispo"
+        )
+        self.assertEqual(composed, "dispo")
+
+    def test_compose_mmorpg_none_is_omitted(self):
+        composed = plume.compose_finishing_touch(":)", "tkt", plume.MMORPG_TERM_NONE)
+        self.assertEqual(composed, ":) tkt")
+
+    def test_compose_defaults_mmorpg_to_none_for_backward_compatibility(self):
+        # v1.14-era two-argument call sites (and any test written against
+        # that signature) must still work unchanged.
+        self.assertEqual(plume.compose_finishing_touch(":)", "tkt"), ":) tkt")
 
 
 class TestUseAsMain(unittest.TestCase):

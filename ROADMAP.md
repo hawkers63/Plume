@@ -883,6 +883,52 @@ schema impact beyond one constants tuple:
   distinct from anything the app itself does wrong). Full suite: 259
   tests pass (no logic changed, layout-only version).
 
+## v1.31 — MMORPG chat picker, glossed slang, Translation Glossary
+
+- **MMORPG chat**, a third append-tag picker next to Emotes and Casual
+  sign-off, for online-gaming chat: `dispo`, `rez`, `bj`, `osef`, `oklm`,
+  `aïe`. Sourced from a user-supplied MMORPG slang reference and curated
+  to the same bar v1.14 already applied to Casual sign-off: only terms
+  that work as a general appendable tag regardless of the rest of the
+  sentence. Excluded on that basis: domain nouns describing gear/content
+  rather than a mood tag (`le stuff`, `l'aggro`, `les trash`, `HL`, `dj`,
+  `voc`, `abo`, `kikimeter`) and callouts that are a complete standalone
+  message or a comment on someone *else's* play rather than an appended
+  flavour word (`bg`, `rede`, `ouai`/`wé`). `compose_finishing_touch` now
+  joins all three pickers; existing two-argument callers are unaffected
+  (the third parameter defaults to `None`).
+- **Bracketed glosses on Casual sign-off and MMORPG chat:** each option
+  now shows a short English meaning in the dropdown, e.g. "tkt (don't
+  worry)" or "rez (resurrect me)". Only the raw term before the bracket
+  is ever appended to the copied/spoken text or reaches the model — the
+  gloss is a same-session, English-only reading aid
+  (`casual_signoff_display`/`mmorpg_term_display` for the label,
+  `..._raw_value` to recover the term).
+- **Translation Glossary**, a new Settings feature distinct from Keep-as-is
+  (v1.10): a Keep-as-is term is never translated at all (a name, a
+  handle), whereas a glossary term should still be translated, just
+  *consistently* — e.g. always "délai" for "deadline" rather than
+  whichever equally valid alternative the model picks each time. Up to 20
+  `term = translation` pairs (mirroring Keep-as-is's own textbox
+  convention and 20-entry/40-character limits), normalised by
+  `normalise_glossary_entries` (accepts the persisted list-of-dicts shape
+  or the Settings textbox's line format) and turned into a background-only
+  prompt clause by `build_glossary_instruction` — appended to the system
+  prompt after the writing-profile clause, explicitly non-authoritative:
+  it must not change the JSON shape, and the source text's own meaning
+  always wins. New `translation_glossary` config key, present in
+  `DEFAULT_CONFIG` and `plume_config.example.json`.
+- 33 new unit tests (gloss display/round-trip for both pickers, the
+  three-way `compose_finishing_touch`, glossary normalisation from both
+  input shapes, prompt-clause presence/absence, config load-time
+  coercion). Verified live against the real `PlumeApp`/`SettingsDialog`
+  classes: the composed touch uses only raw terms even when the
+  dropdown shows a gloss, Clear/Reopen reset both pickers, a glossary
+  saved through Settings persists and reopens correctly, and
+  `translate()` threads the live glossary into the prompt — plus
+  screenshots of the real running app (main window and the scrolled
+  Settings dialog). Full suite: 289 tests pass.
+
 ---
 
 ### Notes on sequencing

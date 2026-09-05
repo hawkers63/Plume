@@ -196,8 +196,80 @@ FINISHING_TOUCHES = (
 # abbreviation, a standalone reply, a noun, or carries a harsher or more
 # culturally loaded connotation (e.g. "boloss", "keuf", "wesh") that has no
 # place as an optional one-click append.
+#
+# Each entry pairs the raw term (what is actually appended to the copied
+# text) with a short English gloss shown only in the dropdown label (v1.31),
+# e.g. "tkt (don't worry)" — so the term itself, never the gloss, reaches
+# the clipboard/model.
 CASUAL_SIGNOFF_NONE = "None"
-CASUAL_SIGNOFFS = (CASUAL_SIGNOFF_NONE, "tkt", "grave")
+CASUAL_SIGNOFF_CATALOGUE = (
+    (CASUAL_SIGNOFF_NONE, None),
+    ("tkt", "don't worry"),
+    ("grave", "seriously / totally"),
+)
+CASUAL_SIGNOFFS = tuple(term for term, _gloss in CASUAL_SIGNOFF_CATALOGUE)
+
+# --- MMORPG chat terms (v1.31) ----------------------------------------------
+# A third, separately curated append-tag picker, next to Emotes and Casual
+# sign-off, for online-gaming chat — sourced from a user-supplied MMORPG
+# slang reference. Held to the same bar Casual sign-off already applies:
+# only terms that work as a general appendable tag regardless of the rest
+# of the sentence. Excluded, and why:
+#   - domain nouns describing gear/content, not a mood/attitude tag
+#     (le stuff, l'aggro, les trash, HL, dj, voc, abo, kikimeter);
+#   - a full standalone callout more than an appended flavour word, or a
+#     comment aimed at someone else's play rather than your own message
+#     (bg "nice one", rede "I'm back", ouai/wé "yeah").
+MMORPG_TERM_NONE = "None"
+MMORPG_TERM_CATALOGUE = (
+    (MMORPG_TERM_NONE, None),
+    ("dispo", "available"),
+    ("rez", "resurrect me"),
+    ("bj", "well played"),
+    ("osef", "whatever / don't care"),
+    ("oklm", "chill / no stress"),
+    ("aïe", "ouch"),
+)
+MMORPG_TERMS = tuple(term for term, _gloss in MMORPG_TERM_CATALOGUE)
+
+
+def _glossed_display(term: str, catalogue) -> str:
+    """Dropdown label for *term* in a (raw, gloss) *catalogue*.
+
+    Shared by Casual sign-off and MMORPG chat: e.g. "tkt (don't worry)".
+    Falls back to the bare term for anything not found in the catalogue.
+    """
+    for raw, gloss in catalogue:
+        if raw == term:
+            return term if gloss is None else "{} ({})".format(term, gloss)
+    return term
+
+
+def _glossed_raw_lookup(catalogue) -> dict:
+    """Reverse of _glossed_display: dropdown label -> raw term."""
+    return {_glossed_display(raw, catalogue): raw for raw, _gloss in catalogue}
+
+
+_CASUAL_SIGNOFF_DISPLAY_TO_RAW = _glossed_raw_lookup(CASUAL_SIGNOFF_CATALOGUE)
+_MMORPG_TERM_DISPLAY_TO_RAW = _glossed_raw_lookup(MMORPG_TERM_CATALOGUE)
+
+
+def casual_signoff_display(term: str) -> str:
+    return _glossed_display(term, CASUAL_SIGNOFF_CATALOGUE)
+
+
+def casual_signoff_raw_value(display: str) -> str:
+    """Reverse of casual_signoff_display; the input unchanged if unrecognised."""
+    return _CASUAL_SIGNOFF_DISPLAY_TO_RAW.get(display, display)
+
+
+def mmorpg_term_display(term: str) -> str:
+    return _glossed_display(term, MMORPG_TERM_CATALOGUE)
+
+
+def mmorpg_term_raw_value(display: str) -> str:
+    """Reverse of mmorpg_term_display; the input unchanged if unrecognised."""
+    return _MMORPG_TERM_DISPLAY_TO_RAW.get(display, display)
 
 # --- Register tones (v1.20, notes_011 Feature E) ----------------------------
 # Background register hints for the translator — the same class of
@@ -241,6 +313,15 @@ MAX_NOTE_CHARS = 240
 MAX_NOTES = 6
 KEEP_AS_IS_MAX_TERMS = 20
 KEEP_AS_IS_MAX_CHARS = 40
+
+# --- Translation glossary (v1.31) -------------------------------------------
+# Distinct from Keep-as-is above: a Keep-as-is term is never translated at
+# all (a name, a handle). A glossary term SHOULD still be translated, just
+# consistently, using a paired preferred rendering (e.g. always "délai" for
+# "deadline") rather than whichever equally valid alternative the model
+# would otherwise pick each time.
+GLOSSARY_MAX_ENTRIES = 20
+GLOSSARY_MAX_TERM_CHARS = 40
 
 # Reading-time estimate (v1.21): a rough guide beside the character count,
 # never a claim of precision.
@@ -340,6 +421,7 @@ DEFAULT_CONFIG = {
     "default_french_recipient_gender": GENDER_FEMININE,
     "protect_placeholders": True,
     "keep_as_is_terms": [],
+    "translation_glossary": [],
     "conversation_presets": [],
     "save_local_history": False,
     "max_input_chars": DEFAULT_MAX_INPUT_CHARS,
@@ -439,6 +521,9 @@ def load_config():
     config["protect_placeholders"] = bool(config.get("protect_placeholders"))
     config["keep_as_is_terms"] = normalise_keep_as_is_terms(
         config.get("keep_as_is_terms")
+    )
+    config["translation_glossary"] = normalise_glossary_entries(
+        config.get("translation_glossary")
     )
     config["conversation_presets"] = normalise_conversation_presets(
         config.get("conversation_presets")
@@ -957,6 +1042,82 @@ def normalise_keep_as_is_terms(value) -> list:
     return out
 
 
+def normalise_glossary_entries(value) -> list:
+    """Return a short, de-duplicated list of {"term", "translation"} pairs.
+
+    Accepts a list of dicts (the persisted config shape) or a string in the
+    Settings textbox's "source = translation" per-line format, so a hand-
+    edited config and the Settings box share one sanitiser — the same
+    convention normalise_keep_as_is_terms already uses. A line without "="
+    is skipped. Empty, oversized or malformed entries and case-insensitive
+    duplicate source terms are dropped; the first occurrence wins.
+    """
+    if isinstance(value, str):
+        parsed = []
+        for line in value.splitlines():
+            if "=" not in line:
+                continue
+            term, _, translation = line.partition("=")
+            parsed.append({"term": term.strip(), "translation": translation.strip()})
+        value = parsed
+    if not isinstance(value, list):
+        return []
+    seen = set()
+    out = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        term = str(item.get("term") or "").strip()
+        translation = str(item.get("translation") or "").strip()
+        if not term or not translation:
+            continue
+        if len(term) > GLOSSARY_MAX_TERM_CHARS or len(translation) > GLOSSARY_MAX_TERM_CHARS:
+            continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"term": term, "translation": translation})
+        if len(out) >= GLOSSARY_MAX_ENTRIES:
+            break
+    return out
+
+
+def glossary_entries_to_text(entries) -> str:
+    """Render glossary entries back to the Settings textbox's own format."""
+    return "\n".join(
+        "{} = {}".format(e["term"], e["translation"]) for e in entries
+    )
+
+
+def build_glossary_instruction(glossary) -> str:
+    """Background-only preferred-translation clause, or "" when empty.
+
+    Distinct from Keep-as-is (v1.10): a Keep-as-is term is never translated
+    at all, whereas a glossary term should still be translated, just
+    consistently, using the paired preferred rendering rather than an
+    otherwise equally valid alternative. Like tones/situation, this never
+    outranks the source text's own meaning.
+    """
+    entries = normalise_glossary_entries(glossary)
+    if not entries:
+        return ""
+    pairs = "; ".join(
+        "\"{}\" -> \"{}\"".format(e["term"], e["translation"]) for e in entries
+    )
+    return (
+        "\n\nPreferred translations (background only): where the source "
+        "contains one of these terms, translate it using the paired "
+        "preferred rendering for consistency, rather than an otherwise "
+        "equally valid alternative: " + pairs + ". Apply this only to word "
+        "choice; it must not change the required JSON output shape, add or "
+        "remove fields, or override the requested direction. If a preferred "
+        "rendering does not fit the sentence grammatically, adapt its form "
+        "naturally rather than forcing it verbatim. The source text's own "
+        "meaning always wins."
+    )
+
+
 def normalise_conversation_preset(entry) -> dict | None:
     """Return a clean conversation preset, or None if it cannot be salvaged.
 
@@ -1323,7 +1484,8 @@ def build_translation_prompt(direction=DIR_AUTO,
                              speaker_gender=GENDER_AVOID,
                              recipient_gender=GENDER_AVOID,
                              tones=(),
-                             writing=None) -> str:
+                             writing=None,
+                             glossary=None) -> str:
     """Build the system prompt. Pure function: same inputs -> same output.
 
     The prompt states the requested direction, the French address form and
@@ -1391,6 +1553,7 @@ def build_translation_prompt(direction=DIR_AUTO,
     tone_instruction = build_tone_instruction(tones)
     tone_clause = "\n\n" + tone_instruction if tone_instruction else ""
     writing_clause = build_writing_profile_instruction(writing)
+    glossary_clause = build_glossary_instruction(glossary)
 
     return (
         "You are a precise conversational translator between English and "
@@ -1413,6 +1576,7 @@ def build_translation_prompt(direction=DIR_AUTO,
         + situation_clause
         + tone_clause
         + writing_clause
+        + glossary_clause
         + "\n\nReturn one primary translation and exactly five distinct, "
         "idiomatic alternatives in the target language. The five alternatives "
         "must keep the source's tone and formality and must differ meaningfully "
@@ -2014,6 +2178,7 @@ def translate(config_snapshot, text, situation=""):
     protect = bool(config_snapshot.get("protect_placeholders", True))
     tones = validate_tones(config_snapshot.get("tones"))
     writing = normalise_writing_profile(config_snapshot.get("writing"))
+    glossary = normalise_glossary_entries(config_snapshot.get("translation_glossary"))
 
     masked, mapping = protect_text(
         text,
@@ -2024,7 +2189,7 @@ def translate(config_snapshot, text, situation=""):
     )
     system_prompt = build_translation_prompt(
         direction, formality, variant, protect, speaker_gender, recipient_gender,
-        tones=tones, writing=writing,
+        tones=tones, writing=writing, glossary=glossary,
     )
     user_envelope = build_user_envelope(
         masked, direction, formality, variant, speaker_gender, recipient_gender,
@@ -2377,14 +2542,15 @@ def append_finishing_touch(text, touch) -> str:
     return "{} {}".format(base, mark)
 
 
-def compose_finishing_touch(emote, signoff) -> str:
-    """Join an emote and a casual sign-off into one space-separated touch.
+def compose_finishing_touch(emote, signoff, mmorpg_term=None) -> str:
+    """Join an emote, a casual sign-off and an MMORPG term into one touch.
 
-    The two pickers (v1.2's Emotes & Reactions and v1.14's Casual sign-off)
-    are independent: either, both, or neither may be selected. Each uses its
-    own "None" sentinel. The composed result feeds straight into
+    The three pickers (v1.2's Emotes & Reactions, v1.14's Casual sign-off,
+    v1.31's MMORPG chat) are independent: any subset may be selected. Each
+    uses its own "None" sentinel. The composed result feeds straight into
     append_finishing_touch(), which already treats an empty string as a
-    no-op, so this is the only new composition logic v1.14 needs.
+    no-op. *mmorpg_term* defaults to None so existing two-argument callers
+    (and any test written against the v1.14 signature) are unaffected.
     """
     parts = []
     emote = (emote or "").strip()
@@ -2393,6 +2559,9 @@ def compose_finishing_touch(emote, signoff) -> str:
     signoff = (signoff or "").strip()
     if signoff and signoff != CASUAL_SIGNOFF_NONE:
         parts.append(signoff)
+    mmorpg_term = (mmorpg_term or "").strip()
+    if mmorpg_term and mmorpg_term != MMORPG_TERM_NONE:
+        parts.append(mmorpg_term)
     return " ".join(parts)
 
 
@@ -2654,6 +2823,18 @@ if GUI_AVAILABLE:
                 self.keep_as_is_box.insert("1.0", "\n".join(existing_terms))
             row += 1
 
+            ctk.CTkLabel(
+                body, text="Glossary (one pair per line: source = preferred "
+                            "translation, e.g. deadline = délai)",
+            ).grid(row=row, column=0, sticky="w", padx=16)
+            row += 1
+            self.glossary_box = ctk.CTkTextbox(body, height=80)
+            self.glossary_box.grid(row=row, column=0, sticky="ew", **pad)
+            existing_glossary = self._config.get("translation_glossary") or []
+            if existing_glossary:
+                self.glossary_box.insert("1.0", glossary_entries_to_text(existing_glossary))
+            row += 1
+
             # Footer: outside the scrollable body, so status feedback and
             # Cancel/Save are always visible without scrolling.
             self.status_label = ctk.CTkLabel(self, text="", text_color="gray70")
@@ -2719,6 +2900,9 @@ if GUI_AVAILABLE:
             self._config["always_on_top"] = bool(self.always_on_top_var.get())
             self._config["keep_as_is_terms"] = normalise_keep_as_is_terms(
                 self.keep_as_is_box.get("1.0", "end")
+            )
+            self._config["translation_glossary"] = normalise_glossary_entries(
+                self.glossary_box.get("1.0", "end")
             )
 
             want_launch = bool(self.launch_var.get()) and TRAY_AVAILABLE
@@ -3379,16 +3563,21 @@ if GUI_AVAILABLE:
             # second entry folded into it: "tkt"/"grave" change register and
             # meaning, unlike a tone-only ":)", so this gets its own label and
             # a plain-language caption rather than sitting unlabelled next to
-            # the safe emote group.
+            # the safe emote group. Each option shows its English gloss in
+            # brackets (v1.31); only the raw term before the bracket is ever
+            # appended to the copied text (see casual_signoff_raw_value).
             signoff_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
             signoff_row.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 4))
             ctk.CTkLabel(signoff_row, text="Casual sign-off").grid(
                 row=0, column=0, sticky="w", padx=(0, 8)
             )
-            self.casual_signoff_var = ctk.StringVar(value=CASUAL_SIGNOFF_NONE)
+            self.casual_signoff_var = ctk.StringVar(
+                value=casual_signoff_display(CASUAL_SIGNOFF_NONE)
+            )
             ctk.CTkOptionMenu(
-                signoff_row, values=list(CASUAL_SIGNOFFS),
-                variable=self.casual_signoff_var, width=110,
+                signoff_row,
+                values=[casual_signoff_display(t) for t in CASUAL_SIGNOFFS],
+                variable=self.casual_signoff_var, width=170,
                 command=self._on_finishing_touch_change,
             ).grid(row=0, column=1, sticky="w")
             ctk.CTkLabel(
@@ -3396,8 +3585,28 @@ if GUI_AVAILABLE:
                 text_color="gray60",
             ).grid(row=0, column=2, sticky="w", padx=(8, 0))
 
+            # MMORPG chat picker (v1.31): a third, independent append-tag
+            # group for online-gaming chat, the same mechanism and gloss
+            # convention as Casual sign-off above.
+            mmorpg_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
+            mmorpg_row.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 4))
+            ctk.CTkLabel(mmorpg_row, text="MMORPG chat").grid(
+                row=0, column=0, sticky="w", padx=(0, 8)
+            )
+            self.mmorpg_var = ctk.StringVar(value=mmorpg_term_display(MMORPG_TERM_NONE))
+            ctk.CTkOptionMenu(
+                mmorpg_row,
+                values=[mmorpg_term_display(t) for t in MMORPG_TERMS],
+                variable=self.mmorpg_var, width=170,
+                command=self._on_finishing_touch_change,
+            ).grid(row=0, column=1, sticky="w")
+            ctk.CTkLabel(
+                mmorpg_row, text="Online-gaming chat term, appended the same way",
+                text_color="gray60",
+            ).grid(row=0, column=2, sticky="w", padx=(8, 0))
+
             main_buttons = ctk.CTkFrame(self.primary_card, fg_color="transparent")
-            main_buttons.grid(row=3, column=0, sticky="ew", padx=12, pady=(4, 12))
+            main_buttons.grid(row=4, column=0, sticky="ew", padx=12, pady=(4, 12))
             main_buttons.grid_columnconfigure(0, weight=1)
             self.copy_main_btn = ctk.CTkButton(
                 main_buttons, text="Copy main translation",
@@ -3426,7 +3635,7 @@ if GUI_AVAILABLE:
             self.use_as_input_btn.grid(row=0, column=3)
 
             favourite_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
-            favourite_row.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
+            favourite_row.grid(row=5, column=0, sticky="ew", padx=12, pady=(0, 12))
             self.favourite_btn = ctk.CTkButton(
                 favourite_row, text="☆ Favourite", width=120,
                 command=self._favourite_current_result,
@@ -3500,9 +3709,15 @@ if GUI_AVAILABLE:
         # --- finishing touch (notes_004) ---------------------------------
 
         def _current_touch(self):
-            """The composed finishing touch: emote + casual sign-off (v1.14)."""
+            """The composed finishing touch: emote + casual sign-off + MMORPG
+            term (v1.14, v1.31). The two glossed pickers store their display
+            label (e.g. "tkt (don't worry)"); only the raw term before the
+            bracket is ever appended to the copied/spoken text.
+            """
             return compose_finishing_touch(
-                self.finishing_touch_var.get(), self.casual_signoff_var.get()
+                self.finishing_touch_var.get(),
+                casual_signoff_raw_value(self.casual_signoff_var.get()),
+                mmorpg_term_raw_value(self.mmorpg_var.get()),
             )
 
         def _refresh_primary_display(self):
@@ -3965,7 +4180,8 @@ if GUI_AVAILABLE:
             self._stop_speech()
             self._cleanup_tts_file()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
-            self.casual_signoff_var.set(CASUAL_SIGNOFF_NONE)
+            self.casual_signoff_var.set(casual_signoff_display(CASUAL_SIGNOFF_NONE))
+            self.mmorpg_var.set(mmorpg_term_display(MMORPG_TERM_NONE))
             self.language_label.configure(text="")
             self._current_main = ""
             self._current_result = None
@@ -4067,7 +4283,8 @@ if GUI_AVAILABLE:
             self._on_input_change()
             self.advisory.grid_remove()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
-            self.casual_signoff_var.set(CASUAL_SIGNOFF_NONE)
+            self.casual_signoff_var.set(casual_signoff_display(CASUAL_SIGNOFF_NONE))
+            self.mmorpg_var.set(mmorpg_term_display(MMORPG_TERM_NONE))
             for tone_var in self.tone_vars:
                 tone_var.set(TONE_NONE)
             # History entries predate the writing profile (v1.29) and carry
