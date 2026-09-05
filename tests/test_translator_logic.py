@@ -460,6 +460,81 @@ class TestTones(unittest.TestCase):
         self.assertIn("Tones: Warm, Precise", env)
 
 
+class TestWritingProfile(unittest.TestCase):
+    def test_defaults_for_none(self):
+        profile = plume.normalise_writing_profile(None)
+        self.assertEqual(profile["mode"], plume.WRITING_MODE_TRANSLATE)
+        self.assertEqual(profile["strength"], plume.WRITING_STRENGTH_SOURCE_LED)
+        self.assertEqual(profile["role"], "General")
+        self.assertEqual(profile["version"], 1)
+
+    def test_defaults_for_non_dict(self):
+        self.assertEqual(
+            plume.normalise_writing_profile("not a dict"),
+            plume.normalise_writing_profile(None),
+        )
+
+    def test_unknown_values_fall_back_to_defaults(self):
+        profile = plume.normalise_writing_profile(
+            {"mode": "Sideways", "strength": "Extreme", "role": "Stranger"}
+        )
+        self.assertEqual(profile["mode"], plume.WRITING_MODE_TRANSLATE)
+        self.assertEqual(profile["strength"], plume.WRITING_STRENGTH_SOURCE_LED)
+        self.assertEqual(profile["role"], "General")
+
+    def test_valid_values_round_trip(self):
+        profile = plume.normalise_writing_profile(
+            {"mode": "Correct English then translate", "strength": "Light", "role": "Friend"}
+        )
+        self.assertEqual(profile["mode"], "Correct English then translate")
+        self.assertEqual(profile["strength"], "Light")
+        self.assertEqual(profile["role"], "Friend")
+
+    def test_source_led_produces_no_instruction(self):
+        self.assertEqual(
+            plume.build_writing_profile_instruction({"strength": "Source-led"}), "",
+        )
+        self.assertEqual(plume.build_writing_profile_instruction(None), "")
+
+    def test_light_strength_produces_background_only_instruction(self):
+        text = plume.build_writing_profile_instruction(
+            {"strength": "Light", "role": "Colleague"}
+        )
+        self.assertIn("background only", text)
+        self.assertIn("colleague", text)
+        self.assertIn("source text wins", text.lower())
+
+    def test_balanced_strength_mentions_tones(self):
+        text = plume.build_writing_profile_instruction(
+            {"strength": "Balanced", "role": "Friend"}
+        )
+        self.assertIn("register tones", text.lower())
+
+    def test_never_claims_identity_or_authority(self):
+        text = plume.build_writing_profile_instruction(
+            {"strength": "Light", "role": "Customer"}
+        )
+        self.assertIn("Do not assume a relationship, identity, expertise", text)
+
+    def test_prompt_omits_writing_clause_when_source_led(self):
+        prompt = plume.build_translation_prompt(writing={"strength": "Source-led"})
+        self.assertNotIn("Background relationship", prompt)
+
+    def test_prompt_includes_writing_clause_when_not_source_led(self):
+        prompt = plume.build_translation_prompt(
+            writing={"strength": "Light", "role": "Friend"}
+        )
+        self.assertIn("Background relationship", prompt)
+        self.assertIn("friend", prompt)
+
+    def test_prompt_defaults_to_no_writing_clause(self):
+        # writing=None (the default) must not change existing prompt output.
+        self.assertEqual(
+            plume.build_translation_prompt(),
+            plume.build_translation_prompt(writing=None),
+        )
+
+
 class TestStatusState(unittest.TestCase):
     def test_status_honours_explicit_state(self):
         cfg = dict(plume.DEFAULT_CONFIG)
@@ -677,6 +752,17 @@ class TestConversationPresets(unittest.TestCase):
             self._preset(tones=["Terse", "Playful"])
         )
         self.assertEqual(clean["tones"], ["Playful"])
+
+    def test_writing_profile_defaults_when_absent(self):
+        clean = plume.normalise_conversation_preset(self._preset())
+        self.assertEqual(clean["writing"], plume.normalise_writing_profile(None))
+
+    def test_writing_profile_is_validated_and_stored(self):
+        clean = plume.normalise_conversation_preset(
+            self._preset(writing={"strength": "Light", "role": "Friend"})
+        )
+        self.assertEqual(clean["writing"]["strength"], "Light")
+        self.assertEqual(clean["writing"]["role"], "Friend")
 
     def test_list_repairs_duplicate_display_name(self):
         presets = plume.normalise_conversation_presets([

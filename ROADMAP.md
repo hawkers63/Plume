@@ -804,6 +804,55 @@ schema impact beyond one constants tuple:
   regression a past version introduced and fixed). Full suite: 246 tests
   pass.
 
+## v1.29 — Mode/Strength/Role writing profile (notes_013 B3)
+
+- **An optional second preset phase**, layered on top of the existing
+  Tones/Situation/conversation-preset system rather than replacing any of
+  it: `WRITING_MODES` (Translate; Correct English then translate),
+  `WRITING_STRENGTHS` (Source-led; Light; Balanced), `WRITING_ROLES`
+  (General; Friend; Colleague; Customer). `normalise_writing_profile()`
+  coerces each to one of a small fixed set — never an arbitrary
+  system-prompt template, claimed identity or authority — matching how
+  every other conversation-preset field is hardened.
+- **One compact row**, not the three-row stacked block notes_013's own
+  mockup showed: Mode/Strength/Role sit beneath Tones as label+dropdown
+  pairs in a single horizontal row, matching the existing Tones/Situation
+  rows' own layout rather than adding real vertical height to an already
+  tight pane. Verified at both the default 1180×760 and the documented
+  920×600 minimum: dropdown widths were tuned (and made to share extra
+  space via `grid_columnconfigure(weight=1)`) so nothing is cut off at
+  the minimum size — long values (e.g. "Correct English then translate")
+  clip to fit the button, the same accepted tradeoff the Presets menu
+  already makes for a long preset name.
+- **Strength/Role only ever add a background prompt clause** — via
+  `build_writing_profile_instruction()`, appended to the system prompt
+  after the tone clause — **and only once Strength is raised above
+  Source-led** (the default): selecting a Role alone changes nothing.
+  The clause explicitly forbids assuming a relationship, identity,
+  expertise or authority the source text doesn't itself establish, and
+  states the source wins any conflict, mirroring the tone clause's own
+  non-authoritative framing.
+- **Mode changes which pipeline Translate/Ctrl+Enter dispatches to, but
+  only on an explicit click:** `_run_selected_mode()` (the new command
+  for both) runs `_correct_then_translate()` if Mode is set to correction,
+  otherwise `_translate()` — the default Mode is always Translate, so
+  behaviour is unchanged unless a user (or a preset) deliberately sets
+  Mode to correction. Selecting a Mode, or applying a preset that
+  restores one, never itself starts a request — only this explicit
+  dispatch does. The separate, pre-existing Correct English button is
+  unchanged: it always corrects, regardless of Mode.
+- **Presets now carry a `"writing"` key** (`normalise_conversation_preset`),
+  saved from and restored to the three live dropdowns exactly like tones
+  already are. Reopening a history entry resets the writing profile to
+  defaults, the same reasoning already applied to tones and finishing
+  touches: history predates this version and carries no such data.
+- 15 new unit tests (profile validation/defaults, prompt clause
+  presence/absence, preset round-trip) plus a live-code verification
+  script covering dispatch (both Modes), a preset with Mode set to
+  correction never itself submitting, Reopen's reset, and `_translate()`'s
+  snapshot carrying the live profile — plus screenshots of the real
+  running app at both window sizes. Full suite: 259 tests pass.
+
 ---
 
 ### Notes on sequencing

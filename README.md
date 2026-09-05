@@ -76,6 +76,16 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   the same non-authoritative background context, never overriding the
   source text's own meaning. Conflicting tones (e.g. Terse + Playful)
   resolve automatically, keeping whichever one you just chose.
+- **Writing profile** (Mode / Strength / Role), beneath Tones: an
+  optional second layer on top of presets. Strength (Source-led / Light /
+  Balanced) and Role (General / Friend / Colleague / Customer) add a
+  background register/relationship hint only once Strength is raised
+  above Source-led — never assuming an identity or authority the source
+  text doesn't establish. Mode (Translate / Correct English then
+  translate) changes which pipeline Translate/Ctrl+Enter runs, but only
+  on an explicit click — selecting a Mode, or applying a preset that
+  restores one, never itself starts a request. Saved on conversation
+  presets alongside direction, form, tones and situation.
 - **Export** the current result to a Markdown study sheet (source,
   situation, all alternatives, a diff view), **Export diff…** for a
   standalone textual source/translation comparison, and **Copy as HTML**

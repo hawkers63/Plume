@@ -218,6 +218,20 @@ TONE_CONFLICTS = (
 )
 MAX_TONES = 3
 
+# --- Writing profile (v1.29, notes_013 B3) ----------------------------------
+# An optional second preset phase, layered on top of Tones/Situation rather
+# than replacing either: curated, closed choices only — never an arbitrary
+# system-prompt template, claimed identity or authority. Mode changes which
+# pipeline the primary action runs (never triggered just by selecting it or
+# a preset); Strength/Role only ever add a background register hint, and
+# only when Strength is not Source-led.
+WRITING_MODE_TRANSLATE = "Translate"
+WRITING_MODE_CORRECT_THEN_TRANSLATE = "Correct English then translate"
+WRITING_MODES = (WRITING_MODE_TRANSLATE, WRITING_MODE_CORRECT_THEN_TRANSLATE)
+WRITING_STRENGTH_SOURCE_LED = "Source-led"
+WRITING_STRENGTHS = (WRITING_STRENGTH_SOURCE_LED, "Light", "Balanced")
+WRITING_ROLES = ("General", "Friend", "Colleague", "Customer")
+
 # Confidence values the model may report for language detection.
 CONFIDENCE_VALUES = ("high", "medium", "low")
 
@@ -970,6 +984,7 @@ def normalise_conversation_preset(entry) -> dict | None:
             entry.get("recipient_gender"), FRENCH_GENDERS, GENDER_FEMININE),
         "situation": _safe_short_string(entry.get("situation")),
         "tones": validate_tones(entry.get("tones")),
+        "writing": normalise_writing_profile(entry.get("writing")),
     }
 
 
@@ -1256,13 +1271,59 @@ def build_tone_instruction(tones) -> str:
     )
 
 
+def normalise_writing_profile(value) -> dict:
+    """Return a clean writing profile: curated choices only.
+
+    Never an arbitrary system-prompt template, claimed identity or
+    authority — Mode/Strength/Role are each one of a small fixed set,
+    coerced to a safe default exactly like the equivalent conversation-
+    preset fields (v1.29, notes_013 B3).
+    """
+    value = value if isinstance(value, dict) else {}
+    return {
+        "version": 1,
+        "mode": _coerce_choice(value.get("mode"), WRITING_MODES, WRITING_MODE_TRANSLATE),
+        "strength": _coerce_choice(
+            value.get("strength"), WRITING_STRENGTHS, WRITING_STRENGTH_SOURCE_LED,
+        ),
+        "role": _coerce_choice(value.get("role"), WRITING_ROLES, WRITING_ROLES[0]),
+    }
+
+
+def build_writing_profile_instruction(value) -> str:
+    """Background-only register/relationship clause, or "" when Source-led.
+
+    Source-led (the default) contributes nothing: selecting a role without
+    raising Strength above Source-led must not change the prompt at all.
+    """
+    profile = normalise_writing_profile(value)
+    if profile["strength"] == WRITING_STRENGTH_SOURCE_LED:
+        return ""
+    degree = {
+        "Light": "Adjust register subtly, only where the source's own "
+                 "meaning permits.",
+        "Balanced": "Combine this with the register tones above, only "
+                    "where the source's own meaning permits.",
+    }[profile["strength"]]
+    return (
+        "\nBackground relationship (background only): " + profile["role"].lower()
+        + ". " + degree + " Do not assume a relationship, identity, expertise "
+        "or authority that the source text does not itself establish. "
+        "Preserve facts, negation, certainty and obligations exactly. Do not "
+        "add explanations, gratitude or promises the source does not make. "
+        "If this conflicts with what the source text itself conveys, the "
+        "source text wins."
+    )
+
+
 def build_translation_prompt(direction=DIR_AUTO,
                              french_formality=FORM_INFORMAL,
                              french_variant=VARIANT_NEUTRAL,
                              protect_tokens: bool = True,
                              speaker_gender=GENDER_AVOID,
                              recipient_gender=GENDER_AVOID,
-                             tones=()) -> str:
+                             tones=(),
+                             writing=None) -> str:
     """Build the system prompt. Pure function: same inputs -> same output.
 
     The prompt states the requested direction, the French address form and
@@ -1329,6 +1390,7 @@ def build_translation_prompt(direction=DIR_AUTO,
 
     tone_instruction = build_tone_instruction(tones)
     tone_clause = "\n\n" + tone_instruction if tone_instruction else ""
+    writing_clause = build_writing_profile_instruction(writing)
 
     return (
         "You are a precise conversational translator between English and "
@@ -1350,6 +1412,7 @@ def build_translation_prompt(direction=DIR_AUTO,
         + "\n\n"
         + situation_clause
         + tone_clause
+        + writing_clause
         + "\n\nReturn one primary translation and exactly five distinct, "
         "idiomatic alternatives in the target language. The five alternatives "
         "must keep the source's tone and formality and must differ meaningfully "
@@ -1950,6 +2013,7 @@ def translate(config_snapshot, text, situation=""):
     recipient_gender = config_snapshot.get("default_french_recipient_gender", GENDER_FEMININE)
     protect = bool(config_snapshot.get("protect_placeholders", True))
     tones = validate_tones(config_snapshot.get("tones"))
+    writing = normalise_writing_profile(config_snapshot.get("writing"))
 
     masked, mapping = protect_text(
         text,
@@ -1960,7 +2024,7 @@ def translate(config_snapshot, text, situation=""):
     )
     system_prompt = build_translation_prompt(
         direction, formality, variant, protect, speaker_gender, recipient_gender,
-        tones=tones,
+        tones=tones, writing=writing,
     )
     user_envelope = build_user_envelope(
         masked, direction, formality, variant, speaker_gender, recipient_gender,
@@ -3185,8 +3249,45 @@ if GUI_AVAILABLE:
                     command=lambda value, slot=index: self._on_tone_change(value, slot),
                 ).grid(row=0, column=index + 1, padx=(0, 6))
 
+            # Writing profile (v1.29, notes_013 B3): an optional second
+            # preset phase layered on Tones/Situation above, not a
+            # replacement for either. One compact row, matching the
+            # Tones/Situation rows' own horizontal layout, rather than a
+            # taller stacked block — this pane is already tight (see the
+            # v1.15 layout fix). Source-led (the default) contributes
+            # nothing extra to the prompt; Mode only changes which
+            # pipeline Translate/Ctrl+Enter runs on an explicit click, and
+            # never on merely choosing it or applying a preset.
+            writing_row = ctk.CTkFrame(left, fg_color="transparent")
+            writing_row.grid(row=6, column=0, sticky="ew", padx=12, pady=(6, 0))
+            self._writing_vars = {}
+            writing_fields = (
+                ("mode", "Mode", WRITING_MODES, 120),
+                ("strength", "Strength", WRITING_STRENGTHS, 90),
+                ("role", "Role", WRITING_ROLES, 90),
+            )
+            column = 0
+            for key, label, choices, width in writing_fields:
+                ctk.CTkLabel(writing_row, text=label).grid(
+                    row=0, column=column, padx=(0 if column == 0 else 8, 4)
+                )
+                column += 1
+                variable = ctk.StringVar(value=choices[0])
+                self._writing_vars[key] = variable
+                # Fixed narrower widths (rather than sizing to the longest
+                # option, e.g. "Correct English then translate") so this row
+                # still fits the documented 920px minimum window width; the
+                # button clips long text the same way the Presets menu
+                # already does for a long preset name.
+                menu = ctk.CTkOptionMenu(
+                    writing_row, values=list(choices), variable=variable, width=width,
+                )
+                menu.grid(row=0, column=column, padx=(0, 4), sticky="ew")
+                writing_row.grid_columnconfigure(column, weight=1)
+                column += 1
+
             buttons = ctk.CTkFrame(left, fg_color="transparent")
-            buttons.grid(row=6, column=0, sticky="ew", padx=12, pady=(8, 4))
+            buttons.grid(row=7, column=0, sticky="ew", padx=12, pady=(8, 4))
             ctk.CTkButton(buttons, text="Paste", width=90, command=self._paste,
                           fg_color="gray30").grid(row=0, column=0, padx=(0, 8))
             ctk.CTkButton(buttons, text="Clear", width=90, command=self._clear,
@@ -3207,7 +3308,7 @@ if GUI_AVAILABLE:
             # above so a 1180px-wide window has room for both without any of
             # the six buttons being pushed past the visible pane.
             translate_row = ctk.CTkFrame(left, fg_color="transparent")
-            translate_row.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 12))
+            translate_row.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
             translate_row.grid_columnconfigure(0, weight=1)
             self.open_file_btn = ctk.CTkButton(
                 translate_row, text="Open file…", width=120,
@@ -3219,8 +3320,13 @@ if GUI_AVAILABLE:
                 command=self._correct_then_translate, fg_color="gray30",
             )
             self.correct_btn.grid(row=0, column=1, padx=(0, 8))
+            # Dispatches via the Writing profile's Mode above (Translate by
+            # default, so unchanged behaviour unless Mode is deliberately
+            # changed); the explicit Correct English button above always
+            # runs correction regardless of Mode.
             self.translate_btn = ctk.CTkButton(
-                translate_row, text="Translate", width=140, command=self._translate
+                translate_row, text="Translate", width=140,
+                command=self._run_selected_mode,
             )
             self.translate_btn.grid(row=0, column=2)
 
@@ -3435,6 +3541,24 @@ if GUI_AVAILABLE:
         def _current_tones(self):
             return validate_tones([var.get() for var in self.tone_vars])
 
+        def _current_writing_profile(self):
+            return normalise_writing_profile(
+                {key: variable.get() for key, variable in self._writing_vars.items()}
+            )
+
+        def _run_selected_mode(self):
+            """Dispatch Translate/Ctrl+Enter via the selected Mode.
+
+            Selecting a Mode (or applying a preset that sets one) never
+            itself runs a request; only this explicit click/shortcut does.
+            The separate Correct English button always runs correction
+            directly, regardless of Mode.
+            """
+            if self._current_writing_profile()["mode"] == WRITING_MODE_CORRECT_THEN_TRANSLATE:
+                self._correct_then_translate()
+            else:
+                self._translate()
+
         def _on_tone_change(self, _value=None, slot=None):
             """Resolve conflicts/cap and refresh all three menus.
 
@@ -3502,6 +3626,12 @@ if GUI_AVAILABLE:
             padded_tones = tones + [TONE_NONE] * (MAX_TONES - len(tones))
             for var, tone in zip(self.tone_vars, padded_tones):
                 var.set(tone)
+            # Applying a preset only sets these variables; it never itself
+            # runs a request, even when the restored Mode is "Correct
+            # English then translate" (v1.29).
+            writing = normalise_writing_profile(preset.get("writing"))
+            for key, variable in self._writing_vars.items():
+                variable.set(writing[key])
             self._on_toolbar_change()
 
         def _commit_presets(self, presets, select=CONVERSATION_PRESET_PLACEHOLDER):
@@ -3566,6 +3696,7 @@ if GUI_AVAILABLE:
                 "recipient_gender": self.recipient_gender_var.get(),
                 "situation": self._situation_text(),
                 "tones": self._current_tones(),
+                "writing": self._current_writing_profile(),
             })
             if preset is None:
                 return
@@ -3939,6 +4070,12 @@ if GUI_AVAILABLE:
             self.casual_signoff_var.set(CASUAL_SIGNOFF_NONE)
             for tone_var in self.tone_vars:
                 tone_var.set(TONE_NONE)
+            # History entries predate the writing profile (v1.29) and carry
+            # no such data, so resuming an old entry resets it to defaults
+            # rather than silently inheriting whatever is live right now —
+            # the same reasoning already applied to tones/finishing touches.
+            for key, variable in self._writing_vars.items():
+                variable.set(normalise_writing_profile(None)[key])
             self._render_result(entry)
             if entry.get("favourite"):
                 # Already starred in history: reflect that instead of letting
@@ -4118,7 +4255,7 @@ if GUI_AVAILABLE:
         # --- translation lifecycle ---------------------------------------
 
         def _translate_shortcut(self, event):
-            self._translate()
+            self._run_selected_mode()
             return "break"  # suppress the newline Ctrl+Enter would insert
 
         def _correct_shortcut(self, event):
@@ -4305,6 +4442,7 @@ if GUI_AVAILABLE:
             snapshot["default_french_speaker_gender"] = self.speaker_gender_var.get()
             snapshot["default_french_recipient_gender"] = self.recipient_gender_var.get()
             snapshot["tones"] = self._current_tones()
+            snapshot["writing"] = self._current_writing_profile()
 
             if snapshot.get("backend") == "anthropic" and not snapshot.get("privacy_ack"):
                 proceed = messagebox.askokcancel(
