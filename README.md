@@ -70,9 +70,12 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   source text's own meaning. Conflicting tones (e.g. Terse + Playful)
   resolve automatically, keeping the one just chosen.
 - **Export** the current result to a Markdown study sheet (source,
-  situation, all alternatives, a diff view), and **Copy as HTML**
-  (Windows) for pasting formatted text into email or documents — both
-  next to Favourite on the primary card.
+  situation, all alternatives, a diff view), **Export diff…** for a
+  standalone textual source/translation comparison, and **Copy as HTML**
+  (Windows) for pasting formatted text into email or documents — all
+  next to Favourite on the primary card. All three (plus Favourite) use
+  the exact text that produced the on-screen result, even if you've since
+  edited the input box.
 - The input pane shows a reading-time estimate alongside the character
   and word count.
 

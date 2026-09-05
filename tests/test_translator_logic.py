@@ -1251,6 +1251,19 @@ class TestHistoryEntries(unittest.TestCase):
         self.assertIsNone(plume.normalise_history_entry({"main_translation": "Bonjour"}))
         self.assertIsNone(plume.normalise_history_entry({"variations": []}))
 
+    def test_normalise_history_entry_keeps_favourite_with_fewer_alternatives(self):
+        entry = plume.make_history_entry("hello", valid_result(), favourite=True)
+        entry["variations"] = entry["variations"][:4]
+        clean = plume.normalise_history_entry(entry)
+        self.assertIsNotNone(clean)
+        self.assertEqual(len(clean["variations"]), 4)
+        self.assertTrue(clean["favourite"])
+
+    def test_normalise_history_entry_still_drops_non_favourite_with_fewer_alternatives(self):
+        entry = plume.make_history_entry("hello", valid_result(), favourite=False)
+        entry["variations"] = entry["variations"][:4]
+        self.assertIsNone(plume.normalise_history_entry(entry))
+
 
 class TestExportFavourites(unittest.TestCase):
     def _entry(self, **overrides):
@@ -1327,6 +1340,32 @@ class TestCurrentResultExport(unittest.TestCase):
         empty_result["variations"] = []
         md = plume.export_current_result_markdown("", empty_result)
         self.assertNotIn("## Diff", md)
+
+
+class TestTranslationDiffExport(unittest.TestCase):
+    def test_reports_no_differences_for_identical_text(self):
+        content = plume.export_translation_diff("same text", "same text")
+        self.assertIn("No textual differences.", content)
+        self.assertNotIn("```diff", content)
+
+    def test_includes_a_fenced_diff_when_text_differs(self):
+        content = plume.export_translation_diff("Hello there", "Bonjour la-bas")
+        self.assertIn("```diff", content)
+        self.assertIn("Hello there", content)
+        self.assertIn("Bonjour la-bas", content)
+
+    def test_ignores_final_newline_only_difference(self):
+        content = plume.export_translation_diff("same text\n", "same text")
+        self.assertIn("No textual differences.", content)
+
+    def test_fence_is_longer_than_embedded_backtick_runs(self):
+        content = plume.export_translation_diff("plain", "some ```` backticks")
+        fence_line = content.splitlines()[-1]
+        self.assertTrue(fence_line.startswith("`````"))
+
+    def test_disclaims_accuracy_not_just_a_label(self):
+        content = plume.export_translation_diff("a", "b")
+        self.assertIn("not an assessment of translation accuracy", content.lower())
 
 
 class TestMetrics(unittest.TestCase):

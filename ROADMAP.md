@@ -557,6 +557,43 @@ schema impact beyond one constants tuple:
   a request issued before Reopen is correctly dropped as stale when it
   completes afterwards. Full suite: 213 tests pass.
 
+## v1.23 — Source-snapshot integrity, textual diff export, favourite robustness (notes_012 M5/M10, notes_013 D1)
+
+- **M5, Favourite/Export used the live input, not the rendered source:**
+  `_favourite_current_result` and `_export_current_result` read
+  `self._input_text()`/`self._situation_text()` at click time. If the input
+  box was edited after a result rendered but before the user favourited or
+  exported it (without re-translating), the saved/exported "source" no
+  longer matched the text that actually produced the on-screen result —
+  corrupting study data. Fixed with `self._result_source_text`/
+  `self._result_situation`, captured once in `_deliver` (from the existing
+  `snap_text`/`situation` parameters) and in `_reopen_history_entry` (from
+  the history record), cleared in `_clear_results`; both methods now read
+  the snapshot instead of the live widgets.
+- **D1, textual diff export:** a new "Export diff…" button beside Favourite
+  and Export, using `export_translation_diff()` — a `difflib.unified_diff`
+  of source vs. translation in a Markdown fence sized longer than any
+  backtick run already in the content, explicitly labelled as a textual
+  comparison across languages rather than a claim of accuracy. Uses the
+  same source snapshot as Export, so it is affected by the M5 fix as well.
+- **M10, favourites with an atypical alternative count were silently
+  deleted:** `normalise_history_entry` returned `None` — dropping the
+  entry entirely on the next load — whenever a history record didn't have
+  exactly `VARIATION_COUNT` (5) well-formed alternatives, with no exemption
+  for favourites. A hand-edit, partial write, or future schema change could
+  delete a favourite outright, violating the stated "favourited items must
+  not vanish" invariant. Fixed so a favourite is kept with however many
+  well-formed alternatives it has; a non-favourite is still dropped if it
+  doesn't have exactly five (unchanged behaviour for ordinary history).
+- 7 new unit tests (normalise_history_entry favourite/non-favourite
+  variation-count cases, `export_translation_diff`'s no-difference/fenced/
+  final-newline/backtick-fence/accuracy-disclaimer cases). Verified live
+  against the real `PlumeApp` class (isolated temp config dir): editing the
+  input after a result renders no longer changes what Favourite, Export or
+  Export diff record as the source; Reopen and Clear correctly set/reset
+  the snapshot; a 2-alternative favourite survives a save/load round trip.
+  Full suite: 220 tests pass.
+
 ---
 
 ### Notes on sequencing

@@ -661,7 +661,12 @@ def normalise_history_entry(entry) -> dict | None:
                 }
             )
 
-    if len(clean_variations) != VARIATION_COUNT:
+    # A favourite is kept even with an atypical alternative count (a
+    # hand-edit, a partial write, or a future schema change) rather than
+    # silently deleted on the next load — "favourited items must not
+    # vanish" is a stated invariant. A non-favourite still needs exactly
+    # VARIATION_COUNT well-formed alternatives to render as normal (M10).
+    if len(clean_variations) != VARIATION_COUNT and not entry.get("favourite"):
         return None
 
     return {
@@ -837,6 +842,35 @@ def export_current_result_markdown(source_text, result, situation="") -> str:
         lines.append("```")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def export_translation_diff(source_text: str, translation: str) -> str:
+    """Markdown textual comparison of source vs. translation (v1.23).
+
+    A source and its translation are different languages, so this is a
+    textual comparison to aid proofreading — never a measure of edits or a
+    claim about translation accuracy. Line endings are normalised before
+    comparing; a difference only in the final trailing newline is not
+    shown. The fence is sized longer than any backtick run already present
+    in the diff, so the content can never break out of it.
+    """
+    normalise = lambda text: (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    diff = list(difflib.unified_diff(
+        normalise(source_text).splitlines(), normalise(translation).splitlines(),
+        fromfile="Submitted source", tofile="Selected translation", lineterm="",
+    ))
+    header = (
+        "# Translation comparison\n\n"
+        "Textual comparison across languages; not an assessment of "
+        "translation accuracy. Line endings are normalised for display; a "
+        "difference only in the final trailing newline is not shown.\n\n"
+    )
+    if not diff:
+        return header + "No textual differences.\n"
+    changes = "\n".join(diff)
+    longest_run = max((len(run) for run in re.findall(r"`+", changes)), default=0)
+    fence = "`" * max(3, longest_run + 1)
+    return header + fence + "diff\n" + changes + "\n" + fence + "\n"
 
 
 # ===========================================================================
@@ -2747,6 +2781,8 @@ if GUI_AVAILABLE:
             self._tts_temp_path = None
             self._current_result = None
             self._current_favourited = False
+            self._result_source_text = ""
+            self._result_situation = ""
             self._tray_icon = None
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
@@ -3129,6 +3165,12 @@ if GUI_AVAILABLE:
                 state="disabled",
             )
             self.copy_html_btn.grid(row=0, column=2, padx=(8, 0), sticky="w")
+            self.export_diff_btn = ctk.CTkButton(
+                favourite_row, text="Export diff…", width=110,
+                command=self._export_current_diff, fg_color="gray30",
+                state="disabled",
+            )
+            self.export_diff_btn.grid(row=0, column=3, padx=(8, 0), sticky="w")
 
             self.language_label = ctk.CTkLabel(right, text="", text_color="gray70")
             self.language_label.grid(row=2, column=0, sticky="w", padx=12)
@@ -3478,6 +3520,7 @@ if GUI_AVAILABLE:
             self.use_as_input_btn.configure(state="disabled")
             self.export_btn.configure(state="disabled")
             self.copy_html_btn.configure(state="disabled")
+            self.export_diff_btn.configure(state="disabled")
             self._reset_favourite_button(enabled=False)
             self._stop_speech()
             self._cleanup_tts_file()
@@ -3486,6 +3529,8 @@ if GUI_AVAILABLE:
             self.language_label.configure(text="")
             self._current_main = ""
             self._current_result = None
+            self._result_source_text = ""
+            self._result_situation = ""
             for card in self._variation_cards:
                 card.destroy()
             self._variation_cards = []
@@ -3529,6 +3574,7 @@ if GUI_AVAILABLE:
             self.use_as_input_btn.configure(state="normal")
             self.export_btn.configure(state="normal")
             self.copy_html_btn.configure(state="normal")
+            self.export_diff_btn.configure(state="normal")
             self._reset_favourite_button(enabled=True)
 
         def _use_main_as_input(self):
@@ -3576,6 +3622,8 @@ if GUI_AVAILABLE:
             self.input_box.insert("1.0", entry.get("source_text", ""))
             self.situation_entry.delete(0, "end")
             self.situation_entry.insert(0, entry.get("situation", ""))
+            self._result_source_text = entry.get("source_text", "")
+            self._result_situation = entry.get("situation", "")
             self._on_input_change()
             self.advisory.grid_remove()
             self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
@@ -4001,6 +4049,8 @@ if GUI_AVAILABLE:
                 self._refresh_status(state="ready")
                 return
 
+            self._result_source_text = snap_text
+            self._result_situation = situation
             self._render_result(data)
             self._show_result_advisories(data)
             self._save_to_history(snap_text, situation, data)
@@ -4067,6 +4117,7 @@ if GUI_AVAILABLE:
             self.use_as_input_btn.configure(state="normal")
             self.export_btn.configure(state="normal")
             self.copy_html_btn.configure(state="normal")
+            self.export_diff_btn.configure(state="normal")
             self._reset_favourite_button(enabled=True)
             self.language_label.configure(text=format_language_label(result))
 
@@ -4116,7 +4167,10 @@ if GUI_AVAILABLE:
             from self._current_main rather than self._current_result, so a
             "Use this" promotion is honoured. Prompts to turn local history on
             first if it is off, since a favourite has nowhere to live without
-            it; declining leaves everything unchanged.
+            it; declining leaves everything unchanged. Uses the snapshot
+            captured when the result was rendered (self._result_source_text/
+            _situation), not the live input box, so an edit made since the
+            result appeared is never recorded as its source (M5).
             """
             if not self._current_main or self._current_result is None:
                 return
@@ -4142,7 +4196,7 @@ if GUI_AVAILABLE:
             result_for_entry = dict(self._current_result)
             result_for_entry["main_translation"] = self._current_main
             entry = make_history_entry(
-                self._input_text(), result_for_entry, self._situation_text(),
+                self._result_source_text, result_for_entry, self._result_situation,
                 favourite=True,
             )
             entries = load_history()
@@ -4163,6 +4217,10 @@ if GUI_AVAILABLE:
             local history is enabled. Reuses self._current_result for the
             alternatives with self._current_main as the main translation,
             the same "Use this"-aware pattern as _favourite_current_result.
+            Uses the snapshot captured when the result was rendered
+            (self._result_source_text/_situation), not the live input box,
+            so an edit made since the result appeared is never exported as
+            its source (M5).
             """
             if not self._current_main or self._current_result is None:
                 return
@@ -4176,13 +4234,38 @@ if GUI_AVAILABLE:
             result_for_export = dict(self._current_result)
             result_for_export["main_translation"] = self._current_main
             content = export_current_result_markdown(
-                self._input_text(), result_for_export, self._situation_text()
+                self._result_source_text, result_for_export, self._result_situation
             )
             try:
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write(content)
             except OSError:
                 self.advisory.configure(text="Could not write the export file.")
+                self.advisory.grid()
+
+        def _export_current_diff(self):
+            """Export a textual source/translation comparison (v1.23).
+
+            Uses the same accepted-result snapshot as _export_current_result
+            (self._result_source_text, self._current_main) rather than the
+            live input box, so an edit made after the result rendered is
+            never silently exported as its source.
+            """
+            if not self._current_main or self._current_result is None:
+                return
+            path = filedialog.asksaveasfilename(
+                title="Export textual comparison",
+                defaultextension=".md",
+                filetypes=[("Markdown diff", "*.md")],
+            )
+            if not path:
+                return
+            content = export_translation_diff(self._result_source_text, self._current_main)
+            try:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+            except OSError:
+                self.advisory.configure(text="Could not write the comparison file.")
                 self.advisory.grid()
 
         def _copy_current_result_as_html(self):
