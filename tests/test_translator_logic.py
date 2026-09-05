@@ -2390,6 +2390,69 @@ class TestHistoryEntries(unittest.TestCase):
         self.assertIsNone(plume.normalise_history_entry(entry))
 
 
+class TestHistorySearch(unittest.TestCase):
+    def _entries(self):
+        return [
+            {
+                "id": "1", "source_text": "Hello there",
+                "main_translation": "Bonjour", "situation": "Close friend",
+                "favourite": False,
+            },
+            {
+                "id": "2", "source_text": "See you later",
+                "main_translation": "À plus tard", "situation": "Guild raid chat",
+                "favourite": True,
+            },
+            {
+                "id": "3", "source_text": "Good morning",
+                "main_translation": "Bonjour tout le monde", "situation": "",
+                "favourite": False,
+            },
+        ]
+
+    def test_matches_source_text(self):
+        result = plume.filter_history_entries(self._entries(), query="hello")
+        self.assertEqual([e["id"] for e in result], ["1"])
+
+    def test_matches_main_translation_case_insensitively(self):
+        result = plume.filter_history_entries(self._entries(), query="BONJOUR")
+        self.assertEqual([e["id"] for e in result], ["1", "3"])
+
+    def test_matches_situation(self):
+        result = plume.filter_history_entries(self._entries(), query="guild raid")
+        self.assertEqual([e["id"] for e in result], ["2"])
+
+    def test_empty_query_returns_everything(self):
+        result = plume.filter_history_entries(self._entries(), query="   ")
+        self.assertEqual(len(result), 3)
+
+    def test_no_match_returns_empty(self):
+        result = plume.filter_history_entries(self._entries(), query="zzz-nope")
+        self.assertEqual(result, [])
+
+    def test_favourites_only_applies_before_search(self):
+        result = plume.filter_history_entries(
+            self._entries(), query="", favourites_only=True,
+        )
+        self.assertEqual([e["id"] for e in result], ["2"])
+
+    def test_favourites_only_and_search_combine(self):
+        result = plume.filter_history_entries(
+            self._entries(), query="hello", favourites_only=True,
+        )
+        self.assertEqual(result, [])
+
+    def test_search_blob_omits_variations_and_notes(self):
+        entry = {
+            "source_text": "a", "main_translation": "b", "situation": "c",
+            "variations": [{"translation": "secret-alt"}],
+            "notes": ["secret-note"],
+        }
+        blob = plume.history_search_blob(entry)
+        self.assertNotIn("secret-alt", blob)
+        self.assertNotIn("secret-note", blob)
+
+
 class TestExportFavourites(unittest.TestCase):
     def _entry(self, **overrides):
         entry = plume.make_history_entry(

@@ -74,8 +74,9 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   build (see `ROADMAP.md`'s v1.18/v1.28/v1.32 entries).
 - Optional local history with favourites — including a one-click
   **☆ Favourite** on the main panel — per-entry **Copy** / **Reopen** /
-  **Delete**, "clear history" preserving favourited entries, and
-  **Export favourites** to an Anki TSV deck or Markdown study sheet.
+  **Delete**, a **search box** (source text, translation and situation),
+  "clear history" preserving favourited entries, and **Export
+  favourites** to an Anki TSV deck or Markdown study sheet.
 - Optional ElevenLabs **Speak** buttons for pronunciation help, with a
   **Stop** button and a **Slow** playback toggle (a slower, lower-pitched
   playback rate — not studio-quality time-stretching, but a genuine aid
@@ -89,6 +90,9 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   `pystray` and `Pillow`): launch quietly at Windows sign-in, start
   minimised, and close-to-tray instead of quitting — a conversation
   helper that doesn't need to be relaunched and re-parked every session.
+  The tray menu's **Show and paste clipboard** brings the window back
+  and pastes what's on the clipboard in one click — it never translates
+  automatically.
 - **Conversation presets:** save the toolbar's direction, French form,
   Me/You gender agreement, situation and tones as a named preset (a
   "Presets…" menu plus Save/Delete beside the toolbar's You control) —

@@ -1280,6 +1280,38 @@ schema impact beyond one constants tuple:
   have available; the mechanism itself is unit-tested directly instead.
   Full suite: 389 tests pass.
 
+## v1.39 — History search, tray "Show and paste clipboard" (notes_015 2.F)
+
+- **History search**, a new entry in the History window's header
+  (between the "History" heading and "Favourites only"): casefold
+  substring matching over source text, main translation and situation —
+  not the alternatives or notes, the fields a user is actually likely to
+  remember a past conversation by. Favourites-only narrows first, then
+  search; an empty query shows everything, matching "today's list".
+  `filter_history_entries`/`history_search_blob` are pure, reused as-is
+  by `HistoryDialog._visible_entries`. The empty-list message now
+  distinguishes "No history yet." (nothing saved at all) from "No
+  matching entries." (a search/filter narrowed it to nothing).
+- **Tray "Show and paste clipboard"**, a third tray menu item alongside
+  Show Plume/Quit: deiconifies the window (the same `_show_window()` now
+  shared with Show Plume, extracted rather than duplicated) and runs the
+  existing `_paste()` — including the paste-as-path offer from v1.32 —
+  never `_translate()`.
+- 8 new unit tests (`filter_history_entries`/`history_search_blob`:
+  matches by each of the three fields, case-insensitive, empty query,
+  no-match, favourites-only applied before search and combined with it,
+  alternatives/notes excluded from the search blob). Verified live
+  against the real `PlumeApp` with a seeded local history file (three
+  entries via the real `make_history_entry`/`save_history`): the search
+  box renders in the header between the heading and the checkbox;
+  typing narrows the list to the matching entry and only it, live, with
+  the correct casefold match against source text and situation; a
+  scripted check (no real system-tray click, which is a fiddly, small
+  target to automate reliably — the underlying method was exercised
+  directly instead) confirmed `_tray_paste()` genuinely restores a
+  withdrawn/minimised window and pastes real clipboard text into the
+  input box via the same `_paste()` path. Full suite: 397 tests pass.
+
 ---
 
 ### Notes on sequencing

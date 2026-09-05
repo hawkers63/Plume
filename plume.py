@@ -993,6 +993,32 @@ def normalise_history_entry(entry) -> dict | None:
     }
 
 
+def history_search_blob(entry) -> str:
+    """Casefold text History search matches against: source, translation,
+    situation. Not the alternatives or notes — the fields a user is most
+    likely to actually remember a past conversation by (v1.39, notes_015 2.F).
+    """
+    return " ".join([
+        str(entry.get("source_text") or ""),
+        str(entry.get("main_translation") or ""),
+        str(entry.get("situation") or ""),
+    ]).casefold()
+
+
+def filter_history_entries(entries, query="", favourites_only=False) -> list:
+    """Pure filter behind HistoryDialog's Favourites-only + Search controls.
+
+    Favourites-only narrows first; an empty (or whitespace-only) query
+    then returns everything remaining, matching "today's list" when the
+    user has not typed anything.
+    """
+    rows = [e for e in entries if e.get("favourite")] if favourites_only else entries
+    query = (query or "").strip().casefold()
+    if not query:
+        return rows
+    return [e for e in rows if query in history_search_blob(e)]
+
+
 def prune_history(entries, limit: int = MAX_HISTORY_ENTRIES) -> list:
     """Keep every favourite, plus the most recent non-favourites up to *limit*.
 
@@ -3456,6 +3482,12 @@ if GUI_AVAILABLE:
             ctk.CTkLabel(
                 header, text="History", font=ctk.CTkFont(size=18, weight="bold"),
             ).grid(row=0, column=0, sticky="w")
+            self.search_var = ctk.StringVar(value="")
+            search_entry = ctk.CTkEntry(
+                header, textvariable=self.search_var, placeholder_text="Search",
+            )
+            search_entry.grid(row=0, column=1, sticky="ew", padx=12)
+            search_entry.bind("<KeyRelease>", lambda _e: self._refresh_list())
             ctk.CTkCheckBox(
                 header, text="Favourites only", variable=self._favourites_only,
                 command=self._refresh_list,
@@ -3479,17 +3511,18 @@ if GUI_AVAILABLE:
             self._refresh_list()
 
         def _visible_entries(self):
-            if self._favourites_only.get():
-                return [e for e in self._entries if e.get("favourite")]
-            return self._entries
+            return filter_history_entries(
+                self._entries, self.search_var.get(), self._favourites_only.get(),
+            )
 
         def _refresh_list(self):
             for child in self.list_frame.winfo_children():
                 child.destroy()
             visible = self._visible_entries()
             if not visible:
+                message = "No history yet." if not self._entries else "No matching entries."
                 ctk.CTkLabel(
-                    self.list_frame, text="No history yet.", text_color="gray60",
+                    self.list_frame, text=message, text_color="gray60",
                 ).grid(row=0, column=0, sticky="w", padx=8, pady=8)
                 return
             for index, entry in enumerate(visible):
@@ -5095,6 +5128,7 @@ if GUI_AVAILABLE:
                 return
             menu = _pystray.Menu(
                 _pystray.MenuItem("Show Plume", self._tray_show, default=True),
+                _pystray.MenuItem("Show and paste clipboard", self._tray_paste),
                 _pystray.MenuItem("Quit", self._tray_quit),
             )
             self._tray_icon = _pystray.Icon(APP_NAME, image, APP_NAME, menu)
@@ -5105,6 +5139,13 @@ if GUI_AVAILABLE:
             ):
                 self.after(0, self.withdraw)
 
+        def _show_window(self):
+            """Deiconify, raise and focus the main window (tray actions)."""
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+            self._apply_always_on_top()
+
         def _tray_show(self, icon=None, item=None):
             # pystray's callback runs on its own thread; every UI action must
             # hop back to the Tk thread via after(0, ...).
@@ -5112,15 +5153,32 @@ if GUI_AVAILABLE:
                 try:
                     if not self.winfo_exists():
                         return
-                    self.deiconify()
-                    self.lift()
-                    self.focus_force()
-                    self._apply_always_on_top()
+                    self._show_window()
                 except tk.TclError:  # pragma: no cover - window closed
                     pass
 
             try:
                 self.after(0, _show)
+            except Exception:  # pragma: no cover - window closed
+                pass
+
+        def _tray_paste(self, icon=None, item=None):
+            """Show the window and paste the clipboard (v1.39, notes_015 2.F).
+
+            The same _paste() the toolbar button uses, including the
+            paste-as-path offer (v1.32) — never calls _translate.
+            """
+            def _show_and_paste():
+                try:
+                    if not self.winfo_exists():
+                        return
+                    self._show_window()
+                    self._paste()
+                except tk.TclError:  # pragma: no cover - window closed
+                    pass
+
+            try:
+                self.after(0, _show_and_paste)
             except Exception:  # pragma: no cover - window closed
                 pass
 
