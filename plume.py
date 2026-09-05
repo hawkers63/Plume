@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Mark Hawksworth. All rights reserved.
+# Not to be copied or altered without express permission. See LICENSE.
 """
 Plume — French <-> English conversation helper.
+
+Copyright (c) 2026 Mark Hawksworth. All rights reserved.
 
 A small Windows 11 desktop application that translates conversational French
 and English in either direction. For every submitted phrase it returns one
 faithful main translation plus exactly five natural, same-tone alternatives,
 each with a short English "meaning check".
 
-The module follows Scriptorium's practical engineering style: a dark,
+The module follows a practical engineering style: a dark,
 native-feeling CustomTkinter interface, British English wording, explicit
 privacy information, a strict validated response contract, atomic configuration
 saving, and stale-callback protection for background work.
@@ -567,7 +571,7 @@ def config_dir() -> str:
 
     When frozen with PyInstaller the executable runs from a temporary folder,
     so configuration is written to %LOCALAPPDATA%\\Plume instead. When running
-    from source the file sits beside this module, matching Scriptorium.
+    from source the file sits beside this module.
     """
     if getattr(sys, "frozen", False):
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
@@ -755,7 +759,7 @@ def load_config():
 def save_config(config, force: bool = False) -> None:
     """Atomically write *config* to disk.
 
-    Uses Scriptorium's atomic-save pattern: write a temporary sibling file,
+    Uses an atomic-save pattern: write a temporary sibling file,
     flush and fsync it, then replace the old file. If an existing file is
     malformed this refuses unless *force* is True, so that an automatic save
     can never clobber a file the user might still want to recover.
