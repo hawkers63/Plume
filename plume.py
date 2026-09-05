@@ -3023,7 +3023,7 @@ if GUI_AVAILABLE:
             self.title(APP_TITLE)
             self._apply_window_icon()
             self.geometry("1180x760")
-            self.minsize(920, 600)
+            self.minsize(1000, 600)
 
             self.grid_columnconfigure(0, weight=1)
             self.grid_rowconfigure(1, weight=1)
@@ -3089,40 +3089,40 @@ if GUI_AVAILABLE:
             self.direction_var = ctk.StringVar(
                 value=self.config_data.get("default_direction", DIR_AUTO)
             )
-            ctk.CTkLabel(top, text="Direction").grid(row=0, column=col, padx=(10, 6), pady=6)
+            ctk.CTkLabel(top, text="Direction").grid(row=0, column=col, padx=(8, 4), pady=6)
             col += 1
             ctk.CTkSegmentedButton(
                 top, values=list(DIRECTIONS), variable=self.direction_var,
                 command=self._on_toolbar_change,
-            ).grid(row=0, column=col, padx=6, pady=6)
+            ).grid(row=0, column=col, padx=4, pady=6)
             col += 1
             ctk.CTkButton(
-                top, text="Swap", width=60, command=self._swap_direction,
-            ).grid(row=0, column=col, padx=(0, 6), pady=6)
+                top, text="Swap", width=55, command=self._swap_direction,
+            ).grid(row=0, column=col, padx=(0, 4), pady=6)
             col += 1
 
             self.backend_var = ctk.StringVar(
                 value=normalise_backend(self.config_data.get("backend"))
             )
-            ctk.CTkLabel(top, text="Backend").grid(row=0, column=col, padx=(16, 6), pady=6)
+            ctk.CTkLabel(top, text="Backend").grid(row=0, column=col, padx=(10, 4), pady=6)
             col += 1
             ctk.CTkSegmentedButton(
                 top, values=["anthropic", "ollama"], variable=self.backend_var,
                 command=self._on_toolbar_change,
-            ).grid(row=0, column=col, padx=6, pady=6)
+            ).grid(row=0, column=col, padx=4, pady=6)
             col += 1
 
             top.grid_columnconfigure(col, weight=1)  # spacer: always the next free column
             col += 1
 
             ctk.CTkButton(
-                top, text="History", width=90, command=self._open_history
-            ).grid(row=0, column=col, sticky="e", padx=(10, 0))
+                top, text="History", width=80, command=self._open_history
+            ).grid(row=0, column=col, sticky="e", padx=(8, 0))
             col += 1
 
             ctk.CTkButton(
-                top, text="Settings", width=110, command=self._open_settings
-            ).grid(row=0, column=col, sticky="e", padx=10)
+                top, text="Settings", width=95, command=self._open_settings
+            ).grid(row=0, column=col, sticky="e", padx=8)
 
             # Row 1: French form and the Me/You gender-agreement controls.
             bottom = ctk.CTkFrame(bar, fg_color="transparent")
@@ -3132,29 +3132,29 @@ if GUI_AVAILABLE:
             self.formality_var = ctk.StringVar(
                 value=self.config_data.get("default_french_formality", FORM_INFORMAL)
             )
-            ctk.CTkLabel(bottom, text="French form").grid(row=0, column=0, padx=(10, 6), pady=(0, 8))
+            ctk.CTkLabel(bottom, text="French form").grid(row=0, column=0, padx=(6, 3), pady=(0, 8))
             ctk.CTkOptionMenu(
                 bottom, values=list(FORMALITIES), variable=self.formality_var,
-                width=150, command=self._on_toolbar_change,
-            ).grid(row=0, column=1, padx=6, pady=(0, 8))
+                width=135, command=self._on_toolbar_change,
+            ).grid(row=0, column=1, padx=3, pady=(0, 8))
 
             self.speaker_gender_var = ctk.StringVar(
                 value=self.config_data.get("default_french_speaker_gender", GENDER_FEMININE)
             )
-            ctk.CTkLabel(bottom, text="Me").grid(row=0, column=2, padx=(16, 6), pady=(0, 8))
+            ctk.CTkLabel(bottom, text="Me").grid(row=0, column=2, padx=(8, 3), pady=(0, 8))
             ctk.CTkOptionMenu(
                 bottom, values=list(FRENCH_GENDERS), variable=self.speaker_gender_var,
-                width=150, command=self._on_toolbar_change,
-            ).grid(row=0, column=3, padx=6, pady=(0, 8))
+                width=135, command=self._on_toolbar_change,
+            ).grid(row=0, column=3, padx=3, pady=(0, 8))
 
             self.recipient_gender_var = ctk.StringVar(
                 value=self.config_data.get("default_french_recipient_gender", GENDER_FEMININE)
             )
-            ctk.CTkLabel(bottom, text="You").grid(row=0, column=4, padx=(16, 6), pady=(0, 8))
+            ctk.CTkLabel(bottom, text="You").grid(row=0, column=4, padx=(8, 3), pady=(0, 8))
             ctk.CTkOptionMenu(
                 bottom, values=list(FRENCH_GENDERS), variable=self.recipient_gender_var,
-                width=150, command=self._on_toolbar_change,
-            ).grid(row=0, column=5, padx=6, pady=(0, 8))
+                width=135, command=self._on_toolbar_change,
+            ).grid(row=0, column=5, padx=3, pady=(0, 8))
 
             # User conversation presets (v1.19): a named snapshot of the five
             # controls above plus Situation, saved to plume_config.json.
@@ -3162,22 +3162,22 @@ if GUI_AVAILABLE:
             # pane (notes_008 #1) — this is the toolbar's own preset system.
             self.preset_var = ctk.StringVar(value=CONVERSATION_PRESET_PLACEHOLDER)
             ctk.CTkLabel(bottom, text="Presets").grid(
-                row=0, column=6, padx=(16, 6), pady=(0, 8)
+                row=0, column=6, padx=(8, 3), pady=(0, 8)
             )
             self.preset_menu = ctk.CTkOptionMenu(
                 bottom, values=self._conversation_preset_menu_values(),
-                variable=self.preset_var, width=160,
+                variable=self.preset_var, width=110,
                 command=self._apply_conversation_preset,
             )
-            self.preset_menu.grid(row=0, column=7, padx=6, pady=(0, 8))
+            self.preset_menu.grid(row=0, column=7, padx=(2, 3), pady=(0, 8))
             ctk.CTkButton(
-                bottom, text="Save preset…", width=110,
+                bottom, text="Save…", width=60,
                 command=self._save_conversation_preset_dialog, fg_color="gray30",
-            ).grid(row=0, column=8, padx=(6, 0), pady=(0, 8))
+            ).grid(row=0, column=8, padx=(2, 0), pady=(0, 8))
             ctk.CTkButton(
-                bottom, text="Delete", width=70,
+                bottom, text="Delete", width=55,
                 command=self._delete_conversation_preset, fg_color="gray30",
-            ).grid(row=0, column=9, padx=(6, 0), pady=(0, 8))
+            ).grid(row=0, column=9, padx=(2, 0), pady=(0, 8))
 
         def _build_body(self):
             body = ctk.CTkFrame(self, fg_color="transparent")
@@ -3220,7 +3220,7 @@ if GUI_AVAILABLE:
             situation_row.grid(row=4, column=0, sticky="ew", padx=12, pady=(6, 0))
             situation_row.grid_columnconfigure(1, weight=1)
             ctk.CTkLabel(situation_row, text="Situation (optional)").grid(
-                row=0, column=0, sticky="w", padx=(0, 8)
+                row=0, column=0, sticky="w", padx=(0, 6)
             )
             self.situation_entry = ctk.CTkEntry(
                 situation_row,
@@ -3231,9 +3231,9 @@ if GUI_AVAILABLE:
             ctk.CTkOptionMenu(
                 situation_row,
                 values=[SITUATION_PRESET_PLACEHOLDER] + list(SITUATION_PRESETS),
-                variable=self.situation_preset_var, width=150,
+                variable=self.situation_preset_var, width=130,
                 command=self._apply_situation_preset,
-            ).grid(row=0, column=2, padx=(8, 0))
+            ).grid(row=0, column=2, padx=(6, 0))
 
             # Register tones (v1.20): background context for the translator,
             # the same class of information as Situation — never outranks
@@ -3262,9 +3262,9 @@ if GUI_AVAILABLE:
             writing_row.grid(row=6, column=0, sticky="ew", padx=12, pady=(6, 0))
             self._writing_vars = {}
             writing_fields = (
-                ("mode", "Mode", WRITING_MODES, 120),
-                ("strength", "Strength", WRITING_STRENGTHS, 90),
-                ("role", "Role", WRITING_ROLES, 90),
+                ("mode", "Mode", WRITING_MODES, 130),
+                ("strength", "Strength", WRITING_STRENGTHS, 105),
+                ("role", "Role", WRITING_ROLES, 100),
             )
             column = 0
             for key, label, choices, width in writing_fields:
@@ -3288,19 +3288,19 @@ if GUI_AVAILABLE:
 
             buttons = ctk.CTkFrame(left, fg_color="transparent")
             buttons.grid(row=7, column=0, sticky="ew", padx=12, pady=(8, 4))
-            ctk.CTkButton(buttons, text="Paste", width=90, command=self._paste,
-                          fg_color="gray30").grid(row=0, column=0, padx=(0, 8))
-            ctk.CTkButton(buttons, text="Clear", width=90, command=self._clear,
-                          fg_color="gray30").grid(row=0, column=1, padx=(0, 8))
+            ctk.CTkButton(buttons, text="Paste", width=80, command=self._paste,
+                          fg_color="gray30").grid(row=0, column=0, padx=(0, 6))
+            ctk.CTkButton(buttons, text="Clear", width=80, command=self._clear,
+                          fg_color="gray30").grid(row=0, column=1, padx=(0, 6))
             ctk.CTkButton(
-                buttons, text="Copy source", width=100, command=self._copy_source,
+                buttons, text="Copy source", width=95, command=self._copy_source,
                 fg_color="gray30",
-            ).grid(row=0, column=2, padx=(0, 8))
+            ).grid(row=0, column=2, padx=(0, 6))
             self.reply_btn = ctk.CTkButton(
-                buttons, text="Reply", width=90, command=self._reply,
+                buttons, text="Reply", width=80, command=self._reply,
                 fg_color="gray30",
             )
-            self.reply_btn.grid(row=0, column=3, padx=(0, 8))
+            self.reply_btn.grid(row=0, column=3, padx=(0, 6))
 
             # A second row for the two "do the work" actions, right-aligned as
             # a secondary/primary pair — the same spacer-column pattern the
@@ -3316,10 +3316,10 @@ if GUI_AVAILABLE:
             )
             self.open_file_btn.grid(row=0, column=0, sticky="w")
             self.correct_btn = ctk.CTkButton(
-                translate_row, text="Correct English", width=140,
+                translate_row, text="Correct English", width=130,
                 command=self._correct_then_translate, fg_color="gray30",
             )
-            self.correct_btn.grid(row=0, column=1, padx=(0, 8))
+            self.correct_btn.grid(row=0, column=1, padx=(0, 6))
             # Dispatches via the Writing profile's Mode above (Translate by
             # default, so unchanged behaviour unless Mode is deliberately
             # changed); the explicit Correct English button above always
@@ -3428,29 +3428,29 @@ if GUI_AVAILABLE:
             favourite_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
             favourite_row.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
             self.favourite_btn = ctk.CTkButton(
-                favourite_row, text="☆ Favourite", width=140,
+                favourite_row, text="☆ Favourite", width=120,
                 command=self._favourite_current_result,
                 state="disabled",
             )
             self.favourite_btn.grid(row=0, column=0, sticky="w")
             self.export_btn = ctk.CTkButton(
-                favourite_row, text="Export", width=90,
+                favourite_row, text="Export", width=80,
                 command=self._export_current_result, fg_color="gray30",
                 state="disabled",
             )
-            self.export_btn.grid(row=0, column=1, padx=(8, 0), sticky="w")
+            self.export_btn.grid(row=0, column=1, padx=(5, 0), sticky="w")
             self.copy_html_btn = ctk.CTkButton(
-                favourite_row, text="Copy as HTML", width=120,
+                favourite_row, text="Copy as HTML", width=95,
                 command=self._copy_current_result_as_html, fg_color="gray30",
                 state="disabled",
             )
-            self.copy_html_btn.grid(row=0, column=2, padx=(8, 0), sticky="w")
+            self.copy_html_btn.grid(row=0, column=2, padx=(5, 0), sticky="w")
             self.export_diff_btn = ctk.CTkButton(
-                favourite_row, text="Export diff…", width=110,
+                favourite_row, text="Export diff…", width=85,
                 command=self._export_current_diff, fg_color="gray30",
                 state="disabled",
             )
-            self.export_diff_btn.grid(row=0, column=3, padx=(8, 0), sticky="w")
+            self.export_diff_btn.grid(row=0, column=3, padx=(5, 0), sticky="w")
 
             self.language_label = ctk.CTkLabel(right, text="", text_color="gray70")
             self.language_label.grid(row=2, column=0, sticky="w", padx=12)

@@ -853,6 +853,36 @@ schema impact beyond one constants tuple:
   snapshot carrying the live profile — plus screenshots of the real
   running app at both window sizes. Full suite: 259 tests pass.
 
+## v1.30 — Compact layout tightening; a wider documented minimum
+
+- **Prompted by a real, pre-existing bug found while checking the
+  request:** the toolbar's second row (French form/Me/You/Presets/Save
+  preset…/Delete) already didn't fit at the documented 920×600 minimum
+  — Save preset… and Delete were rendered entirely off-screen, invisible
+  and unreachable, not merely clipped. This had been true since Save/
+  Delete were added in v1.19 and was never caught because minimum-size
+  testing wasn't part of this project's verification habit until v1.29.
+- **Padding tightened throughout the toolbar and both panes:** inter-
+  element gaps (label→control, button→button) were reduced app-wide —
+  toolbar rows, the left pane's button rows, and the right pane's
+  Favourite/Export/Copy as HTML/Export diff… row — without shrinking any
+  dropdown below what its actual field *values* need (only static
+  button labels and already-accepted-clip fields like preset names
+  were touched), so no real data becomes unreadable.
+- **The documented minimum widened from 920×600 to 1000×600**, and the
+  Strength/Role dropdowns (v1.29) were widened slightly (90/90 → 105/100)
+  once the extra room existed — at 1000×600 every control, including
+  "Source-led" and "General" in the writing-profile row, now displays
+  its full text with no clipping at all, not just "nothing is missing."
+  The 920×600 case this replaces was usable but visually cramped, per
+  direct user feedback after reviewing screenshots at both sizes.
+- Verified with real screenshots at both 1000×600 and the default
+  1180×760 (a `ShowWindow` minimize/restore cycle was needed between
+  resize and capture in this environment — a plain resize occasionally
+  left a stale partial repaint in the screenshot, a capture artefact
+  distinct from anything the app itself does wrong). Full suite: 259
+  tests pass (no logic changed, layout-only version).
+
 ---
 
 ### Notes on sequencing
