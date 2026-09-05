@@ -1,0 +1,741 @@
+PLUME — TARGETED ENHANCEMENT ARCHITECTURE
+Note 015 | 5 September 2026 | Read-only design and integration proposals
+Author: Grok (Lead Enhancement & Feature Architect)
+Source: live C:\Plume on GitHub main (hawkers63/Plume @ c7b11c5)
+        plume.py 5,010 lines; ROADMAP through v1.31; tests 289 passing
+        (headless suite not re-run this session; count taken from ROADMAP).
+Mode: ideation only. No application, configuration or test source is edited.
+
+Name remapping (the brief still uses an earlier writing-assistant vocabulary):
+
+  Requested concept                 Live Plume
+  --------------------------------  ------------------------------------------
+  self.original_box                 self.input_box  (line 3387)
+  scriptorium_config.json           plume_config.json  (CONFIG_FILENAME, line 97)
+  WRITING_PRESETS                   SITUATION_PRESETS (hard-coded, line 161)
+                                    + conversation_presets (v1.19/v1.24/v1.29)
+  Mode / Strength / Role            writing profile, landed v1.29 (line 293)
+  Two-tone UI limit                 MAX_TONES = 3; newest-slot wins (v1.20/v1.24)
+  New retry / HTML / metrics / MD   Landed v1.17 / v1.21 / v1.23 / v1.27
+  Native Explorer WM_DROPFILES      Attempted v1.18, reverted (interpreter crash)
+  Open file .txt/.md                Landed v1.28; .docx deliberately out of scope
+
+------------------------------------------------------------------------
+0. What this note does not reopen
+------------------------------------------------------------------------
+notes_014.txt is not on GitHub main and was not in this workspace (user:
+not yet synced). Anything 014 already queued for implementation is
+excluded here. Conservatively, that includes every unlanded notes_013
+item and every reverted experiment:
+
+  * Native WM_DROPFILES / WNDPROC subclassing / tkinterdnd2.
+  * python-docx Word import or export.
+  * Enabling Anthropic or Ollama streaming (`"stream": true`).
+  * A second writing-profile schema or a second preset file
+    (scriptorium_config.json). Credentials stay in plume_config.json.
+
+If 014 later proves to name any feature below, 014 wins; do not dual-track.
+
+Already landed (v1.15–v1.31) and therefore also out of scope: Correct
+English, tray/autostart, conversation presets with tones and writing
+profile, three-tone combinator with conflict advisory, glossary,
+Open file, study-sheet + textual-diff export, CF_HTML clipboard with a
+real HWND, reading-time metrics on the input, backoff with Retry-After
+HTTP-date, 529, IncompleteRead, max_retry_wait, History reload-before-
+mutate, Speak/correction reliability, source snapshots.
+
+------------------------------------------------------------------------
+1. Executive summary
+------------------------------------------------------------------------
+Plume is now a dense, single-purpose translator. The next useful work
+is not another prompt control: it is making the existing machine faster
+to feed, easier to find things in, and safer to interrupt — without
+touching the JSON contract or adding HTTP libraries.
+
+Recommended order (v1.32–v1.36):
+
+  A. Crash-safe file intake — argv, Explorer Send to, paste-as-path.
+     Reuses v1.28's reader. No WndProc.  (brief item 1, without the crash)
+  B. User-defined Situation catalogue in plume_config.json.
+     Completes brief item 2 without a second preset system.  (v1.33)
+  C. Sticky register defaults (last tones + writing profile on launch).
+     Three-tone combinator stays as-is.  (brief item 3, residual UX)
+  D. Result-pane metrics, copy-all-five, optional French typography
+     at copy time.  (brief item 4, the remaining slice)
+  E. Cooperative cancel of an in-flight urllib call, plus an opt-in
+     local Ollama fallback after Claude retries are exhausted.
+     Not streaming.  (brief item 5, the remaining slice)
+
+Small companion, same sitting if the layout still has room:
+
+  F. History search box, and a tray "Show and paste clipboard" item
+     that never auto-translates.
+
+UX rationale: a conversation helper lives next to Explorer, the
+clipboard and the tray. v1.18 proved we cannot intercept Explorer
+drops in this Tcl/Tk build. We can still accept the same files through
+every other Windows 11 path that does not subclass a WndProc. Situation
+is the one catalogue still hard-coded while conversation presets are
+user-defined — that inconsistency is what users will notice. Sticky
+tones stop the "set Warm/Precise every session" tax. Copy-time
+typography and copy-all-five make the result pane as useful as the
+input pane already is. Cancel and a local fallback stop the "Clear did
+nothing, Claude is still billing" feeling.
+
+No new third-party HTTP packages. The only new Windows surface is a
+SendTo .cmd (standard library + one file write). CustomTkinter stays
+the GUI. File intake never submits text to either backend.
+
+------------------------------------------------------------------------
+2. Detailed architectural proposals
+------------------------------------------------------------------------
+
+2.A  Crash-safe file intake  (v1.32)
+------------------------------------
+v1.28 already reads .txt/.md on a worker via read_import_text()
+(line 1283) and _begin_file_import() (line 4003). The missing piece is
+getting a path *into* that function without dragging onto the window.
+
+Three intakes, one worker:
+
+  1. Command line. Frozen: `Plume.exe --import "D:\draft.txt"`.
+     From source: `python plume.py --import "D:\draft.txt"`.
+     Extra positional paths are ignored after the first, with one
+     advisory. `--start-minimised` remains valid and orthogonal.
+  2. Explorer Send to. Settings checkbox, off by default, writes
+     `%APPDATA%\Microsoft\Windows\SendTo\Plume.cmd` that launches the
+     same command as autostart_command() plus `--import %1`. Removing
+     the checkbox deletes the .cmd. No .lnk, no pywin32, no COM.
+  3. Paste-as-path. If the clipboard is a quoted or raw filesystem
+     path ending in .txt/.md and the file exists, _paste() offers
+     "Open this file?" rather than inserting the path as source text.
+     Decline → insert as text (today's behaviour).
+
+Stale-import, replace-question, 2 MiB and character-limit behaviour
+stay exactly as v1.28. Never auto-translate after import.
+
+State: no new config keys except `send_to_shortcut` (bool, default
+False). Performance: one extra argv parse at start; SendTo is a 1 KB
+file; paste-as-path is a single os.path.isfile.
+
+Explicitly not in this design: WM_DROPFILES, IDropTarget, tkinterdnd2,
+cloud-placeholder files, Outlook attachments, .docx.
+
+2.B  User Situation catalogue  (v1.33)
+--------------------------------------
+SITUATION_PRESETS (line 161) is still a five-line tuple. Conversation
+presets (v1.19) already snapshot Situation *together with* direction,
+form, gender, tones and writing profile. Users also want a *situation-
+only* shortcut ("Guild raid chat", "School gate") without minting a
+full conversation preset.
+
+New config key `user_situation_presets`: a list of short strings,
+normalised like keep-as-is (strip, drop blanks, casefold-unique, cap
+MAX_USER_SITUATIONS = 12, MAX_SITUATION_CHARS = 80). Built-in names
+are reserved: a user entry that casefold-matches a built-in is
+dropped on load, so the menu cannot show two "Neighbour" rows.
+
+Menu values: placeholder + built-ins + a separator-like label
+"(My situations)" that is not selectable + user entries.
+CTkOptionMenu has no real separator; use a disabled-looking prefix
+"• " on user rows and ignore a click on the heading.
+
+Actions, next to the existing menu (narrow, matching v1.30's
+tightening):
+  * "Save situation" — current situation_entry text, after
+    normalisation. Duplicate (casefold) refused with an advisory, not
+    silently skipped.
+  * "Delete situation" — only user entries; built-ins cannot be
+    deleted.
+
+Persistence uses the v1.24 transactional pattern already used for
+conversation presets: build a candidate config, save_config() first,
+then publish to config_data and refresh the menu. ConfigError/OSError
+surface on the advisory; never force=True.
+
+No prompt change. Selecting a user situation still just writes the
+string into situation_entry (_apply_situation_preset, line 3747).
+
+2.C  Sticky register defaults  (v1.34)
+--------------------------------------
+MAX_TONES remains 3. validate_tones / build_tone_instruction / the
+newest-slot-wins UI (lines 1393, 1418, 3777) stay. This is not a
+combinator expansion.
+
+Gap: on launch, the three tone menus and the Mode/Strength/Role row
+always start at None / Translate / Source-led / General, even if the
+user lives in Warm+Precise+Colleague. Conversation presets restore a
+*named* snapshot; they do not restore "whatever I was using".
+
+New keys, coerced on load:
+
+  "default_tones": []            # 0–3 REGISTER_TONES, via validate_tones
+  "default_writing_profile": {}  # via normalise_writing_profile
+
+Restore in PlumeApp.__init__ after the widgets exist (after
+_build_body). Save on Settings save using the existing toolbar-wins
+rule (SettingsDialog._save already copies direction/form/gender from
+the master at line ~2471 in earlier trees; the live _save should copy
+tones and writing profile the same way). Also save from a small
+"Remember" button on the tones row so the user does not have to open
+Settings.
+
+Applying a conversation preset still overrides the live menus; it does
+not rewrite default_tones unless the user then clicks Remember.
+
+Prompt: unchanged. Anti-embellishment guards already in
+build_tone_instruction and build_writing_profile_instruction are
+sufficient; do not add a fourth tone or a new conflict pair without a
+calibration pass (notes_013 said the same).
+
+2.D  Result export polish  (v1.35)
+----------------------------------
+Already present: input metrics (text_metrics, line 2462), study-sheet
+export, textual diff, Copy as HTML. Remaining slice:
+
+  1. A metrics label under the primary translation, refreshed by
+     _refresh_primary_display so "Use this" and finishing-touch
+     changes are counted. French WPM when the result's target is
+     French. Heuristic, same disclaimer as the input label.
+  2. "Copy five" on the alternatives header: numbered plain text of
+     the five translation fields (not meaning checks), no finishing
+     touch. HTML sibling uses the existing escape + CF_HTML helper.
+  3. Optional French typography, copy-time only, off by default.
+     When the working result's target is French *and* the Settings
+     checkbox `french_typography` is on, Copy main / Copy five / Copy
+     HTML run apply_french_typography() *after* the finishing touch:
+       * U+202F (narrow no-break space) before ; : ? !
+       * "..." -> "…"
+       * straight "pairs" -> « … » when they wrap a phrase
+     Never sent to the model, never written into _current_main,
+     never exported in the faithful Markdown diff. Speak uses the
+     raw translation, matching v1.6's convention.
+
+No python-docx. No RTF. Metrics stay Unicode code points + whitespace
+tokens.
+
+2.E  Cooperative cancel and local fallback  (v1.36)
+---------------------------------------------------
+Backoff is done (v1.17/v1.27). Streaming is excluded. Two remaining
+resilience holes:
+
+  1. Clear / close / a newer request only bump `_request_id`. The
+     daemon thread keeps reading the socket; the user is billed for a
+     translation they have abandoned. Fix: a per-request
+     `threading.Event` stored on the app (`self._http_cancel`).
+     `_http_post_json` takes an optional `cancel_event` and, in the
+     wait_or_give_up path *and* after urlopen returns, raises a
+     dedicated BackendError("cancelled") if the event is set. Clear,
+     _on_close_destroy, and the start of a newer _translate/_speak
+     set the event, then create a fresh one for the new request.
+     urllib cannot abort a blocked read portably without closing the
+     socket; we additionally wrap urlopen in a short join-able pattern
+     only around the wait, not the read — documented limitation: a
+     request already inside response.read() may still finish, but it
+     will not be delivered (existing stale-id guard) and will not
+     start a retry. That is the honest contract.
+
+  2. Opt-in local fallback. New config `fallback_to_ollama` (bool,
+     default False), Settings checkbox, disabled when TRAY-style
+     extras are not the issue — when no ollama_model is set. After
+     call_anthropic exhausts retries with a retryable failure, if the
+     flag is on *and* the snapshot backend was anthropic, run_backend
+     tries call_ollama once. Never the other way around (Ollama must
+     not silently ship text to Anthropic). Surface a single advisory:
+     "Claude was unavailable; translated with local Ollama." The
+     result still goes through parse_translation_result. Privacy
+     notice for Claude is unchanged; Ollama is local so no extra
+     notice. One fallback attempt, no nested retry storm.
+
+Not in this design: SSE parsers, stream:true, token-by-token UI
+updates, cancelling ElevenLabs mid-download (can follow later on the
+same Event).
+
+2.F  History search + tray paste  (companion)
+---------------------------------------------
+HistoryDialog has Favourites-only and no search (line 2982). Add a
+CTkEntry "Search" that filters `_visible_entries` by casefold
+substring over source_text, main_translation and situation. Empty
+query = today's list. No new file format.
+
+Tray menu today is Show / Quit (line 4122). Add "Show and paste
+clipboard": deiconify, then the same _paste() as the button, including
+the paste-as-path offer. Never calls _translate. pystray callback hops
+via after(0, …) as _tray_show already does.
+
+------------------------------------------------------------------------
+3. Modular code snippets
+------------------------------------------------------------------------
+British English. PEP 8. Drop-in. Comments explain *why*.
+
+------------------------------------------------------------------------
+3.A  argv + Send to + paste-as-path
+------------------------------------------------------------------------
+
+# --- constants, near IMPORT_BYTE_LIMIT (line 1280) ----------------------
+
+SENDTO_SHORTCUT_NAME = "Plume.cmd"
+
+
+def parse_import_path(argv) -> str:
+    """Return the first --import argument, or "". Never raises."""
+    args = list(argv or [])
+    if "--import" in args:
+        index = args.index("--import")
+        if index + 1 < len(args):
+            return args[index + 1]
+    # A bare existing .txt/.md path is accepted so SendTo can pass %1.
+    for item in args[1:]:
+        if item.startswith("-"):
+            continue
+        if os.path.splitext(item)[1].casefold() in {".txt", ".md"}:
+            return item
+    return ""
+
+
+def send_to_cmd_path() -> str:
+    appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(appdata, "Microsoft", "Windows", "SendTo",
+                        SENDTO_SHORTCUT_NAME)
+
+
+def set_send_to_shortcut(enabled: bool) -> None:
+    """Create or delete the Explorer Send to command. Raises ConfigError."""
+    path = send_to_cmd_path()
+    if not enabled:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise ConfigError("Could not remove the Send to shortcut.") from exc
+        return
+    folder = os.path.dirname(path)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        command = autostart_command().replace(" --start-minimised", "")
+        body = (
+            "@echo off\r\n"
+            "start \"\" {command} --import \"%~1\"\r\n"
+        ).format(command=command)
+        with open(path, "w", encoding="ascii", newline="") as fh:
+            fh.write(body)
+    except OSError as exc:
+        raise ConfigError("Could not write the Send to shortcut.") from exc
+
+
+def looks_like_importable_path(text: str) -> str:
+    """If *text* is one quoted/raw .txt/.md path that exists, return it."""
+    candidate = (text or "").strip().strip('"')
+    if os.path.splitext(candidate)[1].casefold() not in {".txt", ".md"}:
+        return ""
+    if os.path.isfile(candidate):
+        return candidate
+    return ""
+
+
+# PlumeApp.__init__, after _maybe_start_tray (line 3236 area):
+#     import_path = parse_import_path(sys.argv)
+#     if import_path:
+#         self.after(0, lambda p=import_path: self._begin_file_import(p))
+
+# PlumeApp._paste — wrap the insert:
+        def _paste(self):
+            try:
+                clip = self.clipboard_get()
+            except Exception:
+                return
+            path = looks_like_importable_path(clip)
+            if path:
+                if messagebox.askyesno(
+                    "Open file",
+                    "The clipboard holds a file path. Open it as source text?",
+                    parent=self,
+                ):
+                    self._begin_file_import(path)
+                    return
+            self.input_box.insert("insert", clip)
+            self._on_input_change()
+
+------------------------------------------------------------------------
+3.B  User situation catalogue
+------------------------------------------------------------------------
+
+MAX_USER_SITUATIONS = 12
+MAX_SITUATION_CHARS = 80
+USER_SITUATION_HEADING = "(My situations)"
+
+
+def normalise_user_situations(value) -> list:
+    """Short, unique situation labels; built-in names are reserved."""
+    if isinstance(value, str):
+        value = [line.strip() for line in value.splitlines()]
+    if not isinstance(value, list):
+        return []
+    reserved = {item.casefold() for item in SITUATION_PRESETS}
+    reserved.add(SITUATION_PRESET_PLACEHOLDER.casefold())
+    reserved.add(USER_SITUATION_HEADING.casefold())
+    seen = set()
+    out = []
+    for item in value:
+        text = _safe_short_string(item, MAX_SITUATION_CHARS)
+        if not text:
+            continue
+        key = text.casefold()
+        if key in reserved or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= MAX_USER_SITUATIONS:
+            break
+    return out
+
+
+def situation_menu_values(user_items) -> list:
+    values = [SITUATION_PRESET_PLACEHOLDER] + list(SITUATION_PRESETS)
+    clean = normalise_user_situations(user_items)
+    if clean:
+        values.append(USER_SITUATION_HEADING)
+        values.extend(clean)
+    return values
+
+# DEFAULT_CONFIG: "user_situation_presets": []
+# load_config: config["user_situation_presets"] = normalise_user_situations(...)
+
+# PlumeApp helpers, beside _apply_situation_preset (line 3747):
+
+        def _situation_menu_values(self):
+            return situation_menu_values(
+                self.config_data.get("user_situation_presets")
+            )
+
+        def _refresh_situation_menu(self):
+            self.situation_preset_menu.configure(values=self._situation_menu_values())
+            self.situation_preset_var.set(SITUATION_PRESET_PLACEHOLDER)
+
+        def _apply_situation_preset(self, value):
+            if value in (SITUATION_PRESET_PLACEHOLDER, USER_SITUATION_HEADING):
+                self.situation_preset_var.set(SITUATION_PRESET_PLACEHOLDER)
+                return
+            self.situation_entry.delete(0, "end")
+            self.situation_entry.insert(0, value)
+
+        def _save_user_situation(self):
+            text = self._situation_text()
+            candidate = normalise_user_situations(
+                list(self.config_data.get("user_situation_presets") or []) + [text]
+            )
+            if text.casefold() in {item.casefold() for item in SITUATION_PRESETS}:
+                self.advisory.configure(
+                    text="That label is already a built-in situation."
+                )
+                self.advisory.grid()
+                return
+            if text and text not in candidate:
+                self.advisory.configure(
+                    text="That situation could not be saved (duplicate, empty, "
+                         "or the list is full)."
+                )
+                self.advisory.grid()
+                return
+            new_config = dict(self.config_data)
+            new_config["user_situation_presets"] = candidate
+            try:
+                save_config(new_config)
+            except (ConfigError, OSError) as exc:
+                self.advisory.configure(text=str(exc))
+                self.advisory.grid()
+                return
+            self.config_data = new_config
+            self._refresh_situation_menu()
+
+------------------------------------------------------------------------
+3.C  Sticky register defaults
+------------------------------------------------------------------------
+
+# DEFAULT_CONFIG additions:
+#   "default_tones": [],
+#   "default_writing_profile": {},
+
+# load_config:
+#   config["default_tones"] = validate_tones(config.get("default_tones"))
+#   config["default_writing_profile"] = normalise_writing_profile(
+#       config.get("default_writing_profile"))
+
+        def _restore_register_defaults(self):
+            tones = validate_tones(self.config_data.get("default_tones"))
+            padded = tones + [TONE_NONE] * (MAX_TONES - len(tones))
+            for var, tone in zip(self.tone_vars, padded):
+                var.set(tone)
+            profile = normalise_writing_profile(
+                self.config_data.get("default_writing_profile")
+            )
+            self._writing_vars["mode"].set(profile["mode"])
+            self._writing_vars["strength"].set(profile["strength"])
+            self._writing_vars["role"].set(profile["role"])
+
+        def _remember_register_defaults(self):
+            new_config = dict(self.config_data)
+            new_config["default_tones"] = self._current_tones()
+            new_config["default_writing_profile"] = self._current_writing_profile()
+            try:
+                save_config(new_config)
+            except (ConfigError, OSError):
+                self.advisory.configure(
+                    text="Those defaults could not be saved."
+                )
+                self.advisory.grid()
+                return
+            self.config_data = new_config
+
+# Call _restore_register_defaults at the end of __init__.
+# Call _remember_register_defaults from a "Remember" button on tones_row
+# and from SettingsDialog._save (copy live tones/profile onto _config
+# before save_config, same as direction already does).
+
+------------------------------------------------------------------------
+3.D  Metrics, copy-five, typography
+------------------------------------------------------------------------
+
+_NBSP = "\u202f"  # narrow no-break space, French punctuation
+
+
+def apply_french_typography(text: str) -> str:
+    """Copy-time French punctuation only. Idempotent enough to unit-test.
+
+    Does not invent words. Does not run on English. Callers must already
+    know the target language is French.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    out = text.replace("...", "\u2026")
+    out = re.sub(r"[ \t\u00a0\u202f]*([;:!?])", _NBSP + r"\1", out)
+    # Straight quotes wrapping a short phrase → guillemets. Leave unmatched
+    # quotes alone so a single inch-mark is not turned into an opener.
+    out = re.sub(r"\"([^\"]{1,80})\"", r"« \1 »", out)
+    return out
+
+
+def format_five_alternatives(result) -> str:
+    """Numbered translations only, no meaning checks, no finishing touch."""
+    lines = []
+    for index, variation in enumerate(result.get("variations") or [], start=1):
+        translation = (variation or {}).get("translation") or ""
+        if translation.strip():
+            lines.append("{}. {}".format(index, translation.strip()))
+    return "\n".join(lines)
+
+
+        def _copy_five(self):
+            if not self._current_result:
+                return
+            text = format_five_alternatives(self._current_result)
+            if (
+                self.config_data.get("french_typography")
+                and (self._current_result or {}).get("target_language") == FRENCH
+            ):
+                text = apply_french_typography(text)
+            self._copy(text)
+
+        def _copy_main(self):
+            text = append_finishing_touch(self._current_main, self._current_touch())
+            if (
+                self.config_data.get("french_typography")
+                and (self._current_result or {}).get("target_language") == FRENCH
+            ):
+                text = apply_french_typography(text)
+            self._copy(text)
+
+        def _refresh_primary_display(self):
+            composed = append_finishing_touch(self._current_main, self._current_touch())
+            self._set_primary_text(composed or "Your main translation will appear here.")
+            language = None
+            if (self._current_result or {}).get("target_language") == FRENCH:
+                language = FRENCH
+            self.result_metrics_label.configure(
+                text=format_metrics_label(text_metrics(composed, language=language))
+            )
+
+# DEFAULT_CONFIG: "french_typography": False
+# Settings: a checkbox "French punctuation on copy (narrow spaces, guillemets)".
+# _build_right: CTkLabel result_metrics_label under primary_text (row 0 of
+# primary_card is the textbox; add the label as row 0b / shift finishing
+# touches down one — prefer a small label on the existing row 0 frame
+# rather than a new card). Copy five: a button on the alternatives header.
+
+------------------------------------------------------------------------
+3.E  Cancel event + Ollama fallback
+------------------------------------------------------------------------
+
+        # PlumeApp.__init__:
+        #     self._http_cancel = threading.Event()
+
+        def _new_http_cancel(self):
+            """Invalidate in-flight HTTP waits; return a fresh event."""
+            old = getattr(self, "_http_cancel", None)
+            if old is not None:
+                old.set()
+            self._http_cancel = threading.Event()
+            return self._http_cancel
+
+# Call _new_http_cancel() at the start of _translate, _correct_then_translate
+# and _speak, and from _clear / _on_close_destroy (alongside the id bump).
+
+def _http_post_json(..., cancel_event=None):
+    # inside wait_or_give_up, before time.sleep:
+        if cancel_event is not None and cancel_event.is_set():
+            raise BackendError("The request was cancelled.")
+    # after a successful urlopen, before json.loads:
+        if cancel_event is not None and cancel_event.is_set():
+            raise BackendError("The request was cancelled.")
+
+# Thread the event through call_anthropic / call_ollama / run_backend
+# via config_snapshot["_cancel_event"] so the worker does not close over
+# the widget. Pop it before any persistence.
+
+def run_backend(config_snapshot, system_prompt, user_text):
+    backend = normalise_backend(config_snapshot.get("backend"))
+    try:
+        if backend == "ollama":
+            return call_ollama(config_snapshot, system_prompt, user_text)
+        return call_anthropic(config_snapshot, system_prompt, user_text)
+    except BackendError as exc:
+        if (
+            backend != "ollama"
+            and config_snapshot.get("fallback_to_ollama")
+            and (config_snapshot.get("ollama_model") or "").strip()
+            and "cancelled" not in str(exc).casefold()
+        ):
+            text = call_ollama(config_snapshot, system_prompt, user_text)
+            return text, "fallback-ollama"
+        raise
+
+# Simpler than changing return types: set snapshot["_used_fallback"] from
+# run_backend by mutating the snapshot (it is already a private copy).
+# translate() then appends a notes[] warning if that flag is set.
+# Messages must not include source text.
+
+------------------------------------------------------------------------
+3.F  History search + tray paste
+------------------------------------------------------------------------
+
+# HistoryDialog.__init__, in the header, column 1:
+            self.search_var = ctk.StringVar(value="")
+            search = ctk.CTkEntry(
+                header, textvariable=self.search_var, placeholder_text="Search",
+            )
+            search.grid(row=0, column=1, sticky="ew", padx=12)
+            search.bind("<KeyRelease>", lambda _e: self._refresh_list())
+
+        def _visible_entries(self):
+            rows = self._entries
+            if self._favourites_only.get():
+                rows = [e for e in rows if e.get("favourite")]
+            query = (self.search_var.get() or "").strip().casefold()
+            if not query:
+                return rows
+            def blob(entry):
+                return " ".join([
+                    str(entry.get("source_text") or ""),
+                    str(entry.get("main_translation") or ""),
+                    str(entry.get("situation") or ""),
+                ]).casefold()
+            return [e for e in rows if query in blob(e)]
+
+# Tray menu:
+            menu = _pystray.Menu(
+                _pystray.MenuItem("Show Plume", self._tray_show, default=True),
+                _pystray.MenuItem("Show and paste clipboard", self._tray_paste),
+                _pystray.MenuItem("Quit", self._tray_quit),
+            )
+
+        def _tray_paste(self, icon=None, item=None):
+            def _do():
+                self._tray_show()
+                self._paste()
+            try:
+                self.after(0, _do)
+            except Exception:
+                pass
+
+------------------------------------------------------------------------
+4. Insertion map
+------------------------------------------------------------------------
+Item   File / symbol                               Around
+-----  ------------------------------------------  ------
+A      parse_import_path, set_send_to_shortcut     after read_import_text 1283
+       DEFAULT_CONFIG send_to_shortcut             435
+       load_config coerce bool                     543
+       SettingsDialog checkbox + _save             Settings toggles ~2890
+       PlumeApp.__init__ argv import               after _maybe_start_tray
+       PlumeApp._paste                             3984
+       main() may stay as-is (argv read on app)
+B      normalise_user_situations                   after SITUATION_PRESETS 161
+       DEFAULT_CONFIG user_situation_presets       435
+       load_config                                 528
+       _build_left situation_row                   3403
+       _apply_situation_preset                     3747
+C      DEFAULT_CONFIG default_tones/profile        435
+       load_config                                 528
+       PlumeApp.__init__ restore                   end of __init__ 3187
+       tones_row Remember button                   3425
+       SettingsDialog._save toolbar-wins copy      live _save
+D      apply_french_typography                     near text_metrics 2462
+       format_five_alternatives                    near export helpers 948
+       _refresh_primary_display                    3723
+       _copy_main / _copy_five                     3739 / new
+       _build_right metrics label                  3533
+       DEFAULT_CONFIG french_typography            435
+E      _http_post_json cancel_event                1913
+       run_backend fallback                        2152
+       PlumeApp._new_http_cancel                   near _clear 4070
+       _translate / _correct / _speak / _clear     4629 / 4497 / 4304 / 4070
+       DEFAULT_CONFIG fallback_to_ollama           435
+F      HistoryDialog header + _visible_entries     2972 / 3012
+       _maybe_start_tray menu                      4122
+
+Tests to add (headless, tests\test_translator_logic.py):
+
+  * parse_import_path finds --import and a bare .md path; ignores flags
+  * looks_like_importable_path rejects prose and missing files (mock)
+  * normalise_user_situations drops built-in names, blanks, oversize
+  * validate_tones still caps at 3 after sticky-default round-trip
+  * apply_french_typography is idempotent on "Bonjour !" and leaves
+    English "Hello!" unchanged if the caller skipped it
+  * format_five_alternatives is numbered and omits meaning checks
+  * run_backend fallback flag is not set on a cancelled error
+  * History search is casefold and includes situation (pure helper
+    extracted from _visible_entries if the filter is pulled out)
+
+Manual gates: Send to from Explorer with a .txt; paste of `"D:\a.md"`;
+Remember tones → restart → menus restored; Copy five with typography
+on a French result; Clear during a Claude 429 does not deliver later;
+fallback advisory appears only with the checkbox on and Ollama up.
+
+------------------------------------------------------------------------
+5. Sequencing against the roadmap
+------------------------------------------------------------------------
+v1.32  Crash-safe file intake (A)
+v1.33  User Situation catalogue (B)
+v1.34  Sticky register defaults (C)
+v1.35  Result metrics, copy-five, French typography (D)
+v1.36  HTTP cancel + opt-in Ollama fallback (E)
+v1.37  History search + tray paste (F)  — fold into 1.33 or 1.35 if
+       a version wants a second small item
+
+Do not schedule another WndProc attempt in this series. v1.18 is the
+record of why.
+
+------------------------------------------------------------------------
+6. Verification this session
+------------------------------------------------------------------------
+Read-only. Core files not modified, moved or deleted. This note is the
+only write.
+
+  Inspected: GitHub plume.py (5,010 lines), ROADMAP.md (through v1.31),
+  notes_012 (bug hunt), notes_013 (Codex enhancement). notes_014 was
+  not available.
+
+  Not run: unittest, Claude, Ollama, ElevenLabs, git commit/push.
+
+End of notes_015.

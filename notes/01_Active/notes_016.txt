@@ -1,0 +1,69 @@
+Plume - Copyright pass verification (001)
+=============================================
+Scope  : C:\Plume on Hawkeye
+Date   : 5 September 2026
+Author : Fay (Bug Hunter)
+Mode   : Single read-only check. No other bots. No code edits.
+         No commit or push. Translator not reviewed.
+
+1. Executive summary
+--------------------
+Steward copyright pass verified. All five checklist items pass.
+HEAD and origin/main both at f7eb37d ("Add copyright header and drop
+Scriptorium comments from plume.py"). Working tree has no modified
+tracked files; one untracked note remains (notes_015.txt).
+
+Files read: plume.py (head), plume.spec, README.md, AGENTS.md,
+LICENSE, COPYRIGHT, git log/status. environment_admin.md confirmed
+absent. No Scriptorium string in the four named sources.
+
+2. Checklist results
+--------------------
+PASS 1 - plume.py header and docstring
+  Line 1: #!/usr/bin/env python3
+  Line 2: # Copyright (c) 2026 Mark Hawksworth. All rights reserved.
+  Line 3: # Not to be copied or altered without express permission. See LICENSE.
+  Module docstring includes: Copyright (c) 2026 Mark Hawksworth.
+
+PASS 2 - Scriptorium phrases gone
+  Select-String Scriptorium|scriptorium on plume.py, plume.spec,
+  README.md, AGENTS.md: no hits in any file.
+
+PASS 3 - LICENSE, COPYRIGHT, README Copyright section
+  LICENSE exists at repo root (proprietary notice, Mark Hawksworth 2026).
+  COPYRIGHT exists at repo root.
+  README.md has ## Copyright at line 320, with
+  "Copyright (c) 2026 Mark Hawksworth. All rights reserved." and
+  pointers to LICENSE and COPYRIGHT.
+
+PASS 4 - environment_admin.md absent
+  Test-Path C:\Plume\environment_admin.md -> False.
+  Related history: 1b819c6 Remove Environment Admin Grok Bot draft.
+
+PASS 5 - git log / status / origin/main
+  git log -5 --oneline:
+    f7eb37d Add copyright header and drop Scriptorium comments from plume.py
+    f237bfc Restore full README with copyright footer
+    ab36ed8 Document copyright and drop Scriptorium mention from README
+    43f827f Add proprietary copyright and Grok Bot mandates
+    1b819c6 Remove Environment Admin Grok Bot draft
+  HEAD == origin/main == f7eb37dd7499951997fe7906103d98f329d0f17f
+  Branch: main, up to date with origin/main.
+  origin/main DOES include the copyright commit (f7eb37d).
+  Working tree: not dirty for tracked files. Untracked only:
+    notes/01_Active/notes_015.txt
+
+3. Bugs
+-------
+None for this copyright-pass scope.
+
+4. What was not checked
+-----------------------
+- Full body of plume.py beyond the header/docstring (no translator review).
+- Exact historical "three Scriptorium phrases" wording (only absence of
+  Scriptorium/scriptorium in the four files was verified).
+- Contents of notes_004 through notes_015.
+- plume_config.json / plume_history.json (never read, per mandate).
+- Tests were not run.
+
+Stop.
