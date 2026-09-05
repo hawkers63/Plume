@@ -967,6 +967,7 @@ def normalise_conversation_preset(entry) -> dict | None:
         "recipient_gender": _coerce_choice(
             entry.get("recipient_gender"), FRENCH_GENDERS, GENDER_FEMININE),
         "situation": _safe_short_string(entry.get("situation")),
+        "tones": validate_tones(entry.get("tones")),
     }
 
 
@@ -974,16 +975,30 @@ def normalise_conversation_presets(value) -> list:
     """Return a short list of clean presets, de-duplicated by id.
 
     Caps at MAX_CONVERSATION_PRESETS so a hand-edited file cannot grow the
-    toolbar menu without bound.
+    toolbar menu without bound. A duplicate display name (from a hand
+    edit or an older file — a normal Save already refuses one outright)
+    is repaired deterministically with a "(2)", "(3)", ... suffix rather
+    than left ambiguous, since the preset menu and delete-by-name both
+    key on the name (v1.24).
     """
     if not isinstance(value, list):
         return []
-    out, seen = [], set()
+    out, seen_ids = [], set()
+    seen_names = {CONVERSATION_PRESET_PLACEHOLDER.casefold()}
     for item in value:
         clean = normalise_conversation_preset(item)
-        if clean is None or clean["id"] in seen:
+        if clean is None or clean["id"] in seen_ids:
             continue
-        seen.add(clean["id"])
+        base_name = clean["name"]
+        name = base_name
+        suffix_number = 2
+        while name.casefold() in seen_names:
+            suffix = " ({})".format(suffix_number)
+            name = base_name[:PRESET_NAME_MAX - len(suffix)] + suffix
+            suffix_number += 1
+        clean["name"] = name
+        seen_ids.add(clean["id"])
+        seen_names.add(name.casefold())
         out.append(clean)
         if len(out) >= MAX_CONVERSATION_PRESETS:
             break
@@ -2529,6 +2544,15 @@ if GUI_AVAILABLE:
                 self._config["default_french_recipient_gender"] = master.recipient_gender_var.get()
             if hasattr(master, "backend_var"):
                 self._config["backend"] = master.backend_var.get()
+            # Re-read the live preset list rather than the snapshot this
+            # dialog opened with: Save/Delete preset (main window) persist
+            # immediately and are not reflected in self._config, so saving
+            # Settings afterwards would otherwise revert a preset added or
+            # removed while this dialog was open (M1).
+            if hasattr(master, "config_data"):
+                self._config["conversation_presets"] = normalise_conversation_presets(
+                    master.config_data.get("conversation_presets", [])
+                )
             try:
                 save_config(self._config)
             except ConfigError as exc:
@@ -3013,7 +3037,8 @@ if GUI_AVAILABLE:
             for index, tone_var in enumerate(self.tone_vars):
                 ctk.CTkOptionMenu(
                     tones_row, values=list(REGISTER_TONES), variable=tone_var,
-                    width=120, command=self._on_tone_change,
+                    width=120,
+                    command=lambda value, slot=index: self._on_tone_change(value, slot),
                 ).grid(row=0, column=index + 1, padx=(0, 6))
 
             buttons = ctk.CTkFrame(left, fg_color="transparent")
@@ -3261,19 +3286,36 @@ if GUI_AVAILABLE:
         def _current_tones(self):
             return validate_tones([var.get() for var in self.tone_vars])
 
-        def _on_tone_change(self, _value=None):
+        def _on_tone_change(self, _value=None, slot=None):
             """Resolve conflicts/cap and refresh all three menus.
 
-            Re-running validate_tones over the fixed left-to-right slot
-            order (rather than tracking click history) means a later slot
-            always wins a conflict and selections compact to the left —
-            simple and deterministic, matching validate_tones' own
-            "later wins" contract.
+            *slot* is the index of the menu the user just changed (each
+            menu's command lambda captures its own index). That slot is
+            moved to the end of the list before validate_tones resolves
+            conflicts, so the choice the user just made always wins,
+            regardless of which slot it happens to sit in — not whichever
+            slot happens to be rightmost, which was the previous, purely
+            positional "later wins" behaviour. Resolved tones then compact
+            left as before; a preset apply (slot=None) just re-validates
+            in existing order with nothing to prioritise.
             """
-            resolved = self._current_tones()
+            values = [var.get() for var in self.tone_vars]
+            if slot is not None:
+                changed = values.pop(slot)
+                values.append(changed)
+            resolved = validate_tones(values)
+            present = {value for value in values if value != TONE_NONE}
+            removed = present - set(resolved)
             resolved += [TONE_NONE] * (MAX_TONES - len(resolved))
             for var, value in zip(self.tone_vars, resolved):
                 var.set(value)
+            if removed:
+                self.advisory.configure(
+                    text="Conflicting tone removed: {}.".format(
+                        ", ".join(sorted(removed))
+                    )
+                )
+                self.advisory.grid()
 
         # --- user conversation presets (v1.19) -----------------------------
 
@@ -3307,18 +3349,65 @@ if GUI_AVAILABLE:
             self.recipient_gender_var.set(preset["recipient_gender"])
             self.situation_entry.delete(0, "end")
             self.situation_entry.insert(0, preset["situation"])
+            tones = validate_tones(preset.get("tones"))
+            padded_tones = tones + [TONE_NONE] * (MAX_TONES - len(tones))
+            for var, tone in zip(self.tone_vars, padded_tones):
+                var.set(tone)
             self._on_toolbar_change()
+
+        def _commit_presets(self, presets, select=CONVERSATION_PRESET_PLACEHOLDER):
+            """Persist a new preset list, publishing it in memory only on success.
+
+            Reversed from the pre-v1.24 order (mutate config_data, then try
+            to save and silently swallow a failure): a failed save must
+            never leave the UI claiming a preset exists that was not
+            actually written, nor silently lose one already in memory (P1).
+            """
+            candidate = dict(self.config_data)
+            candidate["conversation_presets"] = presets
+            try:
+                save_config(candidate)
+            except (ConfigError, OSError):
+                messagebox.showerror(
+                    "Presets",
+                    "Presets could not be saved. No changes were applied.",
+                    parent=self,
+                )
+                return False
+            self.config_data = candidate
+            self._refresh_conversation_preset_menu(select=select)
+            return True
 
         def _save_conversation_preset_dialog(self):
             """Prompt for a name and snapshot the current toolbar controls.
 
             Persisted immediately (unlike the toolbar values themselves) so
             a named preset cannot vanish if the app crashes before Settings
-            is next saved.
+            is next saved. Refuses a name already in use (casefold) and
+            refuses saving past the cap outright, rather than letting the
+            newest preset be silently discarded by the cap or Delete-by-name
+            become ambiguous (M1/P2).
             """
             dialog = ctk.CTkInputDialog(text="Name this preset:", title="Save preset")
-            name = dialog.get_input()
-            if not name or not name.strip():
+            name = _safe_short_string(dialog.get_input(), PRESET_NAME_MAX)
+            if not name:
+                return
+            presets = self.config_data.get("conversation_presets", [])
+            used_names = {p["name"].casefold() for p in presets}
+            used_names.add(CONVERSATION_PRESET_PLACEHOLDER.casefold())
+            if name.casefold() in used_names:
+                messagebox.showinfo(
+                    "Save preset", "Choose a different preset name.", parent=self,
+                )
+                return
+            if len(presets) >= MAX_CONVERSATION_PRESETS:
+                messagebox.showinfo(
+                    "Save preset",
+                    "Delete a preset before saving another ({} max).".format(
+                        MAX_CONVERSATION_PRESETS
+                    ),
+                    parent=self,
+                )
                 return
             preset = normalise_conversation_preset({
                 "name": name,
@@ -3327,30 +3416,23 @@ if GUI_AVAILABLE:
                 "speaker_gender": self.speaker_gender_var.get(),
                 "recipient_gender": self.recipient_gender_var.get(),
                 "situation": self._situation_text(),
+                "tones": self._current_tones(),
             })
             if preset is None:
                 return
-            presets = self.config_data.get("conversation_presets", []) + [preset]
-            self.config_data["conversation_presets"] = normalise_conversation_presets(presets)
-            try:
-                save_config(self.config_data)
-            except ConfigError:
-                pass
-            self._refresh_conversation_preset_menu(select=preset["name"])
+            self._commit_presets(
+                normalise_conversation_presets(presets + [preset]), select=preset["name"],
+            )
 
         def _delete_conversation_preset(self):
             value = self.preset_var.get()
             if value == CONVERSATION_PRESET_PLACEHOLDER:
                 return
-            self.config_data["conversation_presets"] = [
+            presets = [
                 p for p in self.config_data.get("conversation_presets", [])
                 if p["name"] != value
             ]
-            try:
-                save_config(self.config_data)
-            except ConfigError:
-                pass
-            self._refresh_conversation_preset_menu()
+            self._commit_presets(presets)
 
         def _copy_variation(self, text):
             """Copy an alternative with the current finishing touch."""
@@ -3792,6 +3874,7 @@ if GUI_AVAILABLE:
             self.backend_var.set(normalise_backend(new_config.get("backend")))
             self._apply_always_on_top()
             self._maybe_start_tray()
+            self._refresh_conversation_preset_menu()
             self._refresh_status()
 
         # --- translation lifecycle ---------------------------------------

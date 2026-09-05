@@ -661,6 +661,37 @@ class TestConversationPresets(unittest.TestCase):
     def test_list_rejects_non_list(self):
         self.assertEqual(plume.normalise_conversation_presets("not a list"), [])
 
+    def test_tones_default_to_empty_list(self):
+        clean = plume.normalise_conversation_preset(self._preset())
+        self.assertEqual(clean["tones"], [])
+
+    def test_tones_are_validated_and_stored(self):
+        clean = plume.normalise_conversation_preset(
+            self._preset(tones=["Warm", "Precise", "not-a-tone"])
+        )
+        self.assertEqual(clean["tones"], ["Warm", "Precise"])
+
+    def test_tones_conflicts_resolved_on_normalise(self):
+        clean = plume.normalise_conversation_preset(
+            self._preset(tones=["Terse", "Playful"])
+        )
+        self.assertEqual(clean["tones"], ["Playful"])
+
+    def test_list_repairs_duplicate_display_name(self):
+        presets = plume.normalise_conversation_presets([
+            self._preset(id="1", name="Chat"), self._preset(id="2", name="Chat"),
+        ])
+        self.assertEqual(len(presets), 2)
+        names = sorted(p["name"] for p in presets)
+        self.assertEqual(names, ["Chat", "Chat (2)"])
+
+    def test_list_repairs_name_colliding_with_placeholder(self):
+        presets = plume.normalise_conversation_presets([
+            self._preset(id="1", name=plume.CONVERSATION_PRESET_PLACEHOLDER),
+        ])
+        self.assertEqual(len(presets), 1)
+        self.assertNotEqual(presets[0]["name"], plume.CONVERSATION_PRESET_PLACEHOLDER)
+
 
 class TestResourceDir(unittest.TestCase):
     def test_not_frozen_uses_module_directory(self):

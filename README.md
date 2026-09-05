@@ -61,14 +61,16 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   minimised, and close-to-tray instead of quitting — a conversation
   helper that doesn't need to be relaunched and re-parked every session.
 - **Conversation presets:** save the toolbar's direction, French form,
-  Me/You gender agreement and situation as a named preset (a "Presets…"
-  menu plus Save/Delete beside the toolbar's You control) — switch
-  between a few regular conversations in one click.
+  Me/You gender agreement, situation and tones as a named preset (a
+  "Presets…" menu plus Save/Delete beside the toolbar's You control) —
+  switch between a few regular conversations in one click. A save is
+  refused outright (with an explanation) on a duplicate name or past the
+  12-preset cap, rather than silently discarding anything.
 - **Register tones:** up to three background tones (Warm, Terse,
   Playful, Precise, Courteous, Direct, Reassuring) beneath Situation,
   the same non-authoritative background context, never overriding the
   source text's own meaning. Conflicting tones (e.g. Terse + Playful)
-  resolve automatically, keeping the one just chosen.
+  resolve automatically, keeping whichever one you just chose.
 - **Export** the current result to a Markdown study sheet (source,
   situation, all alternatives, a diff view), **Export diff…** for a
   standalone textual source/translation comparison, and **Copy as HTML**

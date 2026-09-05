@@ -594,6 +594,50 @@ schema impact beyond one constants tuple:
   the snapshot; a 2-alternative favourite survives a save/load round trip.
   Full suite: 220 tests pass.
 
+## v1.24 — Transactional presets with tones; recency-correct tone conflicts (notes_012 M1, notes_013 B1/B2/C)
+
+- **Recency-correct tone conflicts (C):** `_on_tone_change` previously
+  re-validated the three tone menus in fixed left-to-right slot order on
+  every change, so a conflict was always resolved in favour of whichever
+  slot happened to sit further right — not the tone the user had just
+  clicked, which could silently revert if it lost to an untouched slot.
+  Each menu's `command` now passes its own slot index; `_on_tone_change`
+  moves that slot to the end of the list before calling `validate_tones`,
+  so the choice just made always wins, regardless of position. An advisory
+  now names any tone dropped this way, rather than letting it vanish
+  silently.
+- **Presets now persist tones (B1):** `normalise_conversation_preset`
+  gained a `"tones"` key (existing presets without one default to `[]` on
+  load); `_save_conversation_preset_dialog` snapshots the toolbar's live
+  tones, and `_apply_conversation_preset` restores them.
+- **Transactional preset save/delete (B2, M1's P1 reliability gap):**
+  `_save_conversation_preset_dialog`/`_delete_conversation_preset`
+  previously mutated the live config, then tried to save and silently
+  swallowed a `ConfigError` (an `OSError` was not even caught) — the UI
+  could claim a preset existed when it was never written. Both now go
+  through a shared `_commit_presets()` that saves first and only updates
+  in-memory state on success, showing a clear error and changing nothing
+  otherwise. Saving also now refuses a duplicate name (casefold) or saving
+  past the 12-entry cap outright, rather than letting Delete-by-name
+  become ambiguous or the cap silently discard the newest preset.
+  `normalise_conversation_presets` additionally repairs a duplicate
+  display name deterministically (a "(2)", "(3)", ... suffix) for the
+  defensive load-time case of a hand-edited file.
+- **M1, Settings could revert a preset saved while it was open:**
+  `SettingsDialog` takes a shallow copy of `config_data` at construction;
+  saving a preset from the main window afterwards updates the *live*
+  config but not that snapshot, so a subsequent Settings Save silently
+  reverted the preset list. Fixed by having `SettingsDialog._save`
+  re-read the live preset list from `master.config_data` immediately
+  before its own save, the same pattern already used for the toolbar's
+  five other "wins at save" fields.
+- 8 new unit tests (preset tone validation/storage, duplicate-name and
+  placeholder-name repair) plus a live-code verification script covering
+  the recency fix in both directions, a preset's tones round-tripping
+  through save/apply, duplicate-name and cap refusal, a failed save
+  leaving memory unchanged, and the exact M1 reproduction (Settings held
+  open across a preset save) now surviving. Full suite: 225 tests pass.
+
 ---
 
 ### Notes on sequencing
