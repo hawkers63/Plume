@@ -717,6 +717,56 @@ schema impact beyond one constants tuple:
   .NET readback, so this was a test-script artefact, not an application
   bug.) Full suite: 227 tests pass.
 
+## v1.27 — Backend resilience hardening (notes_012 M8, notes_013 E)
+
+- **M8, an HTTPError's response body was never read or closed before a
+  retry:** `_http_post_json`'s `HTTPError` branch inspected `Retry-After`
+  and either slept-and-retried or raised, but never consumed the error
+  response's body — urllib documents this as a potential socket leak, and
+  four attempts under a busy session is enough to matter. Now `exc.read()`/
+  `exc.close()` run unconditionally before either path.
+- **Retry-After was capped/shortened rather than honoured, and only
+  parsed as a plain integer:** a server-requested wait longer than
+  `HTTP_BACKOFF_CAP` was silently shortened to 8 seconds — defeating the
+  point of the header — and an HTTP-date value (RFC 9110's other
+  permitted format) was silently ignored, falling back to exponential
+  backoff. `_backoff_delay` now parses both numeric-seconds and HTTP-date
+  forms and returns a Retry-After value as-is, uncapped; `_http_post_json`
+  separately tracks accumulated wait against a new `max_retry_wait`
+  budget (30s default) and gives up with a clear message if a single
+  server-requested wait would blow it, rather than silently honouring an
+  arbitrarily long pause or shortening a genuine minimum.
+- **Jitter was added on top of the cap, not inside it:** the exponential
+  path's `delay + jitter` could exceed `HTTP_BACKOFF_CAP` by up to 25%.
+  Now jitter is applied inside the ceiling (a random point in its top
+  25%), so the exponential path never exceeds `HTTP_BACKOFF_CAP`.
+- **`IncompleteRead` was not treated as transient:** unlike
+  `RemoteDisconnected` (already an `OSError` subclass, already retried),
+  `http.client.IncompleteRead` descends from `HTTPException` and fell
+  through to an unretried "unexpected error" instead of the existing
+  transient-failure retry path. Added to the retried set explicitly.
+- **Claude's 529 (overloaded) is now retryable, opted in only at the
+  Claude call site:** a new `retryable_codes` parameter on
+  `_http_post_json` (defaulting to the existing `HTTP_RETRYABLE_CODES`)
+  lets `call_anthropic` add 529 without assuming every backend this app
+  talks to shares that specific status code's meaning.
+- Per-request cancellation (interrupting an in-progress backoff wait when
+  Clear/close supersedes the request) was considered but left out of this
+  version: the existing stale-request-id guard already prevents a
+  superseded result from ever reaching the UI, so cancellation would only
+  shave a worst-case few seconds off an already-doomed background wait,
+  at the cost of threading a new parameter through `translate()`/
+  `correct_english()`/`call_anthropic()`/`call_ollama()`/`_http_post_json`
+  — real architectural churn for a latency nicety, not a correctness fix.
+- 9 tests rewritten or added (HTTP-date parsing, jitter-never-exceeds-cap,
+  wait-budget refusal, HTTPError body closed before retry, IncompleteRead
+  retried, 529 excluded by default but retryable when opted in). The two
+  changed-behaviour tests (Retry-After capping, exponential jitter shape)
+  were rewritten to assert the new documented behaviour rather than
+  patched to keep the old assertions passing. Verified against the real
+  Claude API: one live translation completed correctly through the
+  rewritten transport. Full suite: 234 tests pass.
+
 ---
 
 ### Notes on sequencing

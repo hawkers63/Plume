@@ -33,6 +33,7 @@ from __future__ import annotations
 import ctypes
 import difflib
 import html
+import http.client
 import io
 import json
 import os
@@ -46,7 +47,8 @@ import urllib.error
 import urllib.request
 import uuid
 import wave
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 # --- Defensive GUI import ---------------------------------------------------
 # CustomTkinter/Tkinter are only needed to actually run the window. Importing
@@ -1605,35 +1607,75 @@ class BackendError(Exception):
 def _backoff_delay(attempt, retry_after=None) -> float:
     """Seconds to wait before the next attempt. *attempt* is 0-based.
 
-    Honours a numeric Retry-After header outright (still capped); otherwise
-    exponential backoff from HTTP_BACKOFF_BASE, capped at HTTP_BACKOFF_CAP,
-    with up to 25% jitter so concurrent retries do not all land together.
+    A Retry-After header (numeric seconds or an HTTP-date, per RFC 9110)
+    is treated as a genuine server-requested minimum and returned as-is,
+    uncapped: shortening it would defeat its purpose, and whether it fits
+    the caller's retry-wait budget is _http_post_json's decision, not this
+    function's. Otherwise, exponential backoff from HTTP_BACKOFF_BASE,
+    with up to 25% jitter applied *inside* the HTTP_BACKOFF_CAP ceiling
+    (not added on top of it), so the exponential path never exceeds the
+    cap; concurrent retries still do not all land together.
     """
-    if retry_after not in (None, ""):
+    if isinstance(retry_after, str):
+        value = retry_after.strip()
+        if re.fullmatch(r"[0-9]{1,9}", value):
+            return float(value)
         try:
-            header_delay = float(retry_after)
-            if header_delay >= 0:
-                return min(header_delay, HTTP_BACKOFF_CAP)
-        except (TypeError, ValueError):
-            pass
-    delay = min(HTTP_BACKOFF_CAP, HTTP_BACKOFF_BASE * (2 ** attempt))
-    jitter = secrets.SystemRandom().uniform(0.0, delay * 0.25)
-    return delay + jitter
+            when = parsedate_to_datetime(value)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            pass  # Not a recognised Retry-After shape; fall through.
+    ceiling = min(HTTP_BACKOFF_CAP, HTTP_BACKOFF_BASE * (2 ** attempt))
+    return secrets.SystemRandom().uniform(ceiling * 0.75, ceiling)
+
+
+# Transient response failures worth retrying alongside TimeoutError/OSError.
+# RemoteDisconnected is already an OSError subclass; IncompleteRead is not
+# (it descends from http.client.HTTPException), so it needs listing here
+# explicitly or a genuinely transient dropped-mid-response failure would
+# surface as an unretried "unexpected error" instead.
+_TRANSIENT_RESPONSE_ERRORS = (TimeoutError, OSError, http.client.IncompleteRead)
 
 
 def _http_post_json(url, payload, headers, timeout, service_name="backend",
-                     max_attempts=HTTP_MAX_ATTEMPTS):
+                     max_attempts=HTTP_MAX_ATTEMPTS, retryable_codes=None,
+                     max_retry_wait=30.0):
     """POST *payload* as JSON and return the decoded JSON response.
 
-    Retries transient failures (429/502/503/504, dropped connections, and
-    timeouts) with bounded exponential backoff; 401/403/404 and other client
-    errors are never retried. The service name is used only for safe,
-    generic diagnostics; backend detail text is still not displayed because
-    it may contain prompt fragments.
+    Retries transient failures (by default 429/502/503/504, dropped
+    connections, incomplete reads, and timeouts) with bounded exponential
+    backoff; 401/403/404 and other client errors are never retried. The
+    service name is used only for safe, generic diagnostics; backend
+    detail text is still not displayed because it may contain prompt
+    fragments. *retryable_codes* lets a specific backend opt an extra
+    status into the retry set (e.g. Claude's 529 overloaded) without
+    assuming it applies to every backend. *max_retry_wait* bounds total
+    accumulated sleep across all attempts, separate from the per-attempt
+    exponential cap and the per-socket *timeout*: a Retry-After minimum
+    that would blow this budget is refused with a clear message rather
+    than silently honoured for an arbitrarily long wait or silently
+    shortened.
     """
+    codes = HTTP_RETRYABLE_CODES if retryable_codes is None else retryable_codes
     data = json.dumps(payload).encode("utf-8")
     last_network_message = None
     attempts = max(1, int(max_attempts or 1))
+    waited = 0.0
+
+    def wait_or_give_up(attempt, retry_after=None):
+        """Sleep for the next backoff delay, or raise if it blows the budget."""
+        nonlocal waited
+        delay = _backoff_delay(attempt, retry_after)
+        if delay > max_retry_wait - waited:
+            raise BackendError(
+                "{} needs a longer pause than this app allows. Please retry "
+                "later.".format(service_name)
+            )
+        time.sleep(delay)
+        waited += delay
+
     for attempt in range(attempts):
         request = urllib.request.Request(url, data=data, headers=headers, method="POST")
         try:
@@ -1647,8 +1689,18 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
                 retry_after = exc.headers.get("Retry-After")
             except Exception:
                 retry_after = None
-            if exc.code in HTTP_RETRYABLE_CODES and attempt < attempts - 1:
-                time.sleep(_backoff_delay(attempt, retry_after))
+            # The response body/socket must be released before any retry
+            # (or the raise below) rather than left open (M8).
+            try:
+                exc.read()
+            except Exception:
+                pass
+            try:
+                exc.close()
+            except Exception:
+                pass
+            if exc.code in codes and attempt < attempts - 1:
+                wait_or_give_up(attempt, retry_after)
                 continue
             raise BackendError(_friendly_http_message(exc.code, service_name))
         except urllib.error.URLError as exc:
@@ -1657,15 +1709,15 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
                 "connection and try again. ({})".format(_reason_text(exc))
             )
             if attempt < attempts - 1:
-                time.sleep(_backoff_delay(attempt))
+                wait_or_give_up(attempt)
                 continue
             raise BackendError(last_network_message)
-        except (TimeoutError, OSError):
+        except _TRANSIENT_RESPONSE_ERRORS:
             last_network_message = (
                 "The translation backend did not respond in time. Please try again."
             )
             if attempt < attempts - 1:
-                time.sleep(_backoff_delay(attempt))
+                wait_or_give_up(attempt)
                 continue
             raise BackendError(last_network_message)
     else:  # pragma: no cover - defensive; every branch above raises or continues
@@ -1731,6 +1783,9 @@ def call_anthropic(config_snapshot, system_prompt, user_text):
     data = _http_post_json(
         ANTHROPIC_URL, payload, headers, ANTHROPIC_TIMEOUT,
         service_name="Claude API",
+        # 529 (overloaded) is documented Claude API behaviour, not assumed
+        # to apply to every backend this app talks to.
+        retryable_codes=HTTP_RETRYABLE_CODES | {529},
     )
     return _anthropic_text_from_response(data)
 

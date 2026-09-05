@@ -18,6 +18,7 @@ import tempfile
 import unittest
 import urllib.error
 import wave
+from email.utils import formatdate
 from unittest import mock
 
 # Make the parent directory importable so `import plume` works from tests/.
@@ -934,19 +935,132 @@ class TestHttpBackoff(unittest.TestCase):
     def test_backoff_delay_honours_retry_after_header(self):
         self.assertEqual(plume._backoff_delay(0, retry_after="2"), 2.0)
 
-    def test_backoff_delay_caps_retry_after_header(self):
-        self.assertEqual(
-            plume._backoff_delay(0, retry_after="999"), plume.HTTP_BACKOFF_CAP
-        )
+    def test_backoff_delay_does_not_shorten_a_long_retry_after(self):
+        # v1.27: a server-requested wait longer than the exponential cap is
+        # returned as-is rather than silently shortened; whether it fits
+        # the retry-wait budget is _http_post_json's decision.
+        self.assertEqual(plume._backoff_delay(0, retry_after="999"), 999.0)
+
+    def test_backoff_delay_honours_http_date_retry_after(self):
+        future = formatdate(timeval=None, usegmt=True)  # "now" as an HTTP-date
+        delay = plume._backoff_delay(0, retry_after=future)
+        self.assertGreaterEqual(delay, 0.0)
+        self.assertLess(delay, 5.0)  # "now" -> a few seconds at most, not huge
+
+    def test_backoff_delay_past_http_date_is_zero_not_negative(self):
+        past = formatdate(timeval=0, usegmt=True)  # 1970-01-01
+        self.assertEqual(plume._backoff_delay(0, retry_after=past), 0.0)
 
     def test_backoff_delay_ignores_invalid_retry_after(self):
         delay = plume._backoff_delay(0, retry_after="not-a-number")
-        self.assertGreaterEqual(delay, plume.HTTP_BACKOFF_BASE)
+        self.assertGreater(delay, 0.0)
+        self.assertLessEqual(delay, plume.HTTP_BACKOFF_BASE)
 
-    def test_backoff_delay_exponential_and_capped(self):
-        delay = plume._backoff_delay(10)
-        self.assertGreaterEqual(delay, plume.HTTP_BACKOFF_CAP)
-        self.assertLessEqual(delay, plume.HTTP_BACKOFF_CAP * 1.25)
+    def test_backoff_delay_exponential_never_exceeds_cap(self):
+        # v1.27: jitter is applied inside the cap, not added on top of it.
+        for attempt in range(12):
+            delay = plume._backoff_delay(attempt)
+            self.assertGreater(delay, 0.0)
+            self.assertLessEqual(delay, plume.HTTP_BACKOFF_CAP)
+
+    def test_retry_after_exceeding_budget_is_refused(self):
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(
+                "https://x", 503, "busy", {"Retry-After": "999"}, io.BytesIO(b""),
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5,
+                    max_retry_wait=30.0,
+                )
+        self.assertIn("longer pause", str(ctx.exception))
+
+    def test_http_error_body_is_closed_before_retry(self):
+        closed = {"n": 0}
+
+        class TrackedBody(io.BytesIO):
+            def close(self_inner):
+                closed["n"] += 1
+                super().close()
+
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise urllib.error.HTTPError(
+                    "https://x", 503, "busy", {}, TrackedBody(b""),
+                )
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda: b'{"ok": true}',
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            plume._http_post_json(
+                "https://x", {}, {"content-type": "application/json"}, 5
+            )
+        self.assertEqual(closed["n"], 1)
+
+    def test_incomplete_read_is_retried(self):
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise plume.http.client.IncompleteRead(b"partial")
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda: b'{"ok": true}',
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            data = plume._http_post_json(
+                "https://x", {}, {"content-type": "application/json"}, 5
+            )
+        self.assertEqual(data, {"ok": True})
+        self.assertEqual(calls["n"], 2)
+
+    def test_default_retryable_codes_exclude_529(self):
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(
+                "https://x", 529, "overloaded", {}, io.BytesIO(b""),
+            )
+
+        with mock.patch.object(plume, "time") as fake_time, \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError):
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5
+                )
+        fake_time.sleep.assert_not_called()
+
+    def test_retryable_codes_can_opt_in_extra_codes(self):
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise urllib.error.HTTPError(
+                    "https://x", 529, "overloaded", {}, io.BytesIO(b""),
+                )
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda: b'{"ok": true}',
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            data = plume._http_post_json(
+                "https://x", {}, {"content-type": "application/json"}, 5,
+                retryable_codes=plume.HTTP_RETRYABLE_CODES | {529},
+            )
+        self.assertEqual(data, {"ok": True})
 
 
 class TestResponseExtraction(unittest.TestCase):
