@@ -123,7 +123,18 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   the exact text that produced the on-screen result, even if you've since
   edited the input box.
 - The input pane shows a reading-time estimate alongside the character
-  and word count.
+  and word count, and the **translation result** shows the same estimate
+  under the main card, always describing what Copy main translation
+  would actually copy.
+- **Copy five** and **Copy five as HTML**, above the alternatives list:
+  numbered plain text of the five alternative translations only — no
+  meaning checks, no finishing touch.
+- Optional **French punctuation on copy** (Settings, off by default):
+  when the working result is French, Copy main translation/Copy five/
+  Copy as HTML apply narrow no-break spaces before `; : ! ?`, turn
+  `"..."` into `…`, and turn short "straight-quoted phrases" into
+  guillemets. Copy-time only — the on-screen result, the exported study
+  sheet/diff and Speak are never affected.
 
 ---
 

@@ -623,6 +623,7 @@ DEFAULT_CONFIG = {
     "user_situation_presets": [],
     "default_tones": [],
     "default_writing_profile": {},
+    "french_typography": False,
 }
 
 
@@ -740,6 +741,7 @@ def load_config():
     config["default_writing_profile"] = normalise_writing_profile(
         config.get("default_writing_profile")
     )
+    config["french_typography"] = bool(config.get("french_typography"))
 
     return config, None
 
@@ -2801,6 +2803,43 @@ def format_metrics_label(metrics: dict) -> str:
     )
 
 
+_FRENCH_NBSP = " "  # narrow no-break space, French punctuation spacing
+
+
+def apply_french_typography(text: str) -> str:
+    """Copy-time French punctuation polish (v1.37, notes_015 2.D).
+
+    Narrow no-break space before ; : ! ?, "..." -> the single-character
+    ellipsis, and straight "quoted phrases" (no nested quotes, at most 80
+    characters) -> guillemets. Idempotent by construction: re-running this
+    on its own output makes no further change. Does not invent words and
+    must never run on English — callers only apply this once the working
+    result's target language is confirmed French, and only at copy time,
+    never on _current_main/the exported diff/what Speak reads aloud.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    out = text.replace("...", "…")
+    out = re.sub(r"[ \t  ]*([;:!?])", _FRENCH_NBSP + r"\1", out)
+    out = re.sub(r"\"([^\"]{1,80})\"", r"« \1 »", out)
+    return out
+
+
+def format_five_alternatives(result) -> str:
+    """Numbered plain text of the five translations only.
+
+    No meaning checks, no finishing touch — a "Copy five" for pasting the
+    raw alternatives elsewhere, distinct from the study-sheet/diff export.
+    """
+    lines = []
+    for index, variation in enumerate((result or {}).get("variations") or [], start=1):
+        translation = (variation or {}).get("translation") or ""
+        translation = translation.strip()
+        if translation:
+            lines.append("{}. {}".format(index, translation))
+    return "\n".join(lines)
+
+
 def advisory_text_from_result(result: dict, extra_notes=None) -> str:
     """Return advisory text that should be shown for a translation result.
 
@@ -3055,6 +3094,16 @@ if GUI_AVAILABLE:
             ).grid(row=row, column=0, sticky="w", **pad)
             row += 1
 
+            self.french_typography_var = ctk.BooleanVar(
+                value=bool(self._config.get("french_typography", False))
+            )
+            ctk.CTkCheckBox(
+                body,
+                text="French punctuation on copy (narrow spaces, guillemets)",
+                variable=self.french_typography_var,
+            ).grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+
             # Sign-in autostart + tray (v1.16). Feature-gated: if pystray or
             # Pillow are missing, the checkboxes are shown but disabled with
             # a one-line caption, rather than hidden without explanation.
@@ -3217,6 +3266,7 @@ if GUI_AVAILABLE:
             )
             self._config["elevenlabs_privacy_ack"] = bool(self.elevenlabs_privacy_var.get())
             self._config["always_on_top"] = bool(self.always_on_top_var.get())
+            self._config["french_typography"] = bool(self.french_typography_var.get())
             self._config["keep_as_is_terms"] = normalise_keep_as_is_terms(
                 self.keep_as_is_box.get("1.0", "end")
             )
@@ -4077,7 +4127,7 @@ if GUI_AVAILABLE:
             right = ctk.CTkFrame(parent)
             right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
             right.grid_columnconfigure(0, weight=1)
-            right.grid_rowconfigure(3, weight=1)
+            right.grid_rowconfigure(4, weight=1)
 
             ctk.CTkLabel(
                 right, text="Translation",
@@ -4096,12 +4146,24 @@ if GUI_AVAILABLE:
             self.primary_text.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
             self._set_primary_text("Your main translation will appear here.")
 
+            # Result metrics (v1.37, notes_015 2.D): the same reading-time
+            # estimate the input pane already shows, refreshed whenever the
+            # displayed translation changes (a new result, "Use this", or a
+            # finishing-touch change) so it always describes what Copy main
+            # translation would actually copy.
+            self.result_metrics_label = ctk.CTkLabel(
+                self.primary_card, text="", text_color="gray60",
+            )
+            self.result_metrics_label.grid(
+                row=1, column=0, sticky="w", padx=12, pady=(0, 4)
+            )
+
             # Finishing-touch picker (notes_004). A curated emote appended to
             # copied text and shown composed in the card. Applied only after
             # translation, never sent to the model, so the translation keeps its
             # faithful tone. Changing it needs no network request.
             touch_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
-            touch_row.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
+            touch_row.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 4))
             touch_row.grid_columnconfigure(1, weight=1)
             ctk.CTkLabel(touch_row, text="Add a finishing touch").grid(
                 row=0, column=0, sticky="w", padx=(0, 8)
@@ -4126,7 +4188,7 @@ if GUI_AVAILABLE:
             # brackets (v1.31); only the raw term before the bracket is ever
             # appended to the copied text (see casual_signoff_raw_value).
             signoff_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
-            signoff_row.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 4))
+            signoff_row.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 4))
             ctk.CTkLabel(signoff_row, text="Casual sign-off").grid(
                 row=0, column=0, sticky="w", padx=(0, 8)
             )
@@ -4148,7 +4210,7 @@ if GUI_AVAILABLE:
             # group for online-gaming chat, the same mechanism and gloss
             # convention as Casual sign-off above.
             mmorpg_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
-            mmorpg_row.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 4))
+            mmorpg_row.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 4))
             ctk.CTkLabel(mmorpg_row, text="MMORPG chat").grid(
                 row=0, column=0, sticky="w", padx=(0, 8)
             )
@@ -4165,7 +4227,7 @@ if GUI_AVAILABLE:
             ).grid(row=0, column=2, sticky="w", padx=(8, 0))
 
             main_buttons = ctk.CTkFrame(self.primary_card, fg_color="transparent")
-            main_buttons.grid(row=4, column=0, sticky="ew", padx=12, pady=(4, 12))
+            main_buttons.grid(row=5, column=0, sticky="ew", padx=12, pady=(4, 12))
             main_buttons.grid_columnconfigure(0, weight=1)
             self.copy_main_btn = ctk.CTkButton(
                 main_buttons, text="Copy main translation",
@@ -4194,7 +4256,7 @@ if GUI_AVAILABLE:
             self.use_as_input_btn.grid(row=0, column=3)
 
             favourite_row = ctk.CTkFrame(self.primary_card, fg_color="transparent")
-            favourite_row.grid(row=5, column=0, sticky="ew", padx=12, pady=(0, 12))
+            favourite_row.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 12))
             self.favourite_btn = ctk.CTkButton(
                 favourite_row, text="☆ Favourite", width=120,
                 command=self._favourite_current_result,
@@ -4223,10 +4285,27 @@ if GUI_AVAILABLE:
             self.language_label = ctk.CTkLabel(right, text="", text_color="gray70")
             self.language_label.grid(row=2, column=0, sticky="w", padx=12)
 
+            # "Copy five" (v1.37, notes_015 2.D): numbered plain text of the
+            # five alternative translations only — no meaning checks, no
+            # finishing touch — distinct from the study-sheet/diff export.
+            alts_header = ctk.CTkFrame(right, fg_color="transparent")
+            alts_header.grid(row=3, column=0, sticky="ew", padx=12, pady=(4, 0))
+            self.copy_five_btn = ctk.CTkButton(
+                alts_header, text="Copy five", width=90, fg_color="gray30",
+                command=self._copy_five, state="disabled",
+            )
+            self.copy_five_btn.grid(row=0, column=0, padx=(0, 6))
+            self.copy_five_html_btn = ctk.CTkButton(
+                alts_header, text="Copy five as HTML", width=130,
+                fg_color="gray30", command=lambda: self._copy_five(rich=True),
+                state="disabled",
+            )
+            self.copy_five_html_btn.grid(row=0, column=1)
+
             # Five alternatives (scrollable). The heading is omitted: the numbered
             # cards make the section self-evident and the space is better used.
             self.alts_frame = ctk.CTkScrollableFrame(right)
-            self.alts_frame.grid(row=3, column=0, sticky="nsew", padx=12, pady=6)
+            self.alts_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=6)
             self.alts_frame.grid_columnconfigure(0, weight=1)
 
             # Advisory strip (hidden until needed)
@@ -4234,7 +4313,7 @@ if GUI_AVAILABLE:
                 right, text="", text_color="#e0a000", justify="left", anchor="w",
                 wraplength=460,
             )
-            self.advisory.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 10))
+            self.advisory.grid(row=5, column=0, sticky="ew", padx=12, pady=(0, 10))
             self.advisory.grid_remove()
 
             self._current_main = ""
@@ -4288,16 +4367,56 @@ if GUI_AVAILABLE:
             """
             if not self._current_main:
                 return
-            self._set_primary_text(
-                append_finishing_touch(self._current_main, self._current_touch())
+            composed = append_finishing_touch(self._current_main, self._current_touch())
+            self._set_primary_text(composed)
+            language = FRENCH if self._result_is_french() else None
+            self.result_metrics_label.configure(
+                text=format_metrics_label(text_metrics(composed, language=language))
             )
 
         def _on_finishing_touch_change(self, _value=None):
             self._refresh_primary_display()
 
+        def _result_is_french(self) -> bool:
+            return (self._current_result or {}).get("target_language") == FRENCH
+
+        def _maybe_french_typography(self, text: str) -> str:
+            """Copy-time-only French punctuation polish (v1.37, notes_015 2.D).
+
+            Off by default; only applies when the working result's target
+            is confirmed French and the user opted in via Settings. Never
+            touches _current_main, the exported diff, or what Speak reads.
+            """
+            if self.config_data.get("french_typography") and self._result_is_french():
+                return apply_french_typography(text)
+            return text
+
         def _copy_main(self):
             """Copy the main translation with the current finishing touch."""
-            self._copy(append_finishing_touch(self._current_main, self._current_touch()))
+            text = append_finishing_touch(self._current_main, self._current_touch())
+            self._copy(self._maybe_french_typography(text))
+
+        def _copy_five(self, rich=False):
+            """Copy the five alternative translations only (v1.37, notes_015 2.D).
+
+            Numbered plain text, no meaning checks, no finishing touch —
+            distinct from the study-sheet/diff export, which keeps those.
+            """
+            if not self._current_result:
+                return
+            text = self._maybe_french_typography(
+                format_five_alternatives(self._current_result)
+            )
+            if not text:
+                return
+            if rich:
+                fragment = "<p>{}</p>".format(
+                    html.escape(text).replace("\n", "<br>")
+                )
+                if not copy_html_to_windows_clipboard(fragment, text, self.winfo_id()):
+                    self._copy(text)
+            else:
+                self._copy(text)
 
         def _copy_source(self):
             """Copy the input box's text as-is, for chat back-and-forth."""
@@ -4921,11 +5040,14 @@ if GUI_AVAILABLE:
 
         def _clear_results(self):
             self._set_primary_text("Your main translation will appear here.")
+            self.result_metrics_label.configure(text="")
             self.copy_main_btn.configure(state="disabled")
             self.speak_main_btn.configure(state="disabled")
             self.use_as_input_btn.configure(state="disabled")
             self.export_btn.configure(state="disabled")
             self.copy_html_btn.configure(state="disabled")
+            self.copy_five_btn.configure(state="disabled")
+            self.copy_five_html_btn.configure(state="disabled")
             self.export_diff_btn.configure(state="disabled")
             self._reset_favourite_button(enabled=False)
             self._stop_speech()
@@ -5573,6 +5695,8 @@ if GUI_AVAILABLE:
             self.use_as_input_btn.configure(state="normal")
             self.export_btn.configure(state="normal")
             self.copy_html_btn.configure(state="normal")
+            self.copy_five_btn.configure(state="normal")
+            self.copy_five_html_btn.configure(state="normal")
             self.export_diff_btn.configure(state="normal")
             self._reset_favourite_button(enabled=True)
             self.language_label.configure(text=format_language_label(result))
@@ -5734,6 +5858,7 @@ if GUI_AVAILABLE:
             if not self._current_main:
                 return
             text = append_finishing_touch(self._current_main, self._current_touch())
+            text = self._maybe_french_typography(text)
             fragment = "<p>{}</p>".format(
                 html.escape(text).replace("\n", "<br>")
             )

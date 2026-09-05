@@ -1177,6 +1177,46 @@ schema impact beyond one constants tuple:
   layout re-verified clean at the documented 1000x600 minimum after the
   row was moved. Full suite: 356 tests pass.
 
+## v1.37 — Result export polish: metrics, copy-five, French typography (notes_015 2.D)
+
+- **Result-pane metrics**, a small label under the primary translation
+  showing the same reading-time estimate the input pane already has
+  (`text_metrics`/`format_metrics_label` reused, not recalibrated), using
+  the French words-per-minute constant when the working result's target
+  is French. Refreshed by `_refresh_primary_display` — a new result,
+  "Use this", or a finishing-touch change all keep it describing exactly
+  what Copy main translation would copy.
+- **"Copy five"** and **"Copy five as HTML"**, above the alternatives
+  list: `format_five_alternatives()` gives numbered plain text of the
+  five translation fields only — no meaning checks, no finishing touch —
+  distinct from the existing study-sheet/diff export, which keeps both.
+  The HTML sibling reuses the existing checked CF_HTML transfer with a
+  plain-text fallback, the same as Copy as HTML on the main card.
+- **Optional French typography, copy-time only, off by default**
+  (`apply_french_typography()`, a new Settings checkbox). When the
+  working result's target is French *and* the checkbox is on, Copy main
+  translation / Copy five / Copy (five) as HTML run it after the
+  finishing touch: a narrow no-break space before `; : ! ?`, `"..."` ->
+  the single-character ellipsis, and short straight-quoted phrases ->
+  guillemets. Idempotent by construction. Never sent to the model, never
+  written into `_current_main`, never applied to the exported study-sheet/
+  diff, and Speak still reads the raw translation — verified live that
+  the on-screen card keeps its original straight quotes/"..." after a
+  typographied copy, so nothing is silently mutated in place.
+- 15 new unit tests (typography: adds a narrow space with and without an
+  existing one, ellipsis, guillemets, idempotence, empty/non-string
+  input, unrelated text untouched; five-alternatives: numbering, meaning
+  checks omitted, blank entries skipped, empty/missing variations;
+  config load-time bool coercion). Verified live end-to-end against the
+  real `PlumeApp` with a scripted result (no live API call): the metrics
+  label and both Copy-five buttons appear correctly enabled; Copy main
+  translation with the Settings checkbox off copies the raw text
+  unchanged; switching the checkbox on through the real Settings dialog
+  and re-copying produces guillemets/ellipsis/narrow spaces in the real
+  Windows clipboard (plain and CF_HTML) while the on-screen card stays
+  untouched; layout re-verified clean at the documented 1000x600
+  minimum. Full suite: 371 tests pass.
+
 ---
 
 ### Notes on sequencing

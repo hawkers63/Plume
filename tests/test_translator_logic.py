@@ -746,6 +746,14 @@ class TestConfigCoercion(unittest.TestCase):
             plume.WRITING_STRENGTH_SOURCE_LED,
         )
 
+    def test_french_typography_coerced_to_bool(self):
+        config, _ = self._load_with({"french_typography": "yes"})
+        self.assertIs(config["french_typography"], True)
+
+    def test_french_typography_defaults_false(self):
+        config, _ = self._load_with({})
+        self.assertIs(config["french_typography"], False)
+
     def test_coerce_positive_int(self):
         self.assertEqual(plume.coerce_positive_int("5000", 2000), 5000)
         self.assertEqual(plume.coerce_positive_int("banana", 2000), 2000)
@@ -2263,6 +2271,71 @@ class TestMetrics(unittest.TestCase):
             {"characters": 1000, "words": 300, "reading_seconds": 90}
         )
         self.assertIn("min to read", label)
+
+
+class TestFrenchTypography(unittest.TestCase):
+    def test_adds_narrow_nbsp_before_punctuation_with_no_existing_space(self):
+        out = plume.apply_french_typography("Bonjour!")
+        self.assertEqual(out, "Bonjour !")
+
+    def test_collapses_existing_space_to_narrow_nbsp(self):
+        out = plume.apply_french_typography("Bonjour !")
+        self.assertEqual(out, "Bonjour !")
+
+    def test_handles_question_mark_and_colon(self):
+        self.assertEqual(plume.apply_french_typography("Ça va?"), "Ça va ?")
+        self.assertEqual(plume.apply_french_typography("Attention:"), "Attention :")
+
+    def test_ellipsis_becomes_single_character(self):
+        self.assertEqual(plume.apply_french_typography("Attends..."), "Attends…")
+
+    def test_straight_quotes_become_guillemets(self):
+        self.assertEqual(
+            plume.apply_french_typography('Il a dit "bonjour" hier.'),
+            "Il a dit « bonjour » hier.",
+        )
+
+    def test_does_not_touch_unrelated_text(self):
+        self.assertEqual(plume.apply_french_typography("Bonjour tout le monde"), "Bonjour tout le monde")
+
+    def test_empty_and_non_string_input_returned_unchanged(self):
+        self.assertEqual(plume.apply_french_typography(""), "")
+        self.assertIsNone(plume.apply_french_typography(None))
+
+    def test_idempotent(self):
+        text = 'Il a dit "bonjour !" Attends... ça va?'
+        once = plume.apply_french_typography(text)
+        twice = plume.apply_french_typography(once)
+        self.assertEqual(once, twice)
+
+
+class TestFormatFiveAlternatives(unittest.TestCase):
+    def test_numbers_five_translations(self):
+        result = valid_result()
+        text = plume.format_five_alternatives(result)
+        lines = text.splitlines()
+        self.assertEqual(len(lines), 5)
+        self.assertTrue(lines[0].startswith("1. "))
+        self.assertTrue(lines[4].startswith("5. "))
+
+    def test_omits_meaning_checks(self):
+        result = valid_result()
+        text = plume.format_five_alternatives(result)
+        for variation in result["variations"]:
+            self.assertNotIn(variation["english_meaning_check"], text)
+
+    def test_skips_blank_translations(self):
+        result = valid_result()
+        result["variations"][2]["translation"] = "   "
+        text = plume.format_five_alternatives(result)
+        self.assertEqual(len(text.splitlines()), 4)
+
+    def test_empty_variations_returns_empty_string(self):
+        self.assertEqual(plume.format_five_alternatives({"variations": []}), "")
+
+    def test_missing_variations_key_returns_empty_string(self):
+        self.assertEqual(plume.format_five_alternatives({}), "")
+        self.assertEqual(plume.format_five_alternatives(None), "")
 
 
 class TestCfHtml(unittest.TestCase):
