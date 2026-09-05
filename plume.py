@@ -43,6 +43,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 import uuid
@@ -288,6 +289,118 @@ def mmorpg_term_raw_value(display) -> str:
     if not isinstance(display, str):
         return MMORPG_TERM_NONE
     return _MMORPG_TERM_DISPLAY_TO_RAW.get(display, MMORPG_TERM_NONE)
+
+# --- French slang reference (v1.34, notes_014) ------------------------------
+# A searchable local catalogue, separate from the append-tag pickers above:
+# these entries are full-strength vocabulary/phrases (not every one works as
+# a sentence suffix), so they are inserted deliberately at a caret or into a
+# standalone draft rather than auto-appended. Candidate first batch only —
+# editorial approval precedes any wider catalogue release (see notes_014
+# section 2.1/2.2). Columns: (id, raw term, expansion, English meaning,
+# category, register, use note). Stable IDs, not the raw term or English
+# label, are the identity a future favourites/persistence feature would key
+# on, since the term/label text may still change during editorial review.
+SLANG_CATALOGUE = (
+    ("stp", "stp", "s'il te plaît", "please", "Texting", "Informal",
+     "Use with a request to someone addressed as tu."),
+    ("slt", "slt", "salut", "hi / bye", "Greetings", "Informal",
+     "A greeting or farewell; choose its position deliberately."),
+    ("bjr", "bjr", "bonjour", "hello / good morning", "Greetings",
+     "Informal", "A greeting; not a general sentence ending."),
+    ("bsr", "bsr", "bonsoir", "good evening", "Greetings", "Informal",
+     "An evening greeting; parting use depends on context."),
+    ("a-plus", "a+", "à plus", "see you later", "Greetings", "Informal",
+     "A farewell; it adds an intention to speak or meet again."),
+    ("rdv", "rdv", "rendez-vous", "appointment / meeting", "Texting",
+     "Abbreviation", "A noun to use within a suitable sentence."),
+    ("bcp", "bcp", "beaucoup", "a lot / much / many", "Texting",
+     "Informal", "Use within a sentence; it affects quantity or degree."),
+    ("dsl", "dsl", "désolé / désolée", "sorry", "Reactions", "Informal",
+     "Adds an apology; do not use unless an apology is intended."),
+    ("mdr", "mdr", "mort de rire", "laughing / LOL", "Reactions",
+     "Informal", "A laughter reaction; it can change the perceived tone."),
+    ("jpp", "jpp", "j'en peux plus", "I can't take any more", "Reactions",
+     "Informal", "Can express exasperation or laughter; check the context."),
+    ("pote", "pote", "", "friend / mate", "Relationships", "Informal",
+     "A relationship noun; do not assume familiarity with a stranger."),
+    ("boulot", "boulot", "", "work / job", "Vocabulary", "Informal",
+     "A noun; use it in a sentence rather than as an appended tag."),
+    ("bouquin", "bouquin", "", "book", "Vocabulary", "Informal",
+     "A noun; it does not replace every sense of the English word book."),
+    ("bidouiller", "bidouiller", "", "tinker with / improvise a fix",
+     "Vocabulary", "Informal", "An infinitive; conjugate it as needed."),
+    ("ca-marche", "ça marche", "", "OK / that works", "Phrases",
+     "Conversational", "Expresses acceptance or that something works."),
+    ("pas-de-souci", "pas de souci", "", "no problem", "Phrases",
+     "Conversational", "Adds reassurance; check what is being agreed to."),
+    ("bof", "bof", "", "so-so / not especially", "Reactions",
+     "Informal", "Can convey indifference or uncertainty, not just dislike."),
+    ("a-la-bourre", "à la bourre", "", "running late", "Phrases",
+     "Informal", "Adds information about lateness; use within your draft."),
+)
+
+# The local draft is a separate, explicitly edited preview, not the
+# 2,000-character translation pipeline input — its own generous cap keeps
+# insertion/copy bounded without borrowing max_input_chars' meaning.
+SLANG_DRAFT_CHAR_LIMIT = 10_000
+SLANG_MAX_VISIBLE_RESULTS = 30
+
+
+def slang_search_key(value: str) -> str:
+    """Normalise for search only; the original spelling is never altered."""
+    value = (value or "").casefold().replace("’", "'")
+    decomposed = unicodedata.normalize("NFKD", value)
+    return "".join(
+        character for character in decomposed
+        if not unicodedata.combining(character)
+    )
+
+
+def search_slang(query="", category="All", catalogue=SLANG_CATALOGUE):
+    """Return matching records in catalogue order; no backend call."""
+    words = slang_search_key(query).split()
+    matches = []
+    for record in catalogue:
+        if category != "All" and record[4] != category:
+            continue
+        searchable = slang_search_key(" ".join(record[1:4]))
+        if all(word in searchable for word in words):
+            matches.append(record)
+    return matches
+
+
+def slang_insertion(text: str, offset: int, term: str, limit: int):
+    """Return (new_text, new_caret), adding a space only at a word boundary.
+
+    Conservative on purpose: no punctuation rewriting, conjugation or
+    replacement of a selection — it inserts at *offset*, same as a manual
+    keystroke would. Raises ValueError for an invalid offset/term or an
+    insertion that would exceed *limit*, rather than silently truncating.
+    """
+    if type(offset) is not int or not 0 <= offset <= len(text):
+        raise ValueError("Choose a valid insertion position.")
+    if not isinstance(term, str) or not term or "\x00" in term:
+        raise ValueError("Choose a catalogue term.")
+    left, right = text[:offset], text[offset:]
+    before = " " if left and left[-1].isalnum() and term[0].isalnum() else ""
+    after = " " if right and right[0].isalnum() and term[-1].isalnum() else ""
+    inserted = before + term + after
+    candidate = left + inserted + right
+    if len(candidate) > limit:
+        raise ValueError("The insertion would exceed the character limit.")
+    return candidate, len(left) + len(inserted)
+
+
+def find_slang_text_widget(widget):
+    """Find a CTkTextbox's underlying tk.Text child (no private attribute)."""
+    if isinstance(widget, tk.Text):
+        return widget
+    for child in widget.winfo_children():
+        found = find_slang_text_widget(child)
+        if found is not None:
+            return found
+    return None
+
 
 # --- Register tones (v1.20, notes_011 Feature E) ----------------------------
 # Background register hints for the translator — the same class of
@@ -3331,6 +3444,201 @@ if GUI_AVAILABLE:
 
 if GUI_AVAILABLE:
 
+    class SlangReferenceDialog(ctk.CTkToplevel):
+        """Browse the local French slang catalogue and prepare a separate,
+        explicitly edited draft (v1.34, notes_014).
+
+        Deliberately independent of the main translation: this window makes
+        no network request, does not translate, and does not touch
+        config_data, _current_result or the Translation Glossary. A term is
+        only ever inserted or copied as its raw French; the English gloss,
+        register and use note are reading aids shown only in this window.
+        """
+
+        def __init__(self, master):
+            super().__init__(master)
+            self.title("{} — French slang".format(APP_NAME))
+            self.geometry("760x720")
+            self.minsize(620, 560)
+            self.transient(master)
+            self.grid_columnconfigure(0, weight=1)
+            self.grid_rowconfigure(2, weight=1)
+
+            self.query = ctk.CTkEntry(
+                self, placeholder_text="Search French or English",
+            )
+            self.query.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+            self.query.bind("<KeyRelease>", self._refresh)
+
+            categories = ["All"] + sorted({row[4] for row in SLANG_CATALOGUE})
+            self.category = ctk.StringVar(value="All")
+            ctk.CTkOptionMenu(
+                self, values=categories, variable=self.category,
+                command=self._refresh, width=160,
+            ).grid(row=1, column=0, sticky="w", padx=12, pady=(0, 4))
+
+            self.entries = ctk.CTkScrollableFrame(self)
+            self.entries.grid(row=2, column=0, sticky="nsew", padx=12, pady=4)
+            self.entries.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                self,
+                text="Local French draft — review meaning and placement "
+                     "before you send. A snapshot, not updated by later "
+                     "translations.",
+                text_color="gray60", wraplength=580, justify="left",
+            ).grid(row=3, column=0, sticky="w", padx=12, pady=(8, 0))
+
+            self.draft = ctk.CTkTextbox(self, height=140, wrap="word")
+            self.draft.grid(row=4, column=0, sticky="nsew", padx=12, pady=4)
+            self.grid_rowconfigure(4, weight=1)
+            result = master._current_result or {}
+            if result.get("target_language") == FRENCH:
+                self.draft.insert("1.0", append_finishing_touch(
+                    master._current_main, master._current_touch(),
+                ))
+            self.draft_widget = find_slang_text_widget(self.draft)
+            if self.draft_widget is not None:
+                self.draft_widget.edit_modified(False)
+                self.draft_widget.bind(
+                    "<<Modified>>", self._draft_changed, add="+",
+                )
+
+            self.metrics = ctk.CTkLabel(self, text="", text_color="gray70")
+            self.metrics.grid(row=5, column=0, sticky="w", padx=12)
+
+            actions = ctk.CTkFrame(self, fg_color="transparent")
+            actions.grid(row=6, column=0, sticky="w", padx=12, pady=(4, 4))
+            ctk.CTkButton(
+                actions, text="Copy draft", command=self._copy_draft,
+                fg_color="gray30",
+            ).grid(row=0, column=0, padx=(0, 8))
+            ctk.CTkButton(
+                actions, text="Copy draft as HTML",
+                command=lambda: self._copy_draft(rich=True), fg_color="gray30",
+            ).grid(row=0, column=1)
+
+            self.notice = ctk.CTkLabel(self, text="", wraplength=580, text_color="gray70")
+            self.notice.grid(row=7, column=0, sticky="w", padx=12, pady=(0, 10))
+
+            self._refresh()
+            self._update_metrics()
+
+        def _refresh(self, _event=None):
+            """Rebuild the results list. Bounded even as the catalogue grows."""
+            for child in self.entries.winfo_children():
+                child.destroy()
+            matches = search_slang(self.query.get(), self.category.get())
+            for index, record in enumerate(matches[:SLANG_MAX_VISIBLE_RESULTS]):
+                _ident, term, expansion, meaning, category, register, note = record
+                card = ctk.CTkFrame(self.entries)
+                card.grid(row=index, column=0, sticky="ew", pady=4)
+                card.grid_columnconfigure(0, weight=1)
+                title = "{} — {}".format(term, meaning)
+                detail = "{} · {}. {}".format(category, register, note)
+                if expansion:
+                    detail = "Expands: {}. ".format(expansion) + detail
+                ctk.CTkLabel(
+                    card, text=title, wraplength=520, justify="left",
+                    font=ctk.CTkFont(weight="bold"),
+                ).grid(row=0, column=0, sticky="w", padx=8, pady=(6, 0))
+                ctk.CTkLabel(
+                    card, text=detail, wraplength=520, justify="left",
+                    text_color="gray70",
+                ).grid(row=1, column=0, sticky="w", padx=8)
+                row = ctk.CTkFrame(card, fg_color="transparent")
+                row.grid(row=2, column=0, sticky="w", padx=8, pady=6)
+                for column, (label, target) in enumerate((
+                    ("Copy term", "copy"), ("Insert in source", "source"),
+                    ("Insert in draft", "draft"),
+                )):
+                    ctk.CTkButton(
+                        row, text=label, width=130, fg_color="gray30",
+                        command=lambda t=term, dest=target: self._act(t, dest),
+                    ).grid(row=0, column=column, padx=(0, 6))
+            if len(matches) > SLANG_MAX_VISIBLE_RESULTS:
+                self.notice.configure(
+                    text="Showing the first {} matches; refine your "
+                         "search.".format(SLANG_MAX_VISIBLE_RESULTS),
+                )
+            else:
+                self.notice.configure(
+                    text="{} matching term(s).".format(len(matches)),
+                )
+
+        def _act(self, term, target):
+            """Copy or insert only the raw French; never the English gloss."""
+            try:
+                if target == "copy":
+                    self.master._copy(term)
+                elif target == "source":
+                    self.master._insert_slang_source(term)
+                else:
+                    if self.draft_widget is None:
+                        raise ValueError(
+                            "The draft insertion point is unavailable."
+                        )
+                    text = self.draft.get("1.0", "end-1c")
+                    offset = len(self.draft_widget.get("1.0", "insert"))
+                    candidate, caret = slang_insertion(
+                        text, offset, term, SLANG_DRAFT_CHAR_LIMIT,
+                    )
+                    self.draft_widget.insert("insert", candidate[offset:caret])
+                    self.draft_widget.focus_set()
+                    self._update_metrics()
+                self.notice.configure(
+                    text="Done. Review the wording before you send it.",
+                )
+            except (ValueError, tk.TclError) as exc:
+                message = str(exc) if isinstance(exc, ValueError) else (
+                    "That action could not be completed."
+                )
+                self.notice.configure(text=message)
+
+        def _draft_changed(self, _event=None):
+            if self.draft_widget.edit_modified():
+                self.draft_widget.edit_modified(False)
+                self._update_metrics()
+
+        def _update_metrics(self):
+            self.metrics.configure(text=format_metrics_label(text_metrics(
+                self.draft.get("1.0", "end-1c"), language=FRENCH,
+            )))
+
+        def _copy_draft(self, rich=False):
+            """Copy the draft; HTML uses the checked transfer with a plain
+            fallback, matching Copy as HTML on the main translation card."""
+            text = self.draft.get("1.0", "end-1c")
+            if not text:
+                return
+            if len(text) > SLANG_DRAFT_CHAR_LIMIT or "\x00" in text:
+                self.notice.configure(
+                    text="Use a draft of at most {:,} characters.".format(
+                        SLANG_DRAFT_CHAR_LIMIT
+                    ),
+                )
+                return
+            if rich:
+                fragment = "<p>{}</p>".format(
+                    html.escape(text).replace("\n", "<br>")
+                )
+                try:
+                    copied = copy_html_to_windows_clipboard(
+                        fragment, text, self.winfo_id(),
+                    )
+                except tk.TclError:
+                    self.notice.configure(
+                        text="The clipboard is busy. Please try again.",
+                    )
+                    return
+                if not copied:
+                    self.master._copy(text)
+            else:
+                self.master._copy(text)
+            self.notice.configure(
+                text="Draft copied. Your translation result is unchanged.",
+            )
+
     class PlumeApp(ctk.CTk):
         def __init__(self):
             super().__init__()
@@ -3348,6 +3656,7 @@ if GUI_AVAILABLE:
             self._pending_correction_notes = []
             self._import_busy = False
             self._tray_icon = None
+            self._slang_reference = None
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
@@ -3528,10 +3837,17 @@ if GUI_AVAILABLE:
             left.grid_columnconfigure(0, weight=1)
             left.grid_rowconfigure(1, weight=1)
 
+            heading_row = ctk.CTkFrame(left, fg_color="transparent")
+            heading_row.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+            heading_row.grid_columnconfigure(0, weight=1)
             ctk.CTkLabel(
-                left, text="Message to translate",
+                heading_row, text="Message to translate",
                 font=ctk.CTkFont(size=15, weight="bold"),
-            ).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 4))
+            ).grid(row=0, column=0, sticky="w")
+            ctk.CTkButton(
+                heading_row, text="French slang…", width=130,
+                command=self._open_slang_reference, fg_color="gray30",
+            ).grid(row=0, column=1, sticky="e")
 
             self.input_box = ctk.CTkTextbox(left, wrap="word", font=ctk.CTkFont(size=15))
             self.input_box.grid(row=1, column=0, sticky="nsew", padx=12, pady=4)
@@ -3892,6 +4208,43 @@ if GUI_AVAILABLE:
         def _copy_source(self):
             """Copy the input box's text as-is, for chat back-and-forth."""
             self._copy(self._input_text())
+
+        # --- French slang reference (v1.34, notes_014) --------------------
+
+        def _open_slang_reference(self):
+            """Reuse one local reference window; it never submits or sends text."""
+            existing = self._slang_reference
+            if existing is not None and existing.winfo_exists():
+                existing.lift()
+                existing.focus_set()
+                return
+            self._slang_reference = SlangReferenceDialog(self)
+
+        def _insert_slang_source(self, term):
+            """Insert a catalogue term into the message source at the caret.
+
+            Refuses only an English source direction, where inserting French
+            text would put French where the model expects English; otherwise
+            this behaves like typing the term directly — freely available
+            regardless of an in-flight request, the same as any other
+            keystroke in this box.
+            """
+            if self.direction_var.get() == DIR_EN_FR:
+                raise ValueError("Choose a French source direction before inserting.")
+            source = find_slang_text_widget(self.input_box)
+            if source is None:
+                raise ValueError("The source insertion point is unavailable.")
+            text = self._input_text()
+            # Python's character length keeps offsets correct for non-BMP
+            # Unicode, unlike Tcl's own UTF-16-unit count.
+            offset = len(source.get("1.0", "insert"))
+            limit = coerce_positive_int(
+                self.config_data.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS,
+            )
+            candidate, caret = slang_insertion(text, offset, term, limit)
+            source.insert("insert", candidate[offset:caret])
+            self._on_input_change()
+            source.focus_set()
 
         def _apply_situation_preset(self, value):
             """Fill Situation from a local-only preset menu selection."""

@@ -1793,6 +1793,132 @@ class TestMmorpgTerms(unittest.TestCase):
         self.assertEqual(plume.compose_finishing_touch(":)", "tkt"), ":) tkt")
 
 
+class TestSlangCatalogue(unittest.TestCase):
+    def test_ids_are_unique(self):
+        ids = [record[0] for record in plume.SLANG_CATALOGUE]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_every_record_has_seven_columns(self):
+        for record in plume.SLANG_CATALOGUE:
+            self.assertEqual(len(record), 7)
+
+    def test_id_term_meaning_category_register_are_non_empty(self):
+        for ident, term, _expansion, meaning, category, register, note in (
+            plume.SLANG_CATALOGUE
+        ):
+            self.assertTrue(ident)
+            self.assertTrue(term)
+            self.assertTrue(meaning)
+            self.assertTrue(category)
+            self.assertTrue(register)
+            self.assertTrue(note)
+
+    def test_holds_at_least_the_first_reviewed_batch(self):
+        # v1.34 ships the notes_014 candidate batch; the wider 195-row
+        # attachment is editorial backlog, not shipped catalogue content.
+        self.assertGreaterEqual(len(plume.SLANG_CATALOGUE), 18)
+
+
+class TestSlangSearchKey(unittest.TestCase):
+    def test_folds_accents(self):
+        self.assertEqual(plume.slang_search_key("désolé"), plume.slang_search_key("desole"))
+
+    def test_folds_case(self):
+        self.assertEqual(plume.slang_search_key("BOF"), plume.slang_search_key("bof"))
+
+    def test_folds_curly_apostrophe_to_straight(self):
+        self.assertEqual(
+            plume.slang_search_key("ça marche’s"), plume.slang_search_key("ça marche's")
+        )
+
+    def test_none_input_does_not_raise(self):
+        self.assertEqual(plume.slang_search_key(None), "")
+
+
+class TestSearchSlang(unittest.TestCase):
+    def test_finds_by_raw_french_term(self):
+        matches = plume.search_slang("bof")
+        self.assertTrue(any(record[0] == "bof" for record in matches))
+
+    def test_finds_by_english_meaning_accent_and_case_insensitive(self):
+        matches = plume.search_slang("DESOLE")
+        self.assertTrue(any(record[0] == "dsl" for record in matches))
+
+    def test_finds_by_expansion(self):
+        matches = plume.search_slang("rendez-vous")
+        self.assertTrue(any(record[0] == "rdv" for record in matches))
+
+    def test_multi_word_query_is_an_and_match(self):
+        matches = plume.search_slang("tinker fix")
+        self.assertTrue(any(record[0] == "bidouiller" for record in matches))
+
+    def test_empty_query_returns_everything_in_catalogue_order(self):
+        self.assertEqual(plume.search_slang(""), list(plume.SLANG_CATALOGUE))
+
+    def test_category_filter_narrows_results(self):
+        matches = plume.search_slang("", category="Greetings")
+        self.assertTrue(matches)
+        for record in matches:
+            self.assertEqual(record[4], "Greetings")
+
+    def test_unknown_category_yields_no_matches(self):
+        self.assertEqual(plume.search_slang("", category="Not A Real Category"), [])
+
+    def test_no_match_returns_empty_list(self):
+        self.assertEqual(plume.search_slang("zzzznotaterm"), [])
+
+
+class TestSlangInsertion(unittest.TestCase):
+    def test_inserts_at_offset(self):
+        candidate, caret = plume.slang_insertion("Bonjour !", 8, "bof", 100)
+        self.assertEqual(candidate, "Bonjour bof!")
+        self.assertEqual(caret, 11)
+
+    def test_adds_space_only_between_two_alnum_characters(self):
+        candidate, _caret = plume.slang_insertion("Salut", 5, "tkt", 100)
+        self.assertEqual(candidate, "Salut tkt")
+
+    def test_no_space_added_next_to_punctuation(self):
+        candidate, _caret = plume.slang_insertion("Salut !", 6, "tkt", 100)
+        self.assertEqual(candidate, "Salut tkt!")
+
+    def test_insert_into_empty_text(self):
+        candidate, caret = plume.slang_insertion("", 0, "bof", 100)
+        self.assertEqual(candidate, "bof")
+        self.assertEqual(caret, 3)
+
+    def test_caret_math_survives_a_non_bmp_character_before_offset(self):
+        # An emoji is one Python character but two UTF-16 code units; an
+        # offset of 1 must land right after it, not one code unit short
+        # (the bug a Tcl/Tk UTF-16-based index count would introduce).
+        text = "\U0001F600!"
+        candidate, caret = plume.slang_insertion(text, 1, "bof", 100)
+        self.assertEqual(candidate, "\U0001F600bof!")
+        self.assertEqual(caret, 4)
+
+    def test_rejects_offset_out_of_range(self):
+        with self.assertRaises(ValueError):
+            plume.slang_insertion("hi", 99, "bof", 100)
+        with self.assertRaises(ValueError):
+            plume.slang_insertion("hi", -1, "bof", 100)
+
+    def test_rejects_non_int_offset(self):
+        with self.assertRaises(ValueError):
+            plume.slang_insertion("hi", 1.0, "bof", 100)
+
+    def test_rejects_empty_term(self):
+        with self.assertRaises(ValueError):
+            plume.slang_insertion("hi", 1, "", 100)
+
+    def test_rejects_null_byte_in_term(self):
+        with self.assertRaises(ValueError):
+            plume.slang_insertion("hi", 1, "bo\x00f", 100)
+
+    def test_rejects_insertion_exceeding_limit(self):
+        with self.assertRaises(ValueError):
+            plume.slang_insertion("hi", 1, "bof", 3)
+
+
 class TestUseAsMain(unittest.TestCase):
     def test_adopt_main_translation_favours_non_empty_candidate(self):
         self.assertEqual(

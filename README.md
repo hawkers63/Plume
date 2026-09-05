@@ -48,6 +48,15 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   (`dispo`, `rez`, `bj`, `osef`, `oklm`, `aïe`) for online-gaming chat.
   Both slang pickers show an English gloss in brackets (e.g. "tkt (don't
   worry)") — only the term itself is ever appended, never the gloss.
+- A **French slang…** reference window: search a local, curated catalogue
+  of French terms and phrases (bilingual, accent/case-insensitive) by
+  category, insert one straight into the message at your caret, copy just
+  the raw French, or build a separate, freely editable **local draft**
+  (with its own reading-time metrics and plain/HTML copy) for a
+  translation whose subtleties don't fit a one-click picker — e.g. `bof`
+  conveying indifference rather than a flat "terrible", or `bonsoir`
+  greeting or parting depending on context. Nothing here is sent to the
+  model or changes the translation itself.
 - **Copy source** and **Situation presets** (Close friend, Formal work
   email, Neighbour, Appointment, Dating/chat) for faster back-and-forth.
 - **Open file…** imports a `.txt` or `.md` file (up to 2 MiB, UTF-8 or

@@ -1024,6 +1024,70 @@ schema impact beyond one constants tuple:
   round-trip tests (`test_raw_value_reverses_display` for both pickers)
   already cover the path real clicks do take. Full suite: 312 tests pass.
 
+## v1.34 — French slang reference: search, insert, local draft (notes_014 A/C/D)
+
+- **A new "French slang…" button** beside the "Message to translate"
+  heading (the heading is now its own two-column row so the button
+  doesn't collide with the label — verified at the documented 1000x600
+  minimum) opens a non-modal `SlangReferenceDialog`. Independent of the
+  finishing-touch pickers (v1.2/v1.14/v1.31): these are full vocabulary/
+  phrase entries, not every one works as an appended sentence suffix, so
+  they are inserted deliberately rather than auto-appended.
+- **`SLANG_CATALOGUE`**: 18 candidate records (id, raw term, expansion,
+  English meaning, category, register, use note) across Texting,
+  Greetings, Reactions, Relationships, Vocabulary and Phrases — the
+  notes_014 first batch, editorially reviewed against Larousse for the
+  two entries most likely to be misread: `bsr`/bonsoir is glossed "good
+  evening" rather than a bare "goodbye" (it greets or parts depending on
+  context), and `bof` is glossed "so-so / not especially" with a note
+  that it conveys indifference/uncertainty, not a blanket "terrible".
+  Pronunciation is deliberately omitted this release, per notes_014's
+  own caution against the source attachment's unverified spellings.
+  The wider 195-row attachment remains an editorial backlog, added in
+  independently reviewed batches later — this version does not change
+  the UI to accommodate it.
+- **Search** (`slang_search_key`/`search_slang`): accent-, case- and
+  curly-apostrophe-insensitive, matching the raw term, its expansion or
+  the English meaning; an optional category filter; capped at 30
+  rendered rows with an advisory to refine a broad query, since roughly
+  200 records is comfortably a linear scan, not a case for a search
+  index or worker thread.
+- **Insert in source** (`_insert_slang_source`, `slang_insertion`): inserts
+  the raw term at the input box's caret, adding a space only at a real
+  word boundary (never rewriting punctuation or an existing selection),
+  bounded by the existing character limit. Refused only for an English
+  source direction (French text would land where the model expects
+  English) — otherwise available regardless of an in-flight request,
+  matching how typing directly into the box already behaves. Offsets use
+  Python's own character count rather than Tcl's UTF-16 unit count, so
+  an emoji before the caret cannot shift the insertion point.
+- **Copy term** copies only the raw French, never the English gloss.
+- **A separate local draft**, seeded once from the current French result
+  plus its finishing touch when one exists (never taking English output
+  and presenting it as French), with its own "Insert in draft", reusing
+  `text_metrics`/`format_metrics_label` for its own reading-time label.
+  "Copy draft" and "Copy draft as HTML" (the existing checked CF_HTML
+  transfer with a plain-text fallback) operate on this draft alone — the
+  main translation result, `_current_result` and config are never
+  touched by anything in this dialog, and a new translation, Clear or
+  Reopen does not overwrite an already-open draft.
+- One small catalogue-data correction alongside: `bjr`/`bsr`'s register
+  was normalised from a mismatched "Texting" to "Informal", consistent
+  with the other two SMS-greeting entries (`slt`, `a+`) in the same
+  category — a data-consistency fix, not a translation-content change.
+- 26 new unit tests: catalogue shape/uniqueness, search (accent/case/
+  apostrophe folding, category filter, unknown category, multi-word AND
+  match), insertion (word-boundary spacing, an emoji before the offset,
+  bounds/empty-term/null-byte/limit rejection). Verified live against
+  the real `PlumeApp` at both the default and documented-minimum window
+  sizes (no layout collision), then end to end: searching "bof" narrows
+  to the one matching record; Insert in draft updates the draft and its
+  metrics; Copy draft and Copy draft as HTML both land the correct
+  plain/CF_HTML clipboard content; Insert in source lands the term in
+  the real input box; switching to English → French and retrying Insert
+  in source is correctly refused with an on-screen advisory rather than
+  silently inserting nothing. Full suite: 338 tests pass.
+
 ---
 
 ### Notes on sequencing
