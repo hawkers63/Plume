@@ -1101,6 +1101,50 @@ def validate_source_size(text: str, limit: int = DEFAULT_MAX_INPUT_CHARS):
     return True, ""
 
 
+IMPORT_BYTE_LIMIT = 2 * 1024 * 1024
+
+
+def read_import_text(path: str, character_limit: int) -> str:
+    """Read a small .txt/.md source file for the Open file import (v1.28).
+
+    Deliberately narrower than notes_013's full proposal: no native
+    Explorer drag-and-drop (this app's Tcl/Tk build has a demonstrated,
+    unresolved interpreter-crash risk under real cross-process
+    WM_DROPFILES delivery — see the v1.18 record) and no .docx path
+    (kept out of scope; plain text/Markdown covers the common case with
+    no new dependency). Bounded to IMPORT_BYTE_LIMIT raw bytes. Accepts
+    UTF-8 (including a BOM) or BOM-marked UTF-16; any other encoding is
+    refused rather than guessed, so accented characters are never
+    silently replaced. Content is never truncated to fit *character_limit*
+    — an over-limit file is refused with the same message
+    validate_source_size already gives for over-limit typed input, so
+    there is one consistent size story either way.
+    """
+    extension = os.path.splitext(path)[1].casefold()
+    if extension not in {".txt", ".md"}:
+        raise ValueError("Choose a .txt or .md file.")
+    if not os.path.isfile(path):
+        raise ValueError("Choose a file rather than a folder.")
+    with open(path, "rb") as source:
+        raw = source.read(IMPORT_BYTE_LIMIT + 1)
+    if len(raw) > IMPORT_BYTE_LIMIT:
+        raise ValueError("The file exceeds the 2 MiB import limit.")
+    encoding = "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+    try:
+        text = raw.decode(encoding)
+    except UnicodeError as exc:
+        raise ValueError(
+            "Save the file as UTF-8 or UTF-16, then import it."
+        ) from exc
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if "\x00" in text:
+        raise ValueError("The file contains unsupported null characters.")
+    ok, message = validate_source_size(text, character_limit)
+    if not ok:
+        raise ValueError(message)
+    return text
+
+
 def _safe_short_string(value, limit: int = MAX_NOTE_CHARS) -> str:
     """Coerce arbitrary model output into a short, single-line safe string."""
     if not isinstance(value, str):
@@ -2906,6 +2950,7 @@ if GUI_AVAILABLE:
             self._result_source_text = ""
             self._result_situation = ""
             self._pending_correction_notes = []
+            self._import_busy = False
             self._tray_icon = None
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
@@ -3164,6 +3209,11 @@ if GUI_AVAILABLE:
             translate_row = ctk.CTkFrame(left, fg_color="transparent")
             translate_row.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 12))
             translate_row.grid_columnconfigure(0, weight=1)
+            self.open_file_btn = ctk.CTkButton(
+                translate_row, text="Open file…", width=120,
+                command=self._open_source_file, fg_color="gray30",
+            )
+            self.open_file_btn.grid(row=0, column=0, sticky="w")
             self.correct_btn = ctk.CTkButton(
                 translate_row, text="Correct English", width=140,
                 command=self._correct_then_translate, fg_color="gray30",
@@ -3591,6 +3641,84 @@ if GUI_AVAILABLE:
             except Exception:
                 return
             self.input_box.insert("insert", clip)
+            self._on_input_change()
+
+        def _open_source_file(self):
+            """Import a .txt/.md file into the input box (v1.28)."""
+            if self._import_busy:
+                return
+            path = filedialog.askopenfilename(
+                parent=self, title="Open source text",
+                filetypes=[("Text and Markdown", "*.txt *.md"), ("All files", "*.*")],
+            )
+            if path:
+                self._begin_file_import(path)
+
+        def _begin_file_import(self, path):
+            """Read *path* off the UI thread, bounded and never truncated."""
+            self._import_busy = True
+            self.open_file_btn.configure(state="disabled")
+            baseline_text = self._input_text()
+            limit = coerce_positive_int(
+                self.config_data.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS
+            )
+
+            def worker():
+                try:
+                    payload = ("ok", read_import_text(path, limit))
+                except ValueError as exc:
+                    payload = ("error", str(exc))
+                except Exception:  # pragma: no cover - defensive
+                    payload = ("error", "The file could not be read.")
+
+                def _deliver_safe():
+                    try:
+                        self._deliver_file_import(baseline_text, payload)
+                    except tk.TclError:  # pragma: no cover - window closed
+                        pass
+
+                try:
+                    if self.winfo_exists():
+                        self.after(0, _deliver_safe)
+                except tk.TclError:  # pragma: no cover - window closed
+                    pass
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _deliver_file_import(self, baseline_text, payload):
+            """Apply an import result, unless the input changed meanwhile."""
+            try:
+                if not self.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            self._import_busy = False
+            self.open_file_btn.configure(state="normal")
+
+            kind, value = payload
+            if kind == "error":
+                self.advisory.configure(text=value)
+                self.advisory.grid()
+                return
+            if self._input_text() != baseline_text:
+                self.advisory.configure(
+                    text="Import discarded because the input changed while "
+                         "the file was being read."
+                )
+                self.advisory.grid()
+                return
+
+            replace = not baseline_text or messagebox.askyesno(
+                "Replace source text",
+                "Replace the current source with this file?",
+                parent=self,
+            )
+            # Recheck after the modal question above ran its own nested
+            # event loop, during which the input could have changed.
+            if not replace or self._input_text() != baseline_text:
+                return
+            self.input_box.delete("1.0", "end")
+            self.input_box.insert("1.0", value)
             self._on_input_change()
 
         def _clear(self):

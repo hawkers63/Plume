@@ -1200,6 +1200,81 @@ class TestSourceSize(unittest.TestCase):
         self.assertTrue(ok)
 
 
+class TestFileImport(unittest.TestCase):
+    def _write(self, tmp, name, data: bytes) -> str:
+        path = os.path.join(tmp, name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return path
+
+    def test_reads_utf8_text_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "a.txt", "Bonjour café".encode("utf-8"))
+            self.assertEqual(plume.read_import_text(path, 2000), "Bonjour café")
+
+    def test_reads_utf8_bom_text_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "a.txt", b"\xef\xbb\xbfBonjour")
+            self.assertEqual(plume.read_import_text(path, 2000), "Bonjour")
+
+    def test_reads_utf16_bom_text_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "a.txt", "Bonjour".encode("utf-16"))
+            self.assertEqual(plume.read_import_text(path, 2000), "Bonjour")
+
+    def test_reads_markdown_extension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "a.md", "# Title".encode("utf-8"))
+            self.assertEqual(plume.read_import_text(path, 2000), "# Title")
+
+    def test_rejects_unsupported_extension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "a.docx", b"whatever")
+            with self.assertRaises(ValueError):
+                plume.read_import_text(path, 2000)
+
+    def test_rejects_oversized_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "a.txt", b"x" * (plume.IMPORT_BYTE_LIMIT + 1))
+            with self.assertRaises(ValueError):
+                plume.read_import_text(path, 10_000_000)
+
+    def test_rejects_over_character_limit_without_truncating(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "a.txt", ("x" * 50).encode("utf-8"))
+            with self.assertRaises(ValueError):
+                plume.read_import_text(path, 10)
+
+    def test_normalises_crlf_line_endings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "a.txt", "line one\r\nline two".encode("utf-8"))
+            self.assertEqual(plume.read_import_text(path, 2000), "line one\nline two")
+
+    def test_rejects_embedded_null_byte(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "a.txt", b"before\x00after")
+            with self.assertRaises(ValueError):
+                plume.read_import_text(path, 2000)
+
+    def test_rejects_invalid_utf8(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # 0xff is never a valid UTF-8 byte; two of them also do not
+            # match the UTF-16 BOM prefix (which is 0xff 0xfe specifically).
+            path = self._write(tmp, "a.txt", b"broken \xff\xff bytes")
+            with self.assertRaises(ValueError):
+                plume.read_import_text(path, 2000)
+
+    def test_rejects_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                plume.read_import_text(os.path.join(tmp, "missing.txt"), 2000)
+
+    def test_rejects_a_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                plume.read_import_text(tmp, 2000)
+
+
 class TestStaleRequest(unittest.TestCase):
     def test_earlier_result_cannot_replace_later(self):
         # Simulate two requests: rid 1 launched, then rid 2 launched (current=2).

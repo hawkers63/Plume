@@ -767,6 +767,43 @@ schema impact beyond one constants tuple:
   Claude API: one live translation completed correctly through the
   rewritten transport. Full suite: 234 tests pass.
 
+## v1.28 — File import: Open file, text/Markdown only (notes_013 A2/A3, scoped down)
+
+- **Open file…**, on the left pane's second button row (left-aligned
+  beside Correct English/Translate, rather than a fifth button on the
+  already-tight Paste/Clear/Copy source/Reply row): imports a `.txt` or
+  `.md` file into the input box. Read off the UI thread, bounded to 2 MiB
+  raw, accepting UTF-8 (including a BOM) or BOM-marked UTF-16 and refusing
+  any other encoding rather than guessing one; content is never truncated
+  to fit the configured character limit — an over-limit file is refused
+  with the same message over-limit typed input already gets. If the input
+  box isn't empty, asks before replacing it, and re-checks afterwards
+  since the confirmation dialog runs its own nested event loop. An import
+  whose result arrives after the input has changed is discarded with an
+  advisory rather than silently overwriting newer typing.
+- **Deliberately narrower than notes_013's full proposal, on purpose:**
+  no native Explorer drag-and-drop (`WindowsFileDrop`/A1) — this app's
+  Tcl/Tk build has a demonstrated, unresolved interpreter-crash risk under
+  real cross-process `WM_DROPFILES` delivery (see v1.18), and the specific
+  pointer/argtypes fixes notes_013 proposed do not address that root
+  cause, per the standing native-integration risk record — and no `.docx`
+  import path, kept out of scope so this version adds no new dependency.
+  Revisiting drag-and-drop would need either genuine Tcl/Tk-on-Windows
+  notifier expertise or a maintained library (`tkinterdnd2`) rather than
+  another hand-rolled `ctypes` attempt.
+- 11 new unit tests for `read_import_text` (UTF-8/BOM/UTF-16, unsupported
+  extension, oversized file, over-character-limit refusal without
+  truncation, CRLF normalisation, embedded NUL, invalid encoding, missing
+  file, a directory given instead of a file). Verified live against the
+  real `PlumeApp` class: import into an empty box (no prompt), import
+  into a non-empty box (prompt shown, both accept and decline paths),
+  an import superseded by a meanwhile-changed input (discarded, not
+  applied), an unsupported extension (clear advisory, no crash), and the
+  concurrent-import guard — plus a screenshot of the real running app
+  confirming the new button doesn't crowd the layout (the exact class of
+  regression a past version introduced and fixed). Full suite: 246 tests
+  pass.
+
 ---
 
 ### Notes on sequencing

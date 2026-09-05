@@ -43,6 +43,11 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   changing register and meaning, not just tone.
 - **Copy source** and **Situation presets** (Close friend, Formal work
   email, Neighbour, Appointment, Dating/chat) for faster back-and-forth.
+- **Open file…** imports a `.txt` or `.md` file (up to 2 MiB, UTF-8 or
+  UTF-16) straight into the input box, asking before it replaces anything
+  already there. No native Explorer drag-and-drop or Word import — a
+  plain file picker was the safer, dependency-free choice for this app's
+  Tcl/Tk build (see `ROADMAP.md`'s v1.18/v1.28 entries).
 - Optional local history with favourites — including a one-click
   **☆ Favourite** on the main panel — per-entry **Copy** / **Reopen** /
   **Delete**, "clear history" preserving favourited entries, and
