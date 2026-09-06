@@ -2000,7 +2000,10 @@ class TestFinishingTouch(unittest.TestCase):
 
     def test_catalogue_starts_with_none_and_holds_emotes(self):
         self.assertEqual(plume.FINISHING_TOUCHES[0], plume.FINISHING_TOUCH_NONE)
-        for mark in (":)", ":p", ";)", "xD", "mdr", "ptdr", "jpp"):
+        for mark in (
+            ":)", ":p", ";)", "xD", "mdr", "ptdr", "jpp",
+            ":D", ":/", ":'(", ":o", "^^", "<3", "xo",
+        ):
             self.assertIn(mark, plume.FINISHING_TOUCHES)
 
     def test_catalogue_excludes_greetings_and_in_sentence_abbreviations(self):
@@ -2016,6 +2019,16 @@ class TestCasualSignoff(unittest.TestCase):
         self.assertIn("tkt", plume.CASUAL_SIGNOFFS)
         self.assertIn("grave", plume.CASUAL_SIGNOFFS)
 
+    def test_catalogue_holds_the_v1_41_expansion(self):
+        # v1.41 (notes_018): further register-shifting-but-self-contained
+        # suffixes, still each a reassurance/farewell/plain reaction rather
+        # than a comment on a person or thing.
+        for term in (
+            "dsl", "bof", "nickel", "tranquille", "carrément", "biz", "a+",
+            "merci", "trop bien",
+        ):
+            self.assertIn(term, plume.CASUAL_SIGNOFFS)
+
     def test_catalogue_excludes_wider_slang_and_greetings(self):
         # Curation guard: v1.14 ships only the two terms notes_004 named as
         # safe examples. Greetings, in-sentence abbreviations, nouns, and
@@ -2025,6 +2038,11 @@ class TestCasualSignoff(unittest.TestCase):
             "slt", "bjr", "rdv", "bcp", "mtn", "jsp", "oklm",
             "wesh", "meuf", "keuf", "boloss", "bg", "sah", "askip", "frr",
             "s/o", "chelou", "ouf", "relou", "stylé", "kiffer", "chanmé",
+            # notes_018 (v1.41) also proposed these; held out for the same
+            # reason as the rest of this list (a verdict on a person/thing,
+            # a question or greeting fragment rather than a suffix, or not
+            # meaningfully distinct from an already-banned near-synonym).
+            "cheum", "pk", "cv", "mortel", "gèrer", "tu gères",
         )
         for term in banned:
             self.assertNotIn(term, plume.CASUAL_SIGNOFFS)
@@ -2111,6 +2129,15 @@ class TestMmorpgTerms(unittest.TestCase):
         for term in ("dispo", "rez", "bj", "osef", "oklm", "aïe"):
             self.assertIn(term, plume.MMORPG_TERMS)
 
+    def test_catalogue_holds_the_v1_41_expansion(self):
+        # v1.41 (notes_018): common session-status and farewell shorthand,
+        # each self-referential rather than a verdict on another player.
+        for term in (
+            "gg", "gl", "hf", "afk", "brb", "sec", "lag", "gj", "go", "gn",
+            "cya", "cyl", "ttyl", "ttys",
+        ):
+            self.assertIn(term, plume.MMORPG_TERMS)
+
     def test_catalogue_excludes_domain_nouns_and_standalone_replies(self):
         # Same curation bar as Casual sign-off: gaming NOUNS describing
         # gear/content (not an appendable mood tag) and standalone replies/
@@ -2118,6 +2145,13 @@ class TestMmorpgTerms(unittest.TestCase):
         banned = (
             "le stuff", "l'aggro", "les trash", "HL", "dj", "voc", "abo",
             "kikimeter", "bg", "rede", "wé", "ouai",
+            # notes_018 (v1.41) also proposed these; held out as a comment
+            # aimed at someone else's play ("nt") or a plain verdict on a
+            # person/thing ("nul", "relou", "bouffon"), the same reason
+            # "bg"/"rede" stay out. "bb" is excluded separately: it is as
+            # commonly read as the endearment "baby" as it is "bye bye",
+            # and a one-click append should not risk sending the former.
+            "nt", "bb", "nul", "relou", "bouffon",
         )
         for term in banned:
             self.assertNotIn(term, plume.MMORPG_TERMS)
@@ -2146,6 +2180,10 @@ class TestMmorpgTerms(unittest.TestCase):
     def test_compose_joins_all_three_pickers(self):
         composed = plume.compose_finishing_touch(":)", "tkt", "rez")
         self.assertEqual(composed, ":) tkt rez")
+
+    def test_compose_joins_one_v1_41_term_from_each_picker(self):
+        composed = plume.compose_finishing_touch(":D", "nickel", "gg")
+        self.assertEqual(composed, ":D nickel gg")
 
     def test_compose_mmorpg_only(self):
         composed = plume.compose_finishing_touch(

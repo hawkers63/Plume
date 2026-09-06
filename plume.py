@@ -244,6 +244,7 @@ PRESET_NAME_MAX = 40
 FINISHING_TOUCH_NONE = "None"
 FINISHING_TOUCHES = (
     FINISHING_TOUCH_NONE, ":)", ":p", ";)", "xD", "mdr", "ptdr", "jpp",
+    ":D", ":/", ":'(", ":o", "^^", "<3", "xo",
 )
 
 # --- Casual sign-off / slang catalogue (v1.14, notes_004 revisited) --------
@@ -252,12 +253,16 @@ FINISHING_TOUCHES = (
 # and meaning, not just its tone ("tkt" asserts reassurance, "grave" asserts
 # emphasis), so this is its own small, separately curated catalogue and its
 # own picker in the UI rather than folded into FINISHING_TOUCHES — a wider
-# audience shouldn't see a slang term sitting unlabelled next to ":)". Kept
-# to the two terms notes_004 named explicitly as safe examples; every other
-# entry in Essential Shortcuts.txt is either a greeting, an in-sentence
-# abbreviation, a standalone reply, a noun, or carries a harsher or more
-# culturally loaded connotation (e.g. "boloss", "keuf", "wesh") that has no
-# place as an optional one-click append.
+# audience shouldn't see a slang term sitting unlabelled next to ":)".
+# notes_004 named only "tkt"/"grave" as safe examples; v1.41 (notes_018)
+# widened the set with further terms that are still register-shifting-but-
+# self-contained suffixes (reassurances, farewells, plain reactions), while
+# continuing to hold out anything from Essential Shortcuts.txt that is a
+# greeting, an in-sentence abbreviation, a standalone reply, a noun, a
+# one-word verdict on a person or thing (e.g. "cheum", "stylé", "bg" -
+# handsome), or otherwise harsher/culturally loaded (e.g. "boloss", "keuf",
+# "wesh", "sah", "relou") — those stay out of a one-click append regardless
+# of which note proposes them.
 #
 # Each entry pairs the raw term (what is actually appended to the copied
 # text) with a short English gloss shown only in the dropdown label (v1.31),
@@ -268,6 +273,15 @@ CASUAL_SIGNOFF_CATALOGUE = (
     (CASUAL_SIGNOFF_NONE, None),
     ("tkt", "don't worry"),
     ("grave", "seriously / totally"),
+    ("dsl", "sorry"),
+    ("bof", "so-so / not especially"),
+    ("nickel", "perfect / all good"),
+    ("tranquille", "no worries / relax"),
+    ("carrément", "totally / absolutely"),
+    ("biz", "kisses (informal sign-off)"),
+    ("a+", "see you later"),
+    ("merci", "thanks"),
+    ("trop bien", "too good"),
 )
 CASUAL_SIGNOFFS = tuple(term for term, _gloss in CASUAL_SIGNOFF_CATALOGUE)
 
@@ -276,12 +290,16 @@ CASUAL_SIGNOFFS = tuple(term for term, _gloss in CASUAL_SIGNOFF_CATALOGUE)
 # sign-off, for online-gaming chat — sourced from a user-supplied MMORPG
 # slang reference. Held to the same bar Casual sign-off already applies:
 # only terms that work as a general appendable tag regardless of the rest
-# of the sentence. Excluded, and why:
+# of the sentence. v1.41 (notes_018) added the common session-status and
+# farewell shorthand (gg, gl, hf, afk, brb, sec, lag, gj, go, gn, cya, cyl,
+# ttyl, ttys). Excluded, and why:
 #   - domain nouns describing gear/content, not a mood/attitude tag
 #     (le stuff, l'aggro, les trash, HL, dj, voc, abo, kikimeter);
 #   - a full standalone callout more than an appended flavour word, or a
 #     comment aimed at someone else's play rather than your own message
-#     (bg "nice one", rede "I'm back", ouai/wé "yeah").
+#     (bg "nice one", rede "I'm back", ouai/wé "yeah", and — despite
+#     appearing in notes_018's proposed batch — "nt" "nice try" said at an
+#     opponent, plus the plain verdicts "nul"/"relou"/"bouffon").
 MMORPG_TERM_NONE = "None"
 MMORPG_TERM_CATALOGUE = (
     (MMORPG_TERM_NONE, None),
@@ -291,6 +309,20 @@ MMORPG_TERM_CATALOGUE = (
     ("osef", "whatever / don't care"),
     ("oklm", "chill / no stress"),
     ("aïe", "ouch"),
+    ("gg", "good game"),
+    ("gl", "good luck"),
+    ("hf", "have fun"),
+    ("afk", "away from keyboard"),
+    ("brb", "be right back"),
+    ("sec", "one second"),
+    ("lag", "lag / delay"),
+    ("gj", "good job"),
+    ("go", "let's go"),
+    ("gn", "good night"),
+    ("cya", "see you"),
+    ("cyl", "see you later"),
+    ("ttyl", "talk to you later"),
+    ("ttys", "talk to you soon"),
 )
 MMORPG_TERMS = tuple(term for term, _gloss in MMORPG_TERM_CATALOGUE)
 
@@ -4357,7 +4389,7 @@ if GUI_AVAILABLE:
             ctk.CTkOptionMenu(
                 signoff_row,
                 values=[casual_signoff_display(t) for t in CASUAL_SIGNOFFS],
-                variable=self.casual_signoff_var, width=170,
+                variable=self.casual_signoff_var, width=190,
                 command=self._on_finishing_touch_change,
             ).grid(row=0, column=1, sticky="w")
             ctk.CTkLabel(
@@ -4377,7 +4409,7 @@ if GUI_AVAILABLE:
             ctk.CTkOptionMenu(
                 mmorpg_row,
                 values=[mmorpg_term_display(t) for t in MMORPG_TERMS],
-                variable=self.mmorpg_var, width=170,
+                variable=self.mmorpg_var, width=190,
                 command=self._on_finishing_touch_change,
             ).grid(row=0, column=1, sticky="w")
             ctk.CTkLabel(
