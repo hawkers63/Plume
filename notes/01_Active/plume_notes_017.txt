@@ -1,0 +1,311 @@
+PLUME — DECISIONS ON TONE CALIBRATION AND COOPERATIVE CANCELLATION
+6 September 2026 | Read-only review | Codex
+
+Source reviewed: C:\Plume\plume.py, main @ c349d31.
+SHA-256: FD58BC28888BD4C667D3B3868D50DD440A71918CAB8F2082B9F5625DD2E74D82
+No source/configuration/test file modifications or live provider calls.
+This note follows the current AGENTS.md review filename convention. Existing
+numbered notes end at 016. No active project task tracker was exposed.
+
+1. RECOMMENDED DECISIONS
+========================
+
+v1.33: Retain the current source-faithfulness clause provisionally. Resolve the
+remaining uncertainty with a small, paired bilingual evaluation against the
+pre-v1.33 clause, using today's otherwise identical application pipeline. Do not
+rewrite the prompt again merely because calibration is unfinished. The code
+does not establish a semantic defect in the clause. Unit tests do not establish
+translation quality either. The calibration item remains open until actual
+outputs are judged against explicit source-meaning requirements.
+
+v1.38: Keep cooperative cancellation and its stale-request protection. Use a
+controlled loopback HTTP server to exercise genuinely delayed/hanging transport;
+no live Claude/Ollama endpoint is necessary for that part. A concrete remaining
+gap was reproduced: backoff uses uninterruptible time.sleep. Adopt the small
+Event.wait replacement proposed below, then add repeatable transport/UI integration
+checks. Do not introduce socket internals, thread killing or a process framework
+merely to promise instantaneous cancellation of a blocked urllib read.
+
+2. v1.33 — WHAT THE CURRENT EVIDENCE DOES AND DOES NOT SHOW
+==========================================================
+
+build_tone_instruction is at plume.py:1758–1778. The added clause at 1771–1777
+preserves negation, quantities, attribution, uncertainty and obligations, and
+forbids unexpressed reassurance, gratitude, apologies, availability or agreement.
+It distinguishes faithfully translating source slang from inventing more slang.
+
+This is a sensible extension of Plume's existing meaning-preservation contract.
+The qualification 'that the source does not express' is important: a faithful
+translation must keep an apology, agreement or joke when the source contains it.
+The primary risk to test is overcorrection: removing a real social meaning,
+flattening source humour, or making natural French/English unnecessarily stiff.
+The other risk is undercompliance: Warm/Reassuring/Playful steering the model into
+new assertions despite the guard, especially in one of the five alternatives.
+
+Current tests at tests/test_translator_logic.py:530–550 inspect prompt strings.
+They establish that the instruction is present and absent as intended, not that
+either backend follows it. When no tones are selected, this helper returns an
+empty string: the extra guard is not universal across all requests. The broader
+translation prompt has its own fidelity rules. Do not silently relocate this
+clause into the global prompt during calibration; that would be another change.
+
+Baseline provenance: commit 15542d8 introduced v1.33. The parent version of
+build_tone_instruction was inspected directly. Use only that old helper's clause
+as baseline, keeping today's validator, request envelope, glossary, writing
+profile, model settings and output parser identical. Running the whole old app
+would confound the comparison with unrelated changes.
+
+Proposed bounded evaluation
+-----------------------------
+Use the 24 synthetic source cases below: twelve English and twelve French. Each
+has a direction, an assigned tone configuration and a meaning-preservation oracle.
+The oracle describes semantic requirements, not one mandatory exact translation.
+This makes idiomatic alternatives possible while detecting concrete errors.
+
+Run each case with baseline and candidate once per backend actually intended for
+release: 48 responses for one backend, 96 for both. Each response contains the
+main translation plus five alternatives, so both backends produce 576 translated
+strings to assess. Include the meaning checks and existing validation warnings
+in the judgement. Do not declare Ollama calibrated based on Claude outputs.
+
+Four cases have no tones (negative controls), eight use a single tone and twelve
+use a compatible triple. No-tone prompt pairs should be identical; variation in
+their generated results illustrates sampling noise rather than this clause's
+effect. Duplicate no-tone calls may be omitted for cost if prompt equality is
+verified, but record that choice in the results.
+
+Keep formality, gender, writing Strength/Role and glossary settings fixed and
+record them. Use the user's actual intended model names/versions and the existing
+generation settings. A fixed seed/temperature, where supported, helps comparison
+but is not a universal determinism guarantee. Disable automatic provider fallback
+for the benchmark, otherwise a backend failure can silently confound attribution.
+Do not use private conversation history or production credentials in fixtures.
+
+Codes: N=no tone; W=Warm; R=Reassuring; P=Playful;
+T=Warm + Precise + Courteous, a compatible triple in the current catalogue.
+
+ID  Dir    Tone  Source and essential preservation requirement
+--  -----  ----  --------------------------------------------------------------
+01  EN→FR  N     I didn't say she stole it.
+                 Preserve denial of saying, not a claim that she did not steal.
+02  FR→EN  N     Je n'ai pas dit qu'elle l'avait volé.
+                 Preserve attribution and the scope of negation.
+03  EN→FR  T     You don't have to reply today.
+                 Absence of obligation, not a prohibition on replying.
+04  FR→EN  T     Tu n'es pas obligé de répondre aujourd'hui.
+                 Keep the optionality and the date reference.
+05  EN→FR  T     I might be free after six; I can't promise.
+                 Possibility only; do not assert availability or a commitment.
+06  FR→EN  T     Je serai peut-être libre après six heures, sans garantie.
+                 Preserve uncertainty and absence of a guarantee.
+07  EN→FR  T     She said it could arrive by Friday, not that it would.
+                 Retain the speaker attribution and possible/definite contrast.
+08  FR→EN  T     Elle a dit que ça pourrait arriver vendredi, pas que ça arriverait.
+                 Do not convert reported possibility into a promise.
+09  EN→FR  N     There are only two places left, not three.
+                 Preserve both quantities and the exclusion.
+10  FR→EN  N     Il ne reste que deux places, pas trois.
+                 Preserve restriction, quantities and negation.
+11  EN→FR  T     Pay at least 20 euros before 3 pm, not after.
+                 Minimum amount; preserve deadline direction and contrast.
+12  FR→EN  T     Verse au moins 20 euros avant 15 heures, pas après.
+                 Preserve minimum amount, time and before/after distinction.
+13  EN→FR  W     Send me the address.
+                 Do not add gratitude, an apology or a newly softened obligation.
+14  FR→EN  W     Envoie-moi l'adresse.
+                 Retain a request; no invented thanks or reassurance.
+15  EN→FR  T     I'm sorry I'm late, and thank you for waiting.
+                 KEEP the apology and gratitude because the source expresses them.
+16  FR→EN  T     Désolé pour le retard, et merci d'avoir attendu.
+                 Preserve both apology and gratitude; do not strip politeness.
+17  EN→FR  R     I don't know whether the results will be good.
+                 No invented 'it will be fine' or certainty.
+18  FR→EN  R     Je ne sais pas si les résultats seront bons.
+                 Preserve uncertainty; no extra promise or comforting assertion.
+19  EN→FR  P     Great, another cancelled train. Just what I needed.
+                 Preserve source sarcasm without adding another joke or insult.
+20  FR→EN  P     Génial, encore un train annulé. Il ne manquait plus que ça.
+                 Preserve ironic frustration, not literal delight.
+21  EN→FR  P     lol, I can't take another meeting today.
+                 Keep laughter plus the stated limit; no new mockery of a person.
+22  FR→EN  P     mdr, j'en peux plus des réunions aujourd'hui.
+                 Preserve colloquial exasperation without invented hostility.
+23  EN→FR  T     I'm available tomorrow, but I haven't agreed to help.
+                 KEEP availability; do not infer agreement to help.
+24  FR→EN  T     Je suis disponible demain, mais je n'ai pas accepté d'aider.
+                 Keep availability and the explicit lack of agreement together.
+
+Acceptance and decision rule
+------------------------------
+1. Run existing structured-result and placeholder/direction checks first.
+2. A bilingual reviewer assesses source meaning without seeing which prompt
+   produced each output. Randomise A/B labels and record the rubric before scoring.
+   Automated/model-assisted review can flag cases but must not be described as
+   independent human bilingual sign-off. Substring searches cannot reliably judge
+   negation, idioms or politeness across languages.
+3. Any invented/removed fact, changed quantity, negation reversal, changed
+   obligation, invented commitment or lost source apology is a critical semantic
+   failure. Assess all six translations; the main translation alone is insufficient.
+4. Acceptance requires zero unresolved critical failures in the candidate sample
+   and no systematic loss of naturalness/source tone relative to baseline. Baseline
+   failures are not permission to accept the same errors in the candidate.
+5. Repeat failures and ambiguous/high-risk cases, preferably three paired runs,
+   before assigning cause to the prompt. One favourable model response proves
+   neither reliability nor causality. This is a bounded regression evaluation,
+   not a statistical demonstration of zero hallucinations.
+6. If accepted, record models, date, case data, output/setting hashes, reviewer and
+   decisions, and mark calibration complete FOR THOSE configurations. If one
+   backend fails, record that backend's result explicitly; do not mark both passed.
+7. If a repeatable regression is attributable to the new clause, revise or revert
+   ONLY that clause. Keep v1.33's deterministic validator/raw-label fixes. Add the
+   failed case to the regression set and rerun after the wording change.
+
+Practical decision now: keep the sensible guard provisionally and keep calibration
+honestly labelled pending. No provider generation or human output assessment was
+performed in this review, so this note does not close the bilingual calibration.
+The absence of endpoint access is a benchmark limitation, not a reason to invent
+a new prompt or claim a model-assisted editorial judgement is empirical validation.
+
+3. v1.38 — REAL TRANSPORT CHECKS PERFORMED
+========================================
+
+A temporary standard-library ThreadingHTTPServer was bound to 127.0.0.1 on an
+ephemeral port. It accepted real HTTP POSTs through the current _http_post_json
+and urllib, without mocking urlopen. Requests contained only synthetic empty
+JSON. The server was shut down after each scenario. No application config was
+changed, no credentials were used and no external provider was contacted.
+
+Scenario                   Observed current behaviour
+-------------------------  ----------------------------------------------------
+Delayed response headers   Cancel set while blocked; worker still waiting at
+                           100 ms. Once the server was released, cancellation
+                           returned at ~109 ms total. One request, no result.
+Delayed response body      Same: blocked at 100 ms, cancelled after deliberate
+                           server release at ~109 ms. One request, no result.
+Stalled partial body       Test socket timeout was 0.4 s. Cancelled worker ended
+                           at ~407 ms after cancellation. One request, no retry.
+503 + Retry-After: 2        Cancellation set AFTER entering real backoff. Worker
+                           took ~1.984 s to exit. One request, no retry.
+
+The ~109 ms measurements include the intentional 100 ms wait before releasing
+the server. They do not demonstrate immediate interruption of a blocked read.
+The short timeout was a test parameter, not a production timeout change.
+Production constants remain 60 s for Claude and 120 s for Ollama at 533/539.
+
+Separately, actual PlumeApp._new_http_cancel and _deliver methods were exercised
+on a minimal scripted state object: the prior event became set, the replacement
+event was fresh, and an older request ID returned without rendering. This checks
+real method logic, not a mouse-driven full-GUI interaction during network I/O.
+
+Important gap in the existing test claim
+----------------------------------------
+_http_post_json.wait_or_give_up still calls time.sleep(delay), plume.py:2307.
+Checking the Event at 2299 does not wake a sleep already in progress. Up to the
+remaining backoff duration can therefore be wasted after cancellation, potentially
+up to the available 30-second retry-wait budget for a server-requested pause.
+
+test_cancelled_during_backoff_wait_stops_retry at test_translator_logic.py:1691
+sets the Event inside fake_urlopen BEFORE raising HTTPError. It checks cancellation
+before the wait starts, not cancellation during a blocked wait. The test is useful
+but its name overstates that particular coverage. This is a small responsiveness/
+worker-lifetime gap, not evidence that cancelled text reaches the screen.
+
+Smallest recommended source change — PROPOSED ONLY
+----------------------------------------------------
+In C:\Plume\plume.py, _http_post_json.wait_or_give_up, replace only line 2307's
+time.sleep(delay); retain waited += delay at 2308 and the surrounding budget checks:
+
+```python
+        if cancel_event is None:
+            time.sleep(delay)
+        elif cancel_event.wait(delay):
+            raise BackendError("The request was cancelled.")
+        waited += delay
+```
+
+Event.wait(timeout) returns early when the event is set. It preserves the normal
+delay for uncancelled requests and the existing no-event API. Python documents
+this behaviour explicitly [1]. This is cooperative cancellation during retry
+waiting; it does not promise to abort an active HTTP read.
+
+The replacement was applied only to an in-memory copy of the real helper and
+tested against a real local HTTP 503 + Retry-After: 2 response. An observed Event
+confirmed the wait had actually begun before cancellation was set. The worker
+returned cancelled within the measurement rounding (<0.0001 s reported as 0.0000),
+with exactly one request. No file containing production code was changed. This
+single observation supports the mechanism; it is not a production latency SLA.
+
+Recommended completion criteria
+---------------------------------
+- Preserve current immediate UI invalidation, request IDs and the Event chain.
+- Implement the small wait change and add a genuinely mid-wait test. Coordinate
+  with barriers/events; do not rely on a guessed sleep to decide when to cancel.
+- Commit a local HTTP integration fixture in tests once implementation is
+  authorised. Cover delayed headers, partial body, timeout, retry wait, newer
+  request succeeding while an older one is stalled, Clear and close.
+- Use real provider wrappers with URLs redirected IN TEST MEMORY to provider-
+  shaped local responses, without editing plume_config.json or invoking fallback
+  against a real provider. Check request counts and suppressed fallback as well
+  as the returned exception. Inspect both success and failure after cancellation.
+- Add one GUI integration run: click Clear while the loopback response is held,
+  start a second request, release the old response and confirm it cannot replace
+  the newer result; repeat closing the window. Use queued barriers/status to know
+  the request is genuinely in progress. The four transport checks above do not
+  claim this full interaction has already occurred.
+- Confirm an uncancelled delayed request still succeeds, cancellation during wait
+  wakes promptly (e.g. a generous one-second test bound), and there is exactly
+  one server request after cancelling the first attempt.
+- On passage, close the item as 'cooperative cancellation verified against
+  controlled real HTTP delays; blocked reads remain limited by socket behaviour'.
+  Retain the honest limitation in user/developer documentation.
+
+No live Claude/Ollama outage is necessary to establish the client contract.
+A live-provider smoke test later is useful for provider-specific behaviour but
+should not be the only repeatable validation path. Python's HTTP server supports
+the local fixture and urllib exposes a timeout for blocking operations [2,3].
+
+Important limits and future work
+---------------------------------
+Socket timeouts are not strict whole-request deadlines: a server sending a small
+amount periodically may keep a read alive. Clearing repeatedly can leave multiple
+abandoned daemon workers waiting on sockets. If observed in normal use, bounded
+worker admission or a separate process with a hard deadline would be distinct
+requirements, not an unadvertised extension of this cooperative-cancel feature.
+Do not promise that local cancellation stops remote inference or billing.
+
+The fallback guard currently recognises cancellation via exception text at
+run_backend:2555 onward. Checking the snapshot Event too would make the intent
+more explicit, especially when the final failed attempt reports another error.
+Both wrappers already pass the same Event into _http_post_json, whose pre-attempt
+check prevents a cancelled fallback from sending a POST. A typed cancellation
+exception is optional future clean-up, not required architectural churn here.
+
+4. VERIFICATION AND STATUS
+==========================
+
+- Current baseline suite: 397 tests passed (python -B, Python 3.11.1).
+- Four real loopback HTTP scenarios executed against current transport.
+- One real loopback scenario executed against the in-memory Event.wait proposal.
+- Real app class event/stale-delivery methods checked without a live GUI.
+- Historical baseline tone helper verified from 15542d8's parent.
+- No model generation/calibration, source edits or external messages performed.
+
+Decision status:
+[complete] Recommendations, code review and bounded transport investigation.
+[complete] Concrete paired bilingual benchmark specification.
+[pending] Actual bilingual outputs and reviewer assessment.
+[pending] Authorised Event.wait source change and durable integration tests.
+[pending] Full GUI cancel/new-request/close run against controlled local HTTP.
+
+References
+------------
+[1] Python threading.Event.wait:
+https://docs.python.org/3/library/threading.html#threading.Event.wait
+[2] Python urllib.request.urlopen:
+https://docs.python.org/3/library/urllib.request.html#urllib.request.urlopen
+[3] Python http.server.ThreadingHTTPServer:
+https://docs.python.org/3/library/http.server.html#http.server.ThreadingHTTPServer
+
+Project evidence: C:\Plume\ROADMAP.md:983 (v1.33), :1220 (v1.38);
+C:\Plume\tests\test_translator_logic.py:530, :1676, :1691, :1713;
+C:\Plume\plume.py:1758, :2259, :2307, :5066, :5729, :5763.
