@@ -2341,12 +2341,15 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
     rather than read fully into memory (v1.38, notes_014 G).
 
     *cancel_event* (v1.38, notes_015 2.E), if given, is checked before each
-    attempt, before sleeping in backoff, and once immediately after a
-    request completes — so Clear/close/a newer request can stop a
-    superseded one from retrying or being delivered. urllib cannot abort
-    a blocked read portably without closing the socket, so a request
-    already inside urlopen() may still finish; it simply will not be
-    retried or returned once it does. That is the honest contract.
+    attempt, during backoff waiting, and once immediately after a request
+    completes — so Clear/close/a newer request can stop a superseded one
+    from retrying or being delivered. The backoff wait itself is a bounded
+    Event.wait(delay) rather than a plain sleep (v1.38 follow-up, notes_017
+    3), so cancellation wakes it immediately instead of waiting out however
+    much of the delay remains. urllib cannot abort a blocked read portably
+    without closing the socket, so a request already inside urlopen() may
+    still finish; it simply will not be retried or returned once it does.
+    That is the honest contract.
     """
     codes = HTTP_RETRYABLE_CODES if retryable_codes is None else retryable_codes
     data = json.dumps(payload).encode("utf-8")
@@ -2368,7 +2371,10 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
                 "{} needs a longer pause than this app allows. Please retry "
                 "later.".format(service_name)
             )
-        time.sleep(delay)
+        if cancel_event is None:
+            time.sleep(delay)
+        elif cancel_event.wait(delay):
+            raise BackendError("The request was cancelled.")
         waited += delay
 
     for attempt in range(attempts):

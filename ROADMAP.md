@@ -1399,6 +1399,58 @@ schema impact beyond one constants tuple:
   the new rows. Verified live: searching "flemme" in the slang window
   returns exactly the two matching entries. Full suite: 402 tests pass.
 
+## v1.38 follow-up — Cooperative-cancel backoff wake + loopback integration tests (notes_017)
+
+- **The backoff-wait cancellation gap notes_017 identified is closed.**
+  `_http_post_json.wait_or_give_up` waited out its full computed delay with
+  a plain `time.sleep(delay)` even when `cancel_event` was set moments
+  into the wait — up to the whole backoff window (as much as the 30s
+  `max_retry_wait` budget for a server-requested pause) could be wasted
+  before a Clear/close/newer-request cancellation actually took effect.
+  Replaced with `cancel_event.wait(delay)`, which wakes immediately when
+  the event is set and otherwise behaves exactly like the old sleep for an
+  uncancelled request; `cancel_event is None` still takes the plain-sleep
+  path unchanged.
+- **New `TestHttpLoopbackIntegration` test class**: a real
+  `http.server.ThreadingHTTPServer` on an ephemeral loopback port, real
+  threads and real `threading.Event`s — no mocked `urlopen` or clock, so
+  backoff waiting and cancellation run exactly as they do in production.
+  Covers notes_017's transport-level acceptance criteria: an uncancelled
+  delayed request still succeeds; cancelling mid-backoff-wait against a
+  real `Retry-After: 2` response wakes in well under a second (not the
+  full 2s) with exactly one server request logged (no retry attempted);
+  and a second, fresh request succeeds normally while an older one is
+  cancelled mid-backoff — mirroring `PlumeApp._clear()`'s actual mechanism
+  (`_new_http_cancel()` sets the old event, mints a new one) without
+  needing a live window. The pre-existing
+  `test_cancelled_during_backoff_wait_stops_retry` is renamed to
+  `test_cancelled_before_backoff_wait_stops_retry` with a docstring
+  explaining what it actually covers (cancellation observed before the
+  wait starts, fully mocked) now that a genuinely-mid-wait test exists
+  alongside it — notes_017 flagged the old name as overstating its
+  coverage.
+- **GUI-layer stale-request guard verified live** against the real
+  `PlumeApp` (no `mainloop()`, isolated scratch config — same pattern as
+  the v1.38 session): `_clear()` and `_on_close_destroy()` both bump
+  `_request_id` and invalidate the in-flight request's `cancel_event` via
+  `_new_http_cancel()`; a `_deliver()` call carrying the now-superseded
+  request id is confirmed to be a clean no-op in both cases (via
+  `result_is_stale` for Clear, via the `winfo_exists()`/`TclError` guard
+  for close) rather than overwriting newer state or raising. Not added to
+  the headless suite — driving a real background worker thread's own
+  `winfo_exists()` call without an actual running `mainloop()` raises
+  `RuntimeError: main thread is not in main loop`, a test-harness
+  artifact of this verification style (confirmed not a production issue:
+  a real `mainloop()` is always running in normal use), so this scenario
+  was checked by calling `_clear`/`_on_close_destroy`/`_deliver` directly
+  on the single thread that owns the Tk root, rather than through a real
+  end-to-end async HTTP round trip.
+- The bilingual tone-calibration benchmark notes_017 also specifies
+  (v1.33) remains unactioned — it needs real Claude/Ollama outputs and a
+  human bilingual reviewer's judgement, not a code change.
+- Full suite: 405 tests pass (402 -> 405: three new loopback-integration
+  tests).
+
 ---
 
 ### Notes on sequencing

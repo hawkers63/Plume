@@ -10,6 +10,7 @@ Run from the project root:
     python -m unittest discover -s tests -v
 """
 
+import http.server
 import io
 import json
 import os
@@ -17,6 +18,7 @@ import ssl
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import wave
@@ -1688,7 +1690,14 @@ class TestHttpBackoff(unittest.TestCase):
                 )
         self.assertIn("cancelled", str(ctx.exception).lower())
 
-    def test_cancelled_during_backoff_wait_stops_retry(self):
+    def test_cancelled_before_backoff_wait_stops_retry(self):
+        # Despite the name this replaces, this mocks plume.time entirely and
+        # sets the event before wait_or_give_up's own cancelled() check —
+        # i.e. cancellation observed before backoff starts, not a cancel
+        # arriving while a wait is already blocked (notes_017 3 flagged the
+        # old name as overstating that coverage). See
+        # TestHttpLoopbackIntegration.test_cancellation_during_backoff_wait_wakes_promptly
+        # for a genuine mid-wait cancellation against a real clock/socket.
         event = threading.Event()
         calls = {"n": 0}
 
@@ -1743,6 +1752,163 @@ class TestHttpBackoff(unittest.TestCase):
                 cancel_event=event,
             )
         self.assertEqual(data, {"ok": True})
+
+
+class _QuietHandler(http.server.BaseHTTPRequestHandler):
+    """Base for loopback fixtures below: no per-request stderr logging."""
+
+    def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+        pass
+
+    def _read_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+
+    def _send_json(self, status, body, headers=None):
+        payload = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+def _start_loopback_server(handler_cls):
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _stop_loopback_server(server, thread):
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+
+
+class TestHttpLoopbackIntegration(unittest.TestCase):
+    """Real local-socket coverage for the v1.38 cooperative-cancel contract
+    (notes_017 follow-up): a genuine ThreadingHTTPServer, real threads and
+    real threading.Event objects — no mocked urlopen or clock, so backoff
+    waiting and cancellation are exercised exactly as they run in
+    production. This covers the transport-level criteria from notes_017's
+    "Recommended completion criteria"; the literal button-click GUI
+    scenario (Clear/close against a real window) was verified separately
+    by hand against the real PlumeApp, the same one-off pattern v1.38
+    used, and is not part of this headless suite.
+    """
+
+    def test_uncancelled_delayed_request_still_succeeds(self):
+        class Handler(_QuietHandler):
+            def do_POST(self):
+                self._read_body()
+                time.sleep(0.15)
+                self._send_json(200, {"ok": True})
+
+        server, thread = _start_loopback_server(Handler)
+        try:
+            url = "http://127.0.0.1:{}/".format(server.server_port)
+            started = time.monotonic()
+            data = plume._http_post_json(
+                url, {}, {"content-type": "application/json"}, timeout=5,
+            )
+            elapsed = time.monotonic() - started
+        finally:
+            _stop_loopback_server(server, thread)
+        self.assertEqual(data, {"ok": True})
+        self.assertGreaterEqual(elapsed, 0.15)
+
+    def test_cancellation_during_backoff_wait_wakes_promptly(self):
+        request_count = {"n": 0}
+
+        class Handler(_QuietHandler):
+            def do_POST(self):
+                self._read_body()
+                request_count["n"] += 1
+                self._send_json(503, {"error": "busy"}, {"Retry-After": "2"})
+
+        server, thread = _start_loopback_server(Handler)
+        try:
+            url = "http://127.0.0.1:{}/".format(server.server_port)
+            cancel_event = threading.Event()
+            threading.Timer(0.1, cancel_event.set).start()
+            started = time.monotonic()
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume._http_post_json(
+                    url, {}, {"content-type": "application/json"}, timeout=5,
+                    cancel_event=cancel_event, max_attempts=4, max_retry_wait=30.0,
+                )
+            elapsed = time.monotonic() - started
+        finally:
+            _stop_loopback_server(server, thread)
+        # The Retry-After: 2 backoff would take ~2s uninterrupted; waking
+        # promptly on cancellation keeps this well under that, with a
+        # generous bound (notes_017 3) to absorb real scheduling jitter.
+        self.assertLess(elapsed, 1.0)
+        self.assertIn("cancelled", str(ctx.exception).lower())
+        self.assertEqual(request_count["n"], 1)
+
+    def test_newer_request_succeeds_while_an_older_one_is_cancelled_mid_backoff(self):
+        # Mirrors PlumeApp._clear()/_translate(): an in-flight request's own
+        # cancel_event is .set() (what _new_http_cancel does to the old
+        # event) while a second call proceeds on a fresh event, exercising
+        # the real mechanism behind "Clear supersedes a pending request"
+        # without needing a live window.
+        old_request_count = {"n": 0}
+
+        class OldHandler(_QuietHandler):
+            def do_POST(self):
+                self._read_body()
+                old_request_count["n"] += 1
+                self._send_json(503, {"error": "busy"}, {"Retry-After": "2"})
+
+        class NewHandler(_QuietHandler):
+            def do_POST(self):
+                self._read_body()
+                self._send_json(200, {"ok": True, "which": "new"})
+
+        old_server, old_thread = _start_loopback_server(OldHandler)
+        new_server, new_thread = _start_loopback_server(NewHandler)
+        try:
+            old_url = "http://127.0.0.1:{}/".format(old_server.server_port)
+            new_url = "http://127.0.0.1:{}/".format(new_server.server_port)
+            old_cancel_event = threading.Event()
+            old_result = {}
+
+            def run_old():
+                try:
+                    plume._http_post_json(
+                        old_url, {}, {"content-type": "application/json"},
+                        timeout=5, cancel_event=old_cancel_event,
+                        max_attempts=4, max_retry_wait=30.0,
+                    )
+                except plume.BackendError as exc:
+                    old_result["error"] = str(exc)
+
+            old_thread_runner = threading.Thread(target=run_old, daemon=True)
+            old_thread_runner.start()
+            # Give the old request time to reach the server and enter its
+            # backoff wait before "superseding" it, the same way a user's
+            # Clear click would land while a real request is retrying.
+            time.sleep(0.1)
+            old_cancel_event.set()
+
+            new_cancel_event = threading.Event()
+            new_data = plume._http_post_json(
+                new_url, {}, {"content-type": "application/json"}, timeout=5,
+                cancel_event=new_cancel_event,
+            )
+
+            old_thread_runner.join(timeout=2)
+        finally:
+            _stop_loopback_server(old_server, old_thread)
+            _stop_loopback_server(new_server, new_thread)
+
+        self.assertEqual(new_data, {"ok": True, "which": "new"})
+        self.assertIn("cancelled", old_result.get("error", "").lower())
+        self.assertEqual(old_request_count["n"], 1)
 
 
 class TestResponseExtraction(unittest.TestCase):
