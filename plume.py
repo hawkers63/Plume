@@ -3707,7 +3707,7 @@ if GUI_AVAILABLE:
             self.minsize(620, 560)
             self.transient(master)
             self.grid_columnconfigure(0, weight=1)
-            self.grid_rowconfigure(2, weight=1)
+            self.grid_rowconfigure(3, weight=3)
 
             self.query = ctk.CTkEntry(
                 self, placeholder_text="Search French or English",
@@ -3722,8 +3722,13 @@ if GUI_AVAILABLE:
                 command=self._refresh, width=160,
             ).grid(row=1, column=0, sticky="w", padx=12, pady=(0, 4))
 
+            ctk.CTkLabel(
+                self, text="Catalogue",
+                font=ctk.CTkFont(weight="bold"),
+            ).grid(row=2, column=0, sticky="w", padx=12)
+
             self.entries = ctk.CTkScrollableFrame(self)
-            self.entries.grid(row=2, column=0, sticky="nsew", padx=12, pady=4)
+            self.entries.grid(row=3, column=0, sticky="nsew", padx=12, pady=4)
             self.entries.grid_columnconfigure(0, weight=1)
 
             ctk.CTkLabel(
@@ -3732,11 +3737,11 @@ if GUI_AVAILABLE:
                      "before you send. A snapshot, not updated by later "
                      "translations.",
                 text_color="gray60", wraplength=580, justify="left",
-            ).grid(row=3, column=0, sticky="w", padx=12, pady=(8, 0))
+            ).grid(row=4, column=0, sticky="w", padx=12, pady=(8, 0))
 
             self.draft = ctk.CTkTextbox(self, height=140, wrap="word")
-            self.draft.grid(row=4, column=0, sticky="nsew", padx=12, pady=4)
-            self.grid_rowconfigure(4, weight=1)
+            self.draft.grid(row=5, column=0, sticky="nsew", padx=12, pady=4)
+            self.grid_rowconfigure(5, weight=1)
             result = master._current_result or {}
             if result.get("target_language") == FRENCH:
                 self.draft.insert("1.0", append_finishing_touch(
@@ -3750,10 +3755,10 @@ if GUI_AVAILABLE:
                 )
 
             self.metrics = ctk.CTkLabel(self, text="", text_color="gray70")
-            self.metrics.grid(row=5, column=0, sticky="w", padx=12)
+            self.metrics.grid(row=6, column=0, sticky="w", padx=12)
 
             actions = ctk.CTkFrame(self, fg_color="transparent")
-            actions.grid(row=6, column=0, sticky="w", padx=12, pady=(4, 4))
+            actions.grid(row=7, column=0, sticky="w", padx=12, pady=(4, 4))
             ctk.CTkButton(
                 actions, text="Copy draft", command=self._copy_draft,
                 fg_color="gray30",
@@ -3764,10 +3769,33 @@ if GUI_AVAILABLE:
             ).grid(row=0, column=1)
 
             self.notice = ctk.CTkLabel(self, text="", wraplength=580, text_color="gray70")
-            self.notice.grid(row=7, column=0, sticky="w", padx=12, pady=(0, 10))
+            self.notice.grid(row=8, column=0, sticky="w", padx=12, pady=(0, 10))
 
-            self._refresh()
             self._update_metrics()
+            self.after_idle(self._present)
+
+        def _present(self):
+            """Lift above a topmost parent and fill the list after layout.
+
+            A non-topmost transient can map behind a topmost parent on
+            Windows 11, and CustomTkinter's scrollable-frame canvas can
+            still report zero height while __init__ is still running, so
+            both the raise and the first list build are deferred here
+            rather than done synchronously in __init__ (v1.40, notes_018).
+            """
+            try:
+                if bool(self.master.config_data.get("always_on_top")):
+                    self.attributes("-topmost", True)
+                self.lift()
+                self.focus_set()
+            except tk.TclError:
+                return
+            self._refresh()
+            if (
+                search_slang(self.query.get(), self.category.get())
+                and not self.entries.winfo_children()
+            ):
+                self.after(50, self._refresh)
 
         def _refresh(self, _event=None):
             """Rebuild the results list. Bounded even as the catalogue grows."""
@@ -4095,6 +4123,11 @@ if GUI_AVAILABLE:
                 heading_row, text="French slang…", width=130,
                 command=self._open_slang_reference, fg_color="gray30",
             ).grid(row=0, column=1, sticky="e")
+            ctk.CTkLabel(
+                heading_row,
+                text="Local slang reference — not the Settings glossary",
+                text_color="gray60",
+            ).grid(row=1, column=0, columnspan=2, sticky="w")
 
             self.input_box = ctk.CTkTextbox(left, wrap="word", font=ctk.CTkFont(size=15))
             self.input_box.grid(row=1, column=0, sticky="nsew", padx=12, pady=4)
@@ -4554,6 +4587,8 @@ if GUI_AVAILABLE:
             """Reuse one local reference window; it never submits or sends text."""
             existing = self._slang_reference
             if existing is not None and existing.winfo_exists():
+                if bool(self.config_data.get("always_on_top")):
+                    existing.attributes("-topmost", True)
                 existing.lift()
                 existing.focus_set()
                 return
