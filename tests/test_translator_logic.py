@@ -2513,6 +2513,40 @@ class TestSlangInsertion(unittest.TestCase):
             plume.slang_insertion("hi", 1, "bof", 3)
 
 
+class TestNormalisePhrasebookEntry(unittest.TestCase):
+    def test_trims_both_fields(self):
+        entry = plume.normalise_phrasebook_entry("  bof  ", "  meh  ")
+        self.assertEqual(entry, {"source": "bof", "note": "meh"})
+
+    def test_note_is_optional(self):
+        entry = plume.normalise_phrasebook_entry("bof", "")
+        self.assertEqual(entry, {"source": "bof", "note": ""})
+        self.assertEqual(
+            plume.normalise_phrasebook_entry("bof", None), {"source": "bof", "note": ""}
+        )
+
+    def test_rejects_empty_or_whitespace_source(self):
+        self.assertIsNone(plume.normalise_phrasebook_entry("", "note"))
+        self.assertIsNone(plume.normalise_phrasebook_entry("   ", "note"))
+        self.assertIsNone(plume.normalise_phrasebook_entry(None, "note"))
+
+    def test_rejects_null_byte_in_source(self):
+        self.assertIsNone(plume.normalise_phrasebook_entry("bo\x00f", "note"))
+
+    def test_rejects_oversized_source(self):
+        long_source = "x" * (plume.PHRASEBOOK_MAX_SOURCE_CHARS + 1)
+        self.assertIsNone(plume.normalise_phrasebook_entry(long_source, ""))
+
+    def test_rejects_oversized_note(self):
+        long_note = "x" * (plume.PHRASEBOOK_MAX_NOTE_CHARS + 1)
+        self.assertIsNone(plume.normalise_phrasebook_entry("bof", long_note))
+
+    def test_accepts_source_at_exact_limit(self):
+        source = "x" * plume.PHRASEBOOK_MAX_SOURCE_CHARS
+        entry = plume.normalise_phrasebook_entry(source, "")
+        self.assertEqual(entry["source"], source)
+
+
 class TestUseAsMain(unittest.TestCase):
     def test_adopt_main_translation_favours_non_empty_candidate(self):
         self.assertEqual(

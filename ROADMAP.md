@@ -1451,6 +1451,54 @@ schema impact beyond one constants tuple:
 - Full suite: 405 tests pass (402 -> 405: three new loopback-integration
   tests).
 
+## v1.43 — Per-conversation phrasebook (notes_019)
+
+- **A new "Phrasebook" button** beside "French slang…" opens a second,
+  independent local reference window: a free-form list of your own
+  source -> note pairs, built as you go, rather than a curated catalogue.
+  Add a phrase (with an optional note), **Insert** it into the message
+  box at the caret, or **Delete** it — a duplicate source (casefold) is
+  refused with an inline notice rather than silently added twice, and the
+  list is capped at `PHRASEBOOK_MAX_ENTRIES = 30` entries of at most
+  `PHRASEBOOK_MAX_SOURCE_CHARS`/`PHRASEBOOK_MAX_NOTE_CHARS = 80` characters
+  each.
+- **Deliberately ephemeral, per notes_019's own core proposal**: entries
+  live only in `PlumeApp._phrasebook_entries` for the current session,
+  reset when you press Clear, and are never written to
+  `plume_config.json` or sent to the model — the same local-only
+  guarantee the French slang reference makes. notes_019 also sketched two
+  optional persistence designs (embedding in conversation presets, or a
+  standalone `plume_phrasebooks.json`) as "a logical progression" for
+  later; neither is implemented this version, staying scoped to the
+  note's own core feature rather than its speculative follow-on.
+- **Insertion reuses `slang_insertion`** (the same boundary-aware spacing
+  French slang's "Insert in source" already uses) rather than a new
+  bespoke insertion helper, just without that action's French-only
+  direction guard — a phrasebook entry may be typed in either language.
+- **Reuses the exact `-topmost`/`after_idle` fix v1.40 gave
+  `SlangReferenceDialog`** (notes_018): `PhrasebookDialog` is the same
+  kind of non-modal transient window, so it gets the same present-on-
+  `after_idle` treatment up front rather than shipping a second dialog
+  with the same latent behind-an-always-on-top-parent bug.
+- **A real bug found and fixed during live testing, not by unit tests**:
+  the first draft reset `self._phrasebook_entries = []` in `_clear()`,
+  which rebinds the attribute to a new list rather than emptying the one
+  an already-open `PhrasebookDialog` had captured a reference to at
+  construction — the dialog kept showing stale entries after Clear even
+  though the app's own list was empty. Fixed to `.clear()` (mutate in
+  place), verified by reopening the dialog, adding an entry, pressing
+  Clear on the main window, and confirming the still-open dialog now
+  correctly shows "No entries yet."
+- 7 new unit tests for `normalise_phrasebook_entry` (trims both fields,
+  optional note, rejects empty/whitespace/null-byte/oversized source,
+  rejects oversized note, accepts a source at the exact limit). No new
+  tests for the dialog itself (UI-only, no new pure-function surface
+  beyond the entry normaliser) — verified live instead: open, add, reject
+  a case-insensitive duplicate, insert into the message box, delete, and
+  the Clear-reset fix above, at both the default size and the documented
+  1000x600 minimum (the new button row does not overflow at either).
+  Full suite: 412 tests pass (405 -> 412).
+
 ---
 
 ### Notes on sequencing

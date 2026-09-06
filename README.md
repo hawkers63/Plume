@@ -60,6 +60,12 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   conveying indifference rather than a flat "terrible", or `bonsoir`
   greeting or parting depending on context. Nothing here is sent to the
   model or changes the translation itself.
+- A **Phrasebook** button beside French slang…: a second, free-form local
+  reference — your own source -> note pairs, added as you go, **Insert**ed
+  into the message at the caret or **Delete**d. Capped at 30 entries (80
+  characters each way); a duplicate phrase is refused rather than added
+  twice. Ephemeral by design: cleared on Clear, never saved to disk, never
+  sent to the model.
 - **Copy source** and **Situation presets** (Close friend, Formal work
   email, Neighbour, Appointment, Dating/chat) for faster back-and-forth,
   plus up to 12 of your own **saved situations** (Save…/Delete beside the

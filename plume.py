@@ -527,6 +527,32 @@ def find_slang_text_widget(widget):
     return None
 
 
+# --- Per-conversation phrasebook (v1.43, notes_019) -------------------------
+# A lighter-weight companion to the French slang reference above: a
+# free-form source -> note list the user builds themselves, rather than a
+# curated catalogue. Deliberately ephemeral (in-memory only, reset on
+# Clear) — never written to plume_config.json and never sent to the model.
+PHRASEBOOK_MAX_ENTRIES = 30
+PHRASEBOOK_MAX_SOURCE_CHARS = 80
+PHRASEBOOK_MAX_NOTE_CHARS = 80
+
+
+def normalise_phrasebook_entry(source: str, note: str):
+    """Return a clean {"source", "note"} pair, or None if it can't be used.
+
+    Both fields are trimmed; an empty or oversized source is rejected
+    outright rather than silently truncated, matching slang_insertion's
+    own "raise/reject, don't guess" approach to bounds.
+    """
+    source = (source or "").strip()
+    note = (note or "").strip()
+    if not source or "\x00" in source:
+        return None
+    if len(source) > PHRASEBOOK_MAX_SOURCE_CHARS or len(note) > PHRASEBOOK_MAX_NOTE_CHARS:
+        return None
+    return {"source": source, "note": note}
+
+
 # --- Register tones (v1.20, notes_011 Feature E) ----------------------------
 # Background register hints for the translator — the same class of
 # information as Situation, and just as strictly non-authoritative: they
@@ -3982,6 +4008,149 @@ if GUI_AVAILABLE:
                 text="Draft copied. Your translation result is unchanged.",
             )
 
+    class PhrasebookDialog(ctk.CTkToplevel):
+        """Editable per-conversation source -> note list (v1.43, notes_019).
+
+        Ephemeral by design: entries live only in the shared
+        master._phrasebook_entries list for the current conversation,
+        reset on Clear, never written to config_data or plume_config.json,
+        and never sent to the model — the same local-only guarantee the
+        French slang reference above makes.
+        """
+
+        def __init__(self, master):
+            super().__init__(master)
+            self.title("{} — Phrasebook".format(APP_NAME))
+            self.geometry("520x480")
+            self.minsize(420, 380)
+            self.transient(master)
+            self.grid_columnconfigure(0, weight=1)
+            self.grid_rowconfigure(2, weight=1)
+
+            self._entries = master._phrasebook_entries  # shared list, edited in place
+
+            add_row = ctk.CTkFrame(self, fg_color="transparent")
+            add_row.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+            add_row.grid_columnconfigure(0, weight=1)
+            add_row.grid_columnconfigure(1, weight=1)
+            self.source_entry = ctk.CTkEntry(add_row, placeholder_text="Source phrase")
+            self.source_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+            self.note_entry = ctk.CTkEntry(add_row, placeholder_text="Note (optional)")
+            self.note_entry.grid(row=0, column=1, sticky="ew", padx=(0, 6))
+            ctk.CTkButton(
+                add_row, text="Add", width=56, command=self._add_entry,
+            ).grid(row=0, column=2)
+
+            ctk.CTkLabel(
+                self, text="Phrasebook",
+                font=ctk.CTkFont(weight="bold"),
+            ).grid(row=1, column=0, sticky="w", padx=12)
+
+            self.entries_frame = ctk.CTkScrollableFrame(self)
+            self.entries_frame.grid(row=2, column=0, sticky="nsew", padx=12, pady=4)
+            self.entries_frame.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                self,
+                text="Local reference only — not sent to the model, cleared "
+                     "when you press Clear.",
+                text_color="gray60", wraplength=480, justify="left",
+            ).grid(row=3, column=0, sticky="w", padx=12, pady=(8, 0))
+
+            self.notice = ctk.CTkLabel(self, text="", text_color="gray70")
+            self.notice.grid(row=4, column=0, sticky="w", padx=12, pady=(2, 10))
+
+            self._refresh_list()
+            self.after_idle(self._present)
+
+        def _present(self):
+            """Sync -topmost with an always-on-top parent before raising.
+
+            The same fix v1.40 applied to SlangReferenceDialog (notes_018):
+            a non-topmost transient can map behind a topmost parent on
+            Windows 11, so this is applied here too rather than shipping a
+            second dialog with the same latent bug.
+            """
+            try:
+                if bool(self.master.config_data.get("always_on_top")):
+                    self.attributes("-topmost", True)
+                self.lift()
+                self.focus_set()
+            except tk.TclError:
+                pass
+
+        def _refresh_list(self):
+            for child in self.entries_frame.winfo_children():
+                child.destroy()
+            if not self._entries:
+                ctk.CTkLabel(
+                    self.entries_frame, text="No entries yet.", text_color="gray60",
+                ).grid(row=0, column=0, pady=8)
+                return
+            for index, entry in enumerate(self._entries):
+                card = ctk.CTkFrame(self.entries_frame, border_width=1)
+                card.grid(row=index, column=0, sticky="ew", pady=4)
+                card.grid_columnconfigure(0, weight=1)
+                label_text = entry["source"]
+                if entry["note"]:
+                    label_text += " — " + entry["note"]
+                ctk.CTkLabel(
+                    card, text=label_text, wraplength=340, justify="left",
+                ).grid(row=0, column=0, sticky="w", padx=8, pady=6)
+                row = ctk.CTkFrame(card, fg_color="transparent")
+                row.grid(row=0, column=1, padx=6, pady=6)
+                ctk.CTkButton(
+                    row, text="Insert", width=64,
+                    command=lambda src=entry["source"]: self._insert(src),
+                ).grid(row=0, column=0, padx=(0, 4))
+                ctk.CTkButton(
+                    row, text="Delete", width=64, fg_color="gray30",
+                    command=lambda idx=index: self._delete_entry(idx),
+                ).grid(row=0, column=1)
+
+        def _add_entry(self):
+            clean = normalise_phrasebook_entry(
+                self.source_entry.get(), self.note_entry.get(),
+            )
+            if clean is None:
+                self.notice.configure(
+                    text="Enter a source phrase of at most {} characters.".format(
+                        PHRASEBOOK_MAX_SOURCE_CHARS
+                    ),
+                )
+                return
+            if any(
+                e["source"].casefold() == clean["source"].casefold()
+                for e in self._entries
+            ):
+                self.notice.configure(text="That phrase is already in the phrasebook.")
+                return
+            if len(self._entries) >= PHRASEBOOK_MAX_ENTRIES:
+                self.notice.configure(
+                    text="Delete an entry before adding another ({} max).".format(
+                        PHRASEBOOK_MAX_ENTRIES
+                    ),
+                )
+                return
+            self._entries.append(clean)
+            self.source_entry.delete(0, "end")
+            self.note_entry.delete(0, "end")
+            self._refresh_list()
+            self.notice.configure(text="Added.")
+
+        def _delete_entry(self, index):
+            if 0 <= index < len(self._entries):
+                del self._entries[index]
+                self._refresh_list()
+                self.notice.configure(text="")
+
+        def _insert(self, source):
+            try:
+                self.master._insert_phrasebook_source(source)
+                self.notice.configure(text="Inserted into the message box.")
+            except ValueError as exc:
+                self.notice.configure(text=str(exc))
+
     class PlumeApp(ctk.CTk):
         def __init__(self):
             super().__init__()
@@ -4000,6 +4169,8 @@ if GUI_AVAILABLE:
             self._import_busy = False
             self._tray_icon = None
             self._slang_reference = None
+            self._phrasebook_entries = []  # per-conversation, reset on Clear
+            self._phrasebook_dialog = None
             self._http_cancel = threading.Event()
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
@@ -4192,12 +4363,20 @@ if GUI_AVAILABLE:
             ctk.CTkButton(
                 heading_row, text="French slang…", width=130,
                 command=self._open_slang_reference, fg_color="gray30",
-            ).grid(row=0, column=1, sticky="e")
+            ).grid(row=0, column=1, sticky="e", padx=(0, 6))
+            # Phrasebook (v1.43, notes_019): a second, free-form local
+            # reference tool, grouped with French slang since both are
+            # non-modal windows that never contact the model.
+            ctk.CTkButton(
+                heading_row, text="Phrasebook", width=100,
+                command=self._open_phrasebook, fg_color="gray30",
+            ).grid(row=0, column=2, sticky="e")
             ctk.CTkLabel(
                 heading_row,
-                text="Local slang reference — not the Settings glossary",
-                text_color="gray60",
-            ).grid(row=1, column=0, columnspan=2, sticky="w")
+                text="Local reference tools — not sent to the model, not "
+                     "the Settings glossary",
+                text_color="gray60", wraplength=440, justify="left",
+            ).grid(row=1, column=0, columnspan=3, sticky="w")
 
             self.input_box = ctk.CTkTextbox(left, wrap="word", font=ctk.CTkFont(size=15))
             self.input_box.grid(row=1, column=0, sticky="nsew", padx=12, pady=4)
@@ -4689,6 +4868,41 @@ if GUI_AVAILABLE:
             source.insert("insert", candidate[offset:caret])
             self._on_input_change()
             source.focus_set()
+
+        # --- Phrasebook (v1.43, notes_019) --------------------------------
+
+        def _open_phrasebook(self):
+            """Reuse one local phrasebook window; entries are per-conversation
+            and never sent to the model."""
+            existing = self._phrasebook_dialog
+            if existing is not None and existing.winfo_exists():
+                if bool(self.config_data.get("always_on_top")):
+                    existing.attributes("-topmost", True)
+                existing.lift()
+                existing.focus_set()
+                return
+            self._phrasebook_dialog = PhrasebookDialog(self)
+
+        def _insert_phrasebook_source(self, source):
+            """Insert a phrasebook entry's exact source phrase at the caret.
+
+            Reuses slang_insertion's boundary-aware spacing, the same
+            mechanism as French slang's "Insert in source" action, but with
+            no direction restriction — unlike a French slang term, a
+            phrasebook entry may be typed in either language.
+            """
+            widget = find_slang_text_widget(self.input_box)
+            if widget is None:
+                raise ValueError("The message box is not ready.")
+            text = self._input_text()
+            offset = len(widget.get("1.0", "insert"))
+            limit = coerce_positive_int(
+                self.config_data.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS,
+            )
+            candidate, caret = slang_insertion(text, offset, source, limit)
+            widget.insert("insert", candidate[offset:caret])
+            self._on_input_change()
+            widget.focus_set()
 
         def _apply_situation_preset(self, value):
             """Fill Situation from a local-only preset menu selection."""
@@ -5192,6 +5406,17 @@ if GUI_AVAILABLE:
             self.reply_btn.configure(state="normal")
             self.input_box.delete("1.0", "end")
             self._clear_results()
+            # Per-conversation and ephemeral by design (v1.43, notes_019):
+            # reset here, not in _clear_results, since _use_main_as_input
+            # also calls _clear_results while continuing the same
+            # conversation and must not wipe the phrasebook. Cleared in
+            # place (.clear(), not a rebind) so an already-open
+            # PhrasebookDialog's own reference to this same list object
+            # empties too, rather than silently pointing at a now-stale
+            # list the dialog keeps showing.
+            self._phrasebook_entries.clear()
+            if self._phrasebook_dialog is not None and self._phrasebook_dialog.winfo_exists():
+                self._phrasebook_dialog._refresh_list()
             self._on_input_change()
             self._refresh_status(state="ready")
 
