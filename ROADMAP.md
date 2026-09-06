@@ -1312,6 +1312,93 @@ schema impact beyond one constants tuple:
   withdrawn/minimised window and pastes real clipboard text into the
   input box via the same `_paste()` path. Full suite: 397 tests pass.
 
+## v1.40 — Slang reference window visibility fix (notes_018 2.A/3.A)
+
+- **The SlangReferenceDialog (v1.34) could open and appear empty, or not
+  appear at all**, for three compounding reasons, all fixed together:
+  the transient window never synced its own `-topmost` flag with an
+  always-on-top main window, so on Windows 11 it could map *behind* the
+  parent; the term list was built synchronously inside `__init__` while
+  CustomTkinter's scrollable-frame canvas could still report zero
+  height, so cards were created but never laid out; and the catalogue
+  row and the local-draft row shared equal grid weight, leaving the
+  term list a sliver even when it did render. `_present()` (new) now
+  runs on `after_idle`: it syncs `-topmost` from `config_data`, lifts
+  and focuses the window, then builds the list, with a single 50ms
+  retry if the frame still has no children afterwards. Reuse
+  (`_open_slang_reference`'s existing-window path) re-syncs `-topmost`
+  too, not just on first open. The catalogue row now gets triple the
+  draft row's weight, with a bold "Catalogue" heading so an empty
+  result set reads as an obvious empty state rather than a missing
+  section.
+- **Discoverability caption**: a one-line label under the main-window
+  "French slang…" button — "Local slang reference — not the Settings
+  glossary" — so it is not confused with the unrelated Settings
+  Translation Glossary (`translation_glossary`, a preferred-terms list
+  fed to the model, never slang).
+- No new unit tests: this is a window-lifecycle/layout fix with no new
+  pure-function surface. Verified live instead, both with
+  `always_on_top` off and on: the dialog now raises above the parent
+  and shows all 18 catalogue cards immediately on first open, and the
+  reuse path (clicking the button again while it is already open) also
+  re-raises correctly above an always-on-top parent. Full suite: 397
+  tests pass (unchanged from v1.39).
+
+## v1.41 — Append-tag catalogue expansions (notes_018 2.B/3.B)
+
+- **Widened all three copy-time append pickers** past their first-ship
+  minima: `FINISHING_TOUCHES` gains 7 more emotes (`:D`, `:/`, `:'(`,
+  `:o`, `^^`, `<3`, `xo`); `CASUAL_SIGNOFF_CATALOGUE` gains 9 more terms
+  (dsl, bof, nickel, tranquille, carrément, biz, a+, merci, trop bien);
+  `MMORPG_TERM_CATALOGUE` gains 14 more (gg, gl, hf, afk, brb, sec, lag,
+  gj, go, gn, cya, cyl, ttyl, ttys). All three catalogues stay pairwise
+  disjoint and every casual/MMORPG entry keeps its bracketed English
+  gloss. The two glossed dropdowns widened 170px -> 190px so more of the
+  longer new glosses stay legible.
+- **A deliberate trim against the source note's own proposal**: roughly
+  a third of notes_018's proposed casual-sign-off/MMORPG additions are
+  held out because they fail the project's own pre-existing
+  curation-guard tests or the v1.2/v1.14/v1.31 admission bar (tone-only
+  or a self-contained suffix; never a one-word verdict on a person or
+  thing, a comment aimed at someone else's play, a question/greeting
+  fragment, or vulgar address). Excluded from Casual sign-off: bg, sah,
+  cheum, wesh, slt, pk, cv, stylé, mortel, gèrer, tu gères. Excluded
+  from MMORPG: nt (a comment at an opponent), bb (reads as often as
+  "baby" as "bye bye"), nul, relou, bouffon (plain verdicts on a
+  person/thing). See the updated catalogue comments and the new
+  banned-list test entries for the term-by-term reasoning.
+- 3 new unit tests (the v1.41 expansion is present in each catalogue,
+  the trimmed terms stay excluded, `compose_finishing_touch` joins one
+  new term from each picker) plus extensions to the existing
+  catalogue-membership and banned-list tests, which parametrise over
+  the live tuples and so covered the new entries' disjointness and
+  round-trip display/raw-value behaviour without any test changes.
+  Verified live at both the default size and a resize to the documented
+  1000x600 minimum: both dropdowns show every new entry fully, none
+  clipped. Full suite: 400 tests pass.
+
+## v1.42 — Second French slang-reference batch (notes_018 2.C/3.C)
+
+- **`SLANG_CATALOGUE` grows from 18 to 33 entries**, the same 7-column
+  shape as the v1.34 first batch: everyday vocabulary (mec, nana,
+  flemme, boite, gosse, super, chouette, cool, frerot) and
+  conversational phrases (n'importe quoi, c'est clair, vas-y, ça passe,
+  j'ai la flemme, c'est bon), each still carrying a use note flagging
+  context, register or regional caveats — dictionary-stable and
+  learner-safe, not suffix-dumped. Still capped at
+  `SLANG_MAX_VISIBLE_RESULTS = 30` visible rows per search. Everything
+  notes_014 held back as pending (K29, wétu, unverified pronunciation,
+  the grouped "Frérot, gros" entry, etc.) stays out, and the wider
+  attachment beyond both batches remains editorial backlog, not shipped
+  catalogue content.
+- 2 new unit tests (the batch-2 ids are present and searchable;
+  `search_slang("flemme")` surfaces both the noun and the "j'ai la
+  flemme" phrase sharing its root) plus the existing catalogue tests
+  (unique ids, seven columns, non-empty fields, full-catalogue search
+  order), which parametrise over the live tuple and so already covered
+  the new rows. Verified live: searching "flemme" in the slang window
+  returns exactly the two matching entries. Full suite: 402 tests pass.
+
 ---
 
 ### Notes on sequencing
