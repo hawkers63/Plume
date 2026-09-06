@@ -387,9 +387,11 @@ def mmorpg_term_raw_value(display) -> str:
 # A searchable local catalogue, separate from the append-tag pickers above:
 # these entries are full-strength vocabulary/phrases (not every one works as
 # a sentence suffix), so they are inserted deliberately at a caret or into a
-# standalone draft rather than auto-appended. Candidate first batch only —
-# editorial approval precedes any wider catalogue release (see notes_014
-# section 2.1/2.2). Columns: (id, raw term, expansion, English meaning,
+# standalone draft rather than auto-appended. v1.34 shipped the notes_014
+# candidate first batch (18 rows); v1.42 (notes_018) appended a second,
+# dictionary-stable batch of everyday vocabulary and phrases. The wider
+# attachment beyond both batches remains editorial backlog, not shipped
+# catalogue content. Columns: (id, raw term, expansion, English meaning,
 # category, register, use note). Stable IDs, not the raw term or English
 # label, are the identity a future favourites/persistence feature would key
 # on, since the term/label text may still change during editorial review.
@@ -430,6 +432,36 @@ SLANG_CATALOGUE = (
      "Informal", "Can convey indifference or uncertainty, not just dislike."),
     ("a-la-bourre", "à la bourre", "", "running late", "Phrases",
      "Informal", "Adds information about lateness; use within your draft."),
+    ("mec", "mec", "", "bloke / guy", "Vocabulary", "Informal",
+     "A person noun; do not assume familiarity with a stranger."),
+    ("nana", "nana", "", "girl / girlfriend", "Vocabulary", "Informal",
+     "A person noun; the girlfriend sense is contextual, not automatic."),
+    ("flemme", "flemme", "", "can't be bothered", "Vocabulary", "Informal",
+     "Usually situational, not a judgement of someone's character."),
+    ("nimp", "n'importe quoi", "", "nonsense / anything", "Phrases",
+     "Informal", "Can dismiss an idea or mean 'anything at all'; check sense."),
+    ("c-clair", "c'est clair", "", "exactly / that's clear", "Phrases",
+     "Conversational", "Agreement or obviousness; do not force sarcasm."),
+    ("boite", "boîte", "", "company / club", "Vocabulary", "Informal",
+     "Sense depends on context: workplace, nightclub, or a box."),
+    ("gosse", "gosse", "", "kid", "Vocabulary", "Informal",
+     "Region and tone vary; not a universal 'child' replacement."),
+    ("super", "super", "", "great / super", "Reactions", "Informal",
+     "A positive evaluation; it does not belong on every sentence."),
+    ("chouette", "chouette", "", "nice / lovely", "Reactions", "Informal",
+     "A positive evaluation; keep it optional."),
+    ("cool", "cool", "", "cool", "Reactions", "Informal",
+     "Borrowed evaluation; still a deliberate insertion, not a suffix."),
+    ("frerot", "frérot", "", "bro (familiar)", "Relationships", "Informal",
+     "Familiar address; do not use with a stranger or a formal recipient."),
+    ("vasy", "vas-y", "", "go on / go ahead", "Phrases", "Informal",
+     "An encouragement or go-ahead, not an automatic sign-off."),
+    ("ca-passe", "ça passe", "", "it's fine / it'll do", "Phrases",
+     "Conversational", "Accepts something as adequate; check what is accepted."),
+    ("j-ai-la-flemme", "j'ai la flemme", "", "I can't be bothered",
+     "Phrases", "Informal", "A whole proposition; insert only when intended."),
+    ("c-bon", "c'est bon", "", "that's OK / enough", "Phrases",
+     "Conversational", "Can mean approval or 'that's enough'; check tone."),
 )
 
 # The local draft is a separate, explicitly edited preview, not the

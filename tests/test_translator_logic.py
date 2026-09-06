@@ -2226,6 +2226,18 @@ class TestSlangCatalogue(unittest.TestCase):
         # attachment is editorial backlog, not shipped catalogue content.
         self.assertGreaterEqual(len(plume.SLANG_CATALOGUE), 18)
 
+    def test_holds_the_second_reviewed_batch(self):
+        # v1.42 (notes_018): a further dictionary-stable, learner-safe batch
+        # of everyday vocabulary and phrases.
+        self.assertGreaterEqual(len(plume.SLANG_CATALOGUE), 33)
+        ids = [record[0] for record in plume.SLANG_CATALOGUE]
+        for ident in (
+            "mec", "nana", "flemme", "nimp", "c-clair", "boite", "gosse",
+            "super", "chouette", "cool", "frerot", "vasy", "ca-passe",
+            "j-ai-la-flemme", "c-bon",
+        ):
+            self.assertIn(ident, ids)
+
 
 class TestSlangSearchKey(unittest.TestCase):
     def test_folds_accents(self):
@@ -2274,6 +2286,14 @@ class TestSearchSlang(unittest.TestCase):
 
     def test_no_match_returns_empty_list(self):
         self.assertEqual(plume.search_slang("zzzznotaterm"), [])
+
+    def test_finds_both_the_noun_and_the_phrase_sharing_a_root(self):
+        # v1.42: "flemme" (the noun) and "j'ai la flemme" (the phrase) both
+        # carry the same root and must both surface for one query.
+        matches = plume.search_slang("flemme")
+        ids = {record[0] for record in matches}
+        self.assertIn("flemme", ids)
+        self.assertIn("j-ai-la-flemme", ids)
 
 
 class TestSlangInsertion(unittest.TestCase):
