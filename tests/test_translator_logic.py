@@ -2918,6 +2918,101 @@ class TestFormatFiveAlternatives(unittest.TestCase):
         self.assertEqual(plume.format_five_alternatives(None), "")
 
 
+class TestBuildCopyAllContent(unittest.TestCase):
+    def test_empty_main_text_returns_empty_strings(self):
+        self.assertEqual(
+            plume.build_copy_all_content("Hi", "", valid_result(), ""), ("", "")
+        )
+
+    def test_none_result_returns_empty_strings(self):
+        self.assertEqual(
+            plume.build_copy_all_content("Hi", "", None, "Bonjour"), ("", "")
+        )
+
+    def test_plain_text_includes_all_sections(self):
+        result = valid_result()
+        plain, _html = plume.build_copy_all_content(
+            "Hello everyone", "texting a friend", result, result["main_translation"],
+        )
+        self.assertIn("SOURCE", plain)
+        self.assertIn("Hello everyone", plain)
+        self.assertIn("SITUATION: texting a friend", plain)
+        self.assertIn("LANGUAGE: English → French · detected with high confidence", plain)
+        self.assertIn("MAIN TRANSLATION", plain)
+        self.assertIn(result["main_translation"], plain)
+        self.assertIn("ALTERNATIVES", plain)
+        for variation in result["variations"]:
+            self.assertIn(variation["translation"], plain)
+            self.assertIn(variation["english_meaning_check"], plain)
+
+    def test_situation_section_omitted_when_blank(self):
+        result = valid_result()
+        plain, fragment = plume.build_copy_all_content(
+            "Hello", "", result, result["main_translation"],
+        )
+        self.assertNotIn("SITUATION", plain)
+        self.assertNotIn("SITUATION", fragment)
+
+    def test_html_fragment_escapes_and_marks_up_sections(self):
+        result = valid_result(main="<Bonjour> & \"vous\"")
+        plain, fragment = plume.build_copy_all_content(
+            "<Hello> & \"you\"", "", result, result["main_translation"],
+        )
+        self.assertIn("&lt;Bonjour&gt; &amp; &quot;vous&quot;", fragment)
+        self.assertIn("&lt;Hello&gt; &amp; &quot;you&quot;", fragment)
+        self.assertIn("<strong>SOURCE</strong>", fragment)
+        self.assertIn("<strong>MAIN TRANSLATION</strong>", fragment)
+        self.assertIn("<strong>ALTERNATIVES</strong>", fragment)
+        self.assertIn("<em>", fragment)
+        # The plain-text side is never escaped.
+        self.assertIn("<Bonjour> & \"vous\"", plain)
+
+    def test_alternatives_without_meaning_check_omit_the_dash(self):
+        result = valid_result()
+        result["variations"][0]["english_meaning_check"] = ""
+        plain, fragment = plume.build_copy_all_content(
+            "Hi", "", result, result["main_translation"],
+        )
+        self.assertIn("1. {}".format(result["variations"][0]["translation"]), plain)
+        self.assertNotIn(
+            "1. {} —".format(result["variations"][0]["translation"]), plain
+        )
+        self.assertIn(
+            "<p>1. {}</p>".format(result["variations"][0]["translation"]), fragment
+        )
+
+    def test_blank_translations_are_skipped(self):
+        result = valid_result()
+        result["variations"][2]["translation"] = "   "
+        plain, _fragment = plume.build_copy_all_content(
+            "Hi", "", result, result["main_translation"],
+        )
+        numbered_lines = [
+            line for line in plain.splitlines()
+            if line[:2] in ("1.", "2.", "3.", "4.", "5.")
+        ]
+        self.assertEqual(len(numbered_lines), 4)
+
+    def test_typography_fn_applied_to_main_and_alternatives_only(self):
+        result = valid_result(main='Il a dit "bonjour"')
+        result["variations"][0]["translation"] = 'Elle a dit "salut"'
+        plain, _fragment = plume.build_copy_all_content(
+            "source", "situation: text", result, result["main_translation"],
+            typography_fn=plume.apply_french_typography,
+        )
+        self.assertIn("« bonjour »", plain)
+        self.assertIn("« salut »", plain)
+        # Applied only to translation-bearing fields, never to the labels.
+        self.assertIn("SITUATION: situation: text", plain)
+
+    def test_no_typography_fn_leaves_text_unchanged(self):
+        result = valid_result(main='Il a dit "bonjour"')
+        plain, _fragment = plume.build_copy_all_content(
+            "source", "", result, result["main_translation"],
+        )
+        self.assertIn('Il a dit "bonjour"', plain)
+
+
 class TestCfHtml(unittest.TestCase):
     def _parse_offsets(self, payload: bytes) -> dict:
         header = payload.decode("utf-8", errors="ignore")

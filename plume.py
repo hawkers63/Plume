@@ -3038,6 +3038,74 @@ def format_five_alternatives(result) -> str:
     return "\n".join(lines)
 
 
+def build_copy_all_content(source_text, situation, result, main_text, typography_fn=None):
+    """Return (plain_text, html_fragment) for the whole translation package:
+    source, situation, language line, main translation and all five
+    alternatives with their meaning checks (v1.44, notes_020).
+
+    A single-click, everything-in-one-clipboard bundle — distinct from
+    format_five_alternatives (no meaning checks, used by Copy five) and
+    export_current_result_markdown (a Markdown file with a diff, not a
+    plain/HTML clipboard pair with the language-confidence line).
+    *main_text* is the already-composed main translation (finishing touch
+    applied by the caller, matching Copy main translation's own order).
+    *typography_fn*, when given, is applied to *main_text* and each
+    alternative's translation only — never to the section labels or the
+    source/situation text, which are not necessarily French.
+    """
+    if not main_text or result is None:
+        return "", ""
+    apply = typography_fn or (lambda text: text)
+    main_text = apply(main_text)
+    lang_label = format_language_label(result)
+    alt_rows = []
+    for index, variation in enumerate((result or {}).get("variations") or [], start=1):
+        translation = apply(((variation or {}).get("translation") or "").strip())
+        if not translation:
+            continue
+        meaning = ((variation or {}).get("english_meaning_check") or "").strip()
+        alt_rows.append((index, translation, meaning))
+
+    lines = ["SOURCE", source_text or "", ""]
+    if situation:
+        lines += ["SITUATION: {}".format(situation), ""]
+    lines += ["LANGUAGE: {}".format(lang_label), "", "MAIN TRANSLATION", main_text]
+    if alt_rows:
+        lines += ["", "ALTERNATIVES"]
+        for index, translation, meaning in alt_rows:
+            if meaning:
+                lines.append("{}. {} — {}".format(index, translation, meaning))
+            else:
+                lines.append("{}. {}".format(index, translation))
+    plain_text = "\n".join(lines).rstrip() + "\n"
+
+    html_parts = [
+        "<p><strong>SOURCE</strong></p>",
+        "<p>{}</p>".format(html.escape(source_text or "").replace("\n", "<br>")),
+    ]
+    if situation:
+        html_parts.append(
+            "<p><strong>SITUATION:</strong> {}</p>".format(html.escape(situation))
+        )
+    html_parts.append("<p><strong>LANGUAGE:</strong> {}</p>".format(html.escape(lang_label)))
+    html_parts.append("<p><strong>MAIN TRANSLATION</strong></p>")
+    html_parts.append("<p>{}</p>".format(html.escape(main_text).replace("\n", "<br>")))
+    if alt_rows:
+        html_parts.append("<p><strong>ALTERNATIVES</strong></p>")
+        for index, translation, meaning in alt_rows:
+            translation_html = html.escape(translation)
+            if meaning:
+                html_parts.append(
+                    "<p>{}. {} — <em>{}</em></p>".format(
+                        index, translation_html, html.escape(meaning)
+                    )
+                )
+            else:
+                html_parts.append("<p>{}. {}</p>".format(index, translation_html))
+    html_fragment = "\n".join(html_parts)
+    return plain_text, html_fragment
+
+
 def advisory_text_from_result(result: dict, extra_notes=None) -> str:
     """Return advisory text that should be shown for a translation result.
 
@@ -4709,6 +4777,19 @@ if GUI_AVAILABLE:
                 state="disabled",
             )
             self.copy_five_html_btn.grid(row=0, column=1)
+            # Copy all (v1.44, notes_020): source, situation, language line,
+            # main translation and all five alternatives with meaning
+            # checks, in one clipboard write (HTML + plain text) — distinct
+            # from Export, which writes a Markdown file to disk. Placed
+            # here rather than the favourite_row above: that row is already
+            # at its width budget at the documented 1000x600 minimum (it
+            # has no shrinkable columns), while this row has ample room.
+            self.copy_all_btn = ctk.CTkButton(
+                alts_header, text="Copy all", width=75,
+                fg_color="gray30", command=self._copy_all,
+                state="disabled",
+            )
+            self.copy_all_btn.grid(row=0, column=2, padx=(6, 0))
 
             # Five alternatives (scrollable). The heading is omitted: the numbered
             # cards make the section self-evident and the space is better used.
@@ -4825,6 +4906,29 @@ if GUI_AVAILABLE:
                     self._copy(text)
             else:
                 self._copy(text)
+
+        def _copy_all(self):
+            """Copy the whole translation package in one clipboard write
+            (v1.44, notes_020): source, situation, language line, main
+            translation and all five alternatives with meaning checks, as
+            both HTML and plain text. Reuses the same accepted-result
+            snapshot as Favourite/Export (self._result_source_text/
+            _situation, self._current_main), not the live input box, so an
+            edit made since the result appeared is never copied as its
+            source.
+            """
+            if not self._current_main or self._current_result is None:
+                return
+            main_text = append_finishing_touch(self._current_main, self._current_touch())
+            plain_text, html_fragment = build_copy_all_content(
+                self._result_source_text, self._result_situation,
+                self._current_result, main_text,
+                typography_fn=self._maybe_french_typography,
+            )
+            if not plain_text:
+                return
+            if not copy_html_to_windows_clipboard(html_fragment, plain_text, self.winfo_id()):
+                self._copy(plain_text)
 
         def _copy_source(self):
             """Copy the input box's text as-is, for chat back-and-forth."""
@@ -5545,6 +5649,7 @@ if GUI_AVAILABLE:
             self.copy_five_btn.configure(state="disabled")
             self.copy_five_html_btn.configure(state="disabled")
             self.export_diff_btn.configure(state="disabled")
+            self.copy_all_btn.configure(state="disabled")
             self._reset_favourite_button(enabled=False)
             self._stop_speech()
             self._cleanup_tts_file()
@@ -6196,6 +6301,7 @@ if GUI_AVAILABLE:
             self.copy_five_btn.configure(state="normal")
             self.copy_five_html_btn.configure(state="normal")
             self.export_diff_btn.configure(state="normal")
+            self.copy_all_btn.configure(state="normal")
             self._reset_favourite_button(enabled=True)
             self.language_label.configure(text=format_language_label(result))
 

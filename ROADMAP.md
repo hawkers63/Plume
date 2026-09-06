@@ -1499,6 +1499,51 @@ schema impact beyond one constants tuple:
   1000x600 minimum (the new button row does not overflow at either).
   Full suite: 412 tests pass (405 -> 412).
 
+## v1.44 — "Copy all" one-click clipboard bundle (notes_020)
+
+- **A new "Copy all" button**, beside Copy five/Copy five as HTML,
+  copies the whole translation package in one clipboard write: source
+  text, situation (when set), the language-direction/confidence line,
+  the main translation (finishing touch applied, same as Copy main
+  translation) and all five alternatives with their English meaning
+  checks. Both a plain-text version (clear section headings — SOURCE /
+  SITUATION / LANGUAGE / MAIN TRANSLATION / ALTERNATIVES) and, on
+  Windows, a rich HTML version go onto the clipboard via the existing
+  CF_HTML infrastructure, with the same plain-text fallback every other
+  copy action already uses off Windows or on a clipboard-write failure.
+- **New pure helper `build_copy_all_content(source_text, situation,
+  result, main_text, typography_fn=None)`**, returning `(plain_text,
+  html_fragment)` — kept as a standalone function rather than inline in
+  `PlumeApp`, per notes_020's own suggested refactor for testability.
+  Distinct from both `format_five_alternatives` (no meaning checks, no
+  language line) and `export_current_result_markdown` (a Markdown study
+  sheet with a diff, written to a file, not a plain/HTML clipboard pair
+  with the confidence line) — genuinely new content shape, not a
+  duplicate of an existing export path.
+- **French typography is applied here, not skipped**, when the
+  Settings option is on and the result is French: `typography_fn` runs
+  over the main translation and each alternative's translation only,
+  never over the section labels or the source/situation text. notes_020
+  itself suggested keeping Copy all "raw" for fidelity, but every other
+  copy action (Copy main translation, Copy five, Copy as HTML) already
+  applies this setting when enabled — a silent exception here would be
+  a surprising inconsistency with no offsetting benefit, so this
+  version follows the established pattern instead.
+- **Placement is not where notes_020 sketched it** ("alongside the
+  Favourite/Export options", i.e. the row with Favourite/Export/Copy as
+  HTML/Export diff…): that row has no shrinkable columns and is already
+  at its width budget at the documented 1000x600 minimum — adding a
+  fifth fixed-width button there clipped visibly off the right edge in
+  live testing. Placed instead next to Copy five/Copy five as HTML,
+  which has ample width headroom; verified with a screenshot at 1000x600
+  showing all three buttons fully visible.
+- 9 new unit tests for `build_copy_all_content` (all sections present,
+  situation omitted when blank, HTML escaping and markup, a meaning-less
+  alternative omits the dash, a blank translation is skipped, typography
+  applied only to translation-bearing fields and left untouched with no
+  `typography_fn`, both empty-input guards). Full suite: 421 tests pass
+  (412 -> 421).
+
 ---
 
 ### Notes on sequencing

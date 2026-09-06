@@ -142,9 +142,14 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
 - **Copy five** and **Copy five as HTML**, above the alternatives list:
   numbered plain text of the five alternative translations only — no
   meaning checks, no finishing touch.
+- **Copy all**, beside Copy five: the whole translation package in one
+  clipboard write (plain text and, on Windows, HTML) — source, situation,
+  language line, the main translation and all five alternatives with
+  their meaning checks — for pasting the full exchange into an email,
+  note or document in one click instead of copying each piece separately.
 - Optional **French punctuation on copy** (Settings, off by default):
   when the working result is French, Copy main translation/Copy five/
-  Copy as HTML apply narrow no-break spaces before `; : ! ?`, turn
+  Copy as HTML/Copy all apply narrow no-break spaces before `; : ! ?`, turn
   `"..."` into `…`, and turn short "straight-quoted phrases" into
   guillemets. Copy-time only — the on-screen result, the exported study
   sheet/diff and Speak are never affected.

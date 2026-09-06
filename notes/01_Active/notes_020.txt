@@ -1,0 +1,200 @@
+**Date:** 6th September 2026  
+**Author:** Mark  
+
+### “Copy All” – Export the Entire Conversation in One Rich Clipboard  
+
+**Current State:**  
+Plume currently enables users to copy the primary translation along with five alternative translations and offers options for Markdown exports. However, the process of transferring a complete “message + alternatives” bundle into an email, note, or document involves multiple steps: copying the main translation, copying the five alternatives, and pasting them separately.
+
+**Proposed Feature:**  
+- Introduce a “Copy All” button, strategically positioned alongside the Favourite/Export options. This button will facilitate the copying of the following items:
+
+  - The source text  
+  - The main translation, complete with any necessary finishing touches  
+  - All five alternatives, formatted without meaning checks, adhering to the established format for five alternatives  
+  - The language-direction line and, if applicable, the situational context  
+
+All copied content will be formatted in rich HTML (utilising the existing `_build_cf_html` infrastructure) as well as in plain text, complete with clear section headings. On Windows systems, this information will be directly transferred to the clipboard in both formats; on other platforms, it will default to plain text.  
+
+The implementation of the "Copy All" feature will enable a single-click export of the entire translation package, encompassing the following elements:
+
+- The source text  
+- The situational context (if applicable)  
+- The language direction line  
+- The main translation (with any finishing touches applied)  
+- All five alternative translations, each accompanied by its meaning check to provide comprehensive context  
+
+Both a plain-text version, featuring clear section headings, and a rich HTML version, utilising the existing `_build_cf_html` and `copy_html_to_windows_clipboard` infrastructure, will be provided. On Windows systems, both formats will be placed on the clipboard, while on other platforms, a plain text format will be used.  
+
+The implementation process will be straightforward, leveraging existing helper functions and avoiding the introduction of any new dependencies.
+
+### 1. Design Decisions
+- **Snapshot-based**: We will utilise `self._result_source_text`, `self._result_situation`, `self._current_main`, and `self._current_result`, in alignment with the methods `_favourite_current_result` and `_export_current_result`. This approach ensures that the copied content reflects the on-screen result, even if the input box has been edited subsequently.
+
+- **Finishing touch**: The main translation will include the currently selected finishing touch (such as an emote, sign-off, or MMORPG term), consistent with the "Copy main translation" functionality.
+
+- **Alternatives**: We will present the translations along with their corresponding English meaning checks, formatted as numbered list items. This offers a more comprehensive output than `format_five_alternatives`, which omits the meaning checks.
+
+- **HTML formatting**: A clean, readable HTML representation will be produced using `<p>` and `<br>` tags to preserve line breaks. The HTML will be encapsulated with the standard CF_HTML header, facilitating easy pasting into rich-text editors.
+
+- **Platform considerations**: The method will leverage `copy_html_to_windows_clipboard`, which already manages both formats. For non-Windows systems, it will default to plain-text copying.
+
+### 2. Code Implementation
+#### 2.1. New Helper: `_build_copy_all_content`
+A new method will be added to `PlumeApp` to construct the plain text and HTML strings from the current result.
+
+```python
+def _build_copy_all_content(self):
+    """Return (plain_text, html_fragment) for the entire translation package."""
+    if not self._current_main or self._current_result is None:
+        return "", ""
+
+    # Snapshot data
+    source = self._result_source_text or ""
+    situation = self._result_situation or ""
+    result = self._current_result
+    main = append_finishing_touch(self._current_main, self._current_touch())
+    lang_label = format_language_label(result)
+
+    # Build plain text
+    lines = []
+    lines.append("SOURCE")
+    lines.append(source)
+    lines.append("")
+    if situation:
+        lines.append("SITUATION: " + situation)
+        lines.append("")
+    lines.append("LANGUAGE: " + lang_label)
+    lines.append("")
+    lines.append("MAIN TRANSLATION")
+    lines.append(main)
+    lines.append("")
+    variations = result.get("variations", [])
+    if variations:
+        lines.append("ALTERNATIVES")
+        for idx, v in enumerate(variations, start=1):
+            trans = v.get("translation", "")
+            meaning = v.get("english_meaning_check", "")
+            if meaning:
+                lines.append("{}. {} — {}".format(idx, trans, meaning))
+            else:
+                lines.append("{}. {}".format(idx, trans))
+        lines.append("")
+    plain_text = "\n".join(lines)
+
+    # Build HTML fragment
+    html_parts = []
+    html_parts.append("<p><strong>SOURCE</strong></p>")
+    html_parts.append("<p>{}</p>".format(html.escape(source).replace("\n", "<br>")))
+    if situation:
+        html_parts.append("<p><strong>SITUATION:</strong> {}</p>".format(html.escape(situation)))
+    html_parts.append("<p><strong>LANGUAGE:</strong> {}</p>".format(html.escape(lang_label)))
+    html_parts.append("<p><strong>MAIN TRANSLATION</strong></p>")
+    html_parts.append("<p>{}</p>".format(html.escape(main).replace("\n", "<br>")))
+    if variations:
+        html_parts.append("<p><strong>ALTERNATIVES</strong></p>")
+        for idx, v in enumerate(variations, start=1):
+            trans = html.escape(v.get("translation", ""))
+            meaning = html.escape(v.get("english_meaning_check", ""))
+            if meaning:
+                html_parts.append("<p>{}. {} — <em>{}</em></p>".format(idx, trans, meaning))
+            else:
+                html_parts.append("<p>{}. {}</p>".format(idx, trans))
+    html_fragment = "\n".join(html_parts)
+    return plain_text, html_fragment
+```
+
+#### 2.2. New Method: `_copy_all`
+This method will orchestrate the clipboard transfer.
+
+```python
+def _copy_all(self):
+    """Copy the entire translation package as plain text and HTML (Windows only)."""
+    plain_text, html_fragment = self._build_copy_all_content()
+    if not plain_text:
+        return
+    # Attempt rich copy on Windows; fallback to plain text on other platforms
+    if not copy_html_to_windows_clipboard(html_fragment, plain_text, self.winfo_id()):
+        self._copy(plain_text)
+```
+
+#### 2.3. UI Integration
+A new button will be added to the primary card row, positioned adjacent to “Copy as HTML”. In `_build_right`, within the `main_buttons` grid, include the following:
+
+```python
+self.copy_all_btn = ctk.CTkButton(
+    main_buttons, text="Copy all", width=80,
+    command=self._copy_all,
+    state="disabled",
+)
+self.copy_all_btn.grid(row=0, column=4, padx=(0, 8))  # Adjust column index as necessary
+```
+
+It is essential to update the column indices of subsequent buttons. For clarity, consider placing it on a separate row or alongside the existing copy buttons. It is advisable to position it to the right of “Copy as HTML” for logical grouping.
+
+Additionally, enable or disable the button in `_clear_results` and `_render_result`:
+
+- In `_clear_results`, include: `self.copy_all_btn.configure(state="disabled")`
+- In `_render_result`, include: `self.copy_all_btn.configure(state="normal")`
+
+#### 2.4. Optional Application of French Typography
+If desired, the "Copy all" function can respect the French typography setting (similar to “Copy main translation”). You may apply `self._maybe_french_typography()` to both the main translation and the alternative translations. However, the specification for “Copy all” might dictate copying the raw result rather than the typography-adjusted version. Given that we already have “Copy main” and “Copy five” with typography, I recommend keeping “Copy all” as the raw, un-typographed version for greater fidelity to the original rendering. Nonetheless, it can be easily added if consistency is preferred.
+
+### 3. Testing
+A unit test should be developed for `_build_copy_all_content` by mocking the attributes of `PlumeApp`. Since this function is purely for string construction (once the data is available), it can be tested without a graphical interface.
+
+Create a new test in `test_translator_logic.py` (or a separate file) that:
+
+- Constructs a result dictionary using `valid_result()`
+- Sets up a mock application with the necessary attributes
+- Calls `_build_copy_all_content` and verifies that the plain text includes the source, main translation, and all five alternatives with their meaning checks.
+
+As this method resides within `PlumeApp`, you may need to use `unittest.mock` to patch the instance, or you could refactor the logic into a standalone function (recommended for improved testability):
+
+```python
+def build_copy_all_text(source_text, situation, result, main_translation):
+    # Same logic as above, returning (plain, html)
+```
+
+This refactoring will allow for unit testing without any graphical user interface.
+
+### 4. Full Integration Summary
+- **New constants/helpers**: None.
+- **New methods**:
+  - `_build_copy_all_content()` (or a standalone function)
+  - `_copy_all()`
+  
+- **Updated methods**:
+  - `_clear_results` – disable button
+  - `_render_result` – enable button
+  - `_build_right` – add the button
+
+- **Lines of code added**: Approximately 80 (including comments and whitespace).
+
+### 5. Example Output (Plain Text)
+```
+SOURCE
+Hello, how are you?
+
+SITUATION: texting a close friend
+
+LANGUAGE: English → French · detected with high confidence
+
+MAIN TRANSLATION
+Bonjour, comment vas-tu ? :)
+
+ALTERNATIVES
+1. Salut, ça va ? — Hi, how's it going?
+2. Coucou, tu vas bien ? — Hey, you alright?
+3. Bonjour, comment allez-vous ? — Hello, how are you? (formal)
+4. Salut, tu te sens comment ? — Hi, how are you feeling?
+5. Eh bien, comment ça se passe ? — So, how's it going?
+```
+The HTML version will be formatted with proper paragraphs and inline emphasis.
+
+### 6. Potential Enhancements (Optional)
+- Include the finishing touch in the alternatives? No; the finishing touch is designated only for the main translation.
+- Add a “Copy all as Markdown” option – however, this is already addressed by the Export button.
+- Support copying the five alternatives as a bullet list without meaning checks – this is already covered by “Copy five”.
+
+The proposed "Copy all" feature serves as a comprehensive export, providing full context for individuals reviewing the translation, making it ideal for sharing via email, chat, or notes.
