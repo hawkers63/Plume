@@ -1,14 +1,12 @@
-# Placeholder screenshots
+# Screenshots
 
-These SVG files are **labelled placeholders only** — not mock UI.
+Real CustomTkinter captures for the README **Glimpse** section.
 
-Replace with real CustomTkinter captures from a running Plume build on Windows 11 when ready:
-
-| File | Intended capture |
+| File | Shows |
 | --- | --- |
-| `main-window.svg` | Main translation window |
-| `settings-glossary.svg` | Settings and Glossary |
+| `main-window.png` | Main translation window |
+| `french-slang.png` | French slang… reference window |
 
-Do **not** invent chrome, fake conversation text, or AI-generated UI mockups in replacements. Swap the SVGs (or add `.png` / `.gif` captures alongside) when genuine screenshots exist.
+Optional older SVG placeholders (`*.svg`) may remain as drafts; prefer PNGs in the README.
 
-Copyright (c) 2026 Mark Hawksworth. All rights reserved.
+Do not invent UI chrome or mockups.
