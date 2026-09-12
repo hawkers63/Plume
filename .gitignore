@@ -21,3 +21,10 @@ Thumbs.db
 
 # Claude Code local tooling state (background-job worktrees, etc.)
 .claude/
+
+# Local Grok Bot mandate drafts - stay on this machine only; not for GitHub.
+agents/
+bug_hunter.md
+enhancement_agent.md
+grok_bot_bug_hunter.md
+grok_bot_repo_steward.md
