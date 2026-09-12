@@ -1,0 +1,61 @@
+# Release Drafter config for Plume
+# Drafts release notes from merged PRs into main.
+# Workflow Action not installed yet (needs workflow scope on the token).
+
+name-template: 'Plume v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+exclude-labels:
+  - 'skip-changelog'
+categories:
+  - title: 'Features'
+    labels:
+      - 'feature'
+      - 'enhancement'
+      - 'feat'
+  - title: 'Bug Fixes'
+    labels:
+      - 'fix'
+      - 'bug'
+      - 'bugfix'
+  - title: 'Documentation'
+    labels:
+      - 'docs'
+      - 'documentation'
+  - title: 'Maintenance'
+    labels:
+      - 'chore'
+      - 'maintenance'
+      - 'dependencies'
+change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+change-title-escapes: '\<*_&'
+version-resolver:
+  major:
+    labels:
+      - 'major'
+  minor:
+    labels:
+      - 'minor'
+      - 'feature'
+      - 'enhancement'
+      - 'feat'
+  patch:
+    labels:
+      - 'patch'
+      - 'fix'
+      - 'bug'
+      - 'bugfix'
+      - 'docs'
+      - 'documentation'
+      - 'chore'
+      - 'maintenance'
+  default: patch
+template: |
+  ## Changes
+
+  $CHANGES
+
+  ## Licence
+
+  Proprietary — All Rights Reserved (Mark Hawksworth).
+
+  See [LICENSE](https://github.com/hawkers63/Plume/blob/main/LICENSE).
