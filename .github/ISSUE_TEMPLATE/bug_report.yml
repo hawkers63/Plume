@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a defect in Plume (private proprietary app)
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Plume is a **private proprietary** Windows 11 French ↔ English conversation helper.
+        Please keep reports factual and free of API keys or personal chat content.
+
+  - type: textarea
+    id: describe
+    attributes:
+      label: Describe the bug
+      description: What went wrong? Be specific.
+      placeholder: e.g. Copy main translation appended the wrong finishing touch after switching Situation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps from a clean or known state.
+      placeholder: |
+        1. Launch Plume from source / frozen exe
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What happened instead? Include any on-screen error text (never paste API keys).
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows build, how you run Plume, Python and backend details.
+      value: |
+        - OS: Windows 11 (build …)
+        - Run mode: source / Plume.exe
+        - Python version: (if from source)
+        - Backend: Claude / Ollama (model name if known)
+        - Optional: ElevenLabs / tray (pystray+Pillow) enabled?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: copyright
+    attributes:
+      label: Copyright
+      description: Acknowledge proprietary terms before filing.
+      options:
+        - label: I understand Plume is proprietary (Copyright © 2026 Mark Hawksworth; see LICENSE and COPYRIGHT) and this report stays within the private repo.
+          required: true
