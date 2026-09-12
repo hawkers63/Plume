@@ -1,15 +1,51 @@
 # Plume — French ↔ English conversation helper
 
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Windows 11](https://img.shields.io/badge/Windows-11-0078D6.svg)](https://www.microsoft.com/windows)
+[![Licence: Proprietary](https://img.shields.io/badge/Licence-Proprietary-red.svg)](LICENSE)
+
 Plume is a small Windows 11 desktop application that translates conversational
 French and English in either direction. For every phrase it returns **one
 faithful main translation** plus **exactly five natural alternatives in the same
 tone**, each with a short English *meaning check* in brackets so you can see what
 a French phrasing says before you send it.
 
-It is built as a dark, native-feeling
-CustomTkinter interface, British English throughout, explicit privacy
-information, no silent rewriting, and a choice of a cloud (Claude) or local
-(Ollama) backend.
+It is built as a dark, native-feeling CustomTkinter interface, British English
+throughout, explicit privacy information, no silent rewriting, and a choice of a
+cloud (Claude) or local (Ollama) backend.
+
+> **Not a game.** Plume is a conversation helper / translator. Some finishing
+> touches (e.g. MMORPG chat slang) support gaming chat, but the product itself
+> is not a game.
+
+---
+
+## Screenshots
+
+UI captures will land here once real CustomTkinter shots are ready (no invented mockups).
+
+Planned placeholders:
+
+- `docs/screenshots/main-window.png` — main translation window
+- `docs/screenshots/settings-glossary.png` — Settings and Glossary
+
+See [`docs/screenshots/`](docs/screenshots/) for how to add them.
+
+## Features (at a glance)
+
+- **Auto-detect** language, or force **English → French** / **French → English**
+- One primary translation plus **five distinct alternatives**, each with an English meaning check
+- **tu / vous** consistency, language-confidence indicator, and **French gender agreement** (Me / You)
+- **Placeholder protection**, **Keep as-is** list, and a **Glossary** for consistent preferred renderings
+- Copy helpers: **Copy main**, **Use this**, **Use as input**, **Copy five**, **Copy all**, **Copy as HTML**
+- Optional finishing touches at copy time only: emotes, casual sign-offs, MMORPG chat terms
+- **French slang…** reference window and ephemeral **Phrasebook**
+- Situation presets, saved situations, conversation presets, register tones, writing profile
+- Optional local history with favourites, search, and Anki/Markdown export
+- Optional ElevenLabs **Speak** (with Stop / Slow), **Correct English**, tray / sign-in autostart
+- Claude (cloud) or Ollama (local) backends; crash-safe file import (`.txt` / `.md`)
+
+Full detail on each capability is in the sections below and in [`ROADMAP.md`](ROADMAP.md).
 
 ---
 
@@ -164,7 +200,7 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
 ## Prerequisites
 
 - **Python 3.10 or later** (only needed to run from source).
-- The single dependency:
+- Install dependencies from `requirements.txt`:
 
   ```
   pip install -r requirements.txt
@@ -329,6 +365,16 @@ python -m unittest discover -s tests -v
 - Only *Neutral international French*; regional presets (France, Belgium,
   Quebec) come after native-speaker review.
 - No dictionary-style word-by-word analysis — Plume is for fast conversation.
+
+---
+
+## Roadmap and licence
+
+- Product roadmap: [`ROADMAP.md`](ROADMAP.md)
+- Licence terms: [`LICENSE`](LICENSE)
+- Copyright notice: [`COPYRIGHT`](COPYRIGHT)
+- Agent / steward notes: [`AGENTS.md`](AGENTS.md)
+- Private contribution guide: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 ---
 
