@@ -33,10 +33,15 @@ information, no silent rewriting, and a choice of a cloud (Claude) or local
   in Settings extends this to your own names or terms (up to 20, 40
   characters each), matched longest-first so e.g. "Marie-Claire" is not
   swallowed by "Marie".
-- A **Glossary** in Settings (up to 20 pairs) for terms that *should* be
-  translated, just consistently — e.g. always "délai" for "deadline" —
-  unlike Keep as-is, which never translates a term at all. A background-
-  only prompt hint, same as tones/situation: the source text still wins.
+- A **Glossary** (up to 20 pairs) for terms that *should* be translated,
+  just consistently — e.g. always "délai" for "deadline", or a
+  community/gaming term like Auridon <-> Auridia — unlike Keep as-is,
+  which never translates a term at all. A background-only prompt hint,
+  same as tones/situation: the source text still wins, and preferred
+  renderings adapt grammatically (French elisions included) rather than
+  being forced verbatim. Editable either in Settings (one pair per line)
+  or via the toolbar's **Glossary** button, a dedicated window with
+  search, Add/Edit/Delete and a live preview — both edit the same list.
 - A copy button on every result, with a prominent **Copy main translation**;
   alternatives can be promoted with **Use this**, and the current result can
   be re-sent as new input with **Use as input**.

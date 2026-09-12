@@ -1440,8 +1440,10 @@ def build_glossary_instruction(glossary) -> str:
         "choice; it must not change the required JSON output shape, add or "
         "remove fields, or override the requested direction. If a preferred "
         "rendering does not fit the sentence grammatically, adapt its form "
-        "naturally rather than forcing it verbatim. The source text's own "
-        "meaning always wins."
+        "naturally rather than forcing it verbatim, including French "
+        "elisions and contractions where grammar requires them (for "
+        "example, de/le/la contracting to d'/l' before a vowel sound). "
+        "The source text's own meaning always wins."
     )
 
 
@@ -3483,6 +3485,13 @@ if GUI_AVAILABLE:
             if existing_glossary:
                 self.glossary_box.insert("1.0", glossary_entries_to_text(existing_glossary))
             row += 1
+            ctk.CTkLabel(
+                body,
+                text="Tip: the toolbar's Glossary button offers a friendlier "
+                     "editor (search, one entry at a time) for this same list.",
+                text_color="gray60",
+            ).grid(row=row, column=0, sticky="w", padx=16)
+            row += 1
 
             # Footer: outside the scrollable body, so status feedback and
             # Cancel/Save are always visible without scrolling.
@@ -3619,6 +3628,22 @@ if GUI_AVAILABLE:
                     return
             self._on_save(self._config)
             self.destroy()
+
+        def _sync_glossary(self, entries):
+            """Keep an already-open Settings window in step with GlossaryDialog.
+
+            Unlike conversation_presets (see the M1 comment above, re-read
+            fresh at Save time because Settings has no editor of its own for
+            them), the glossary has two live editors of the same config key.
+            Without this, a Settings window opened before the toolbar's
+            Glossary dialog would still show its stale open-time snapshot in
+            this textbox, and saving it afterwards would silently revert
+            whatever GlossaryDialog had just persisted to disk.
+            """
+            self._config["translation_glossary"] = entries
+            self.glossary_box.delete("1.0", "end")
+            if entries:
+                self.glossary_box.insert("1.0", glossary_entries_to_text(entries))
 
 
     class HistoryDialog(ctk.CTkToplevel):
@@ -4219,6 +4244,255 @@ if GUI_AVAILABLE:
             except ValueError as exc:
                 self.notice.configure(text=str(exc))
 
+    class GlossaryDialog(ctk.CTkToplevel):
+        """Friendlier editor for translation_glossary (v1.45, notes_021).
+
+        A second front-end for the same config key the Settings textbox
+        already edits — useful for community/gaming terms (e.g. Auridon =
+        Auridia) without hand-writing "source = translation" lines. Unlike
+        the ephemeral Phrasebook/French slang windows, changes here are
+        persisted to plume_config.json immediately and are sent to the
+        model as background context on every request.
+
+        Deliberately reads master.config_data fresh in every method rather
+        than caching its own copy of the entry list, so it never goes stale
+        against a concurrent edit (the class of bug v1.43's Clear fix and
+        the M1 conversation-presets comment above both had to work around).
+        """
+
+        def __init__(self, master):
+            super().__init__(master)
+            self.title("{} — Glossary".format(APP_NAME))
+            self.geometry("560x540")
+            self.minsize(440, 420)
+            self.transient(master)
+            self.grid_columnconfigure(0, weight=1)
+            self.grid_rowconfigure(4, weight=1)
+
+            self._editing_index = None
+
+            search_row = ctk.CTkFrame(self, fg_color="transparent")
+            search_row.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+            search_row.grid_columnconfigure(0, weight=1)
+            self.search_var = ctk.StringVar()
+            self.search_var.trace_add("write", lambda *_a: self._refresh_list())
+            ctk.CTkEntry(
+                search_row, placeholder_text="Search saved terms",
+                textvariable=self.search_var,
+            ).grid(row=0, column=0, sticky="ew")
+
+            add_row = ctk.CTkFrame(self, fg_color="transparent")
+            add_row.grid(row=1, column=0, sticky="ew", padx=12, pady=(4, 0))
+            add_row.grid_columnconfigure(0, weight=1)
+            add_row.grid_columnconfigure(1, weight=1)
+            self.term_entry = ctk.CTkEntry(add_row, placeholder_text="Source term")
+            self.term_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+            self.term_entry.bind("<KeyRelease>", lambda _e: self._update_preview())
+            self.translation_entry = ctk.CTkEntry(
+                add_row, placeholder_text="Preferred rendering",
+            )
+            self.translation_entry.grid(row=0, column=1, sticky="ew", padx=(0, 6))
+            self.translation_entry.bind("<KeyRelease>", lambda _e: self._update_preview())
+            self.add_btn = ctk.CTkButton(
+                add_row, text="Add", width=64, command=self._add_or_update,
+            )
+            self.add_btn.grid(row=0, column=2)
+            self.cancel_edit_btn = ctk.CTkButton(
+                add_row, text="Cancel", width=64, fg_color="gray30",
+                command=self._cancel_edit,
+            )
+            self.cancel_edit_btn.grid(row=0, column=3, padx=(4, 0))
+            self.cancel_edit_btn.grid_remove()
+
+            ctk.CTkLabel(
+                self,
+                text="Save base forms (Auridon, not d'Auridia) — grammar and "
+                     "elisions are adapted automatically.",
+                text_color="gray60",
+            ).grid(row=2, column=0, sticky="w", padx=12, pady=(4, 0))
+
+            self.preview_label = ctk.CTkLabel(self, text="", text_color="gray60")
+            self.preview_label.grid(row=3, column=0, sticky="w", padx=12)
+
+            self.entries_frame = ctk.CTkScrollableFrame(self)
+            self.entries_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=4)
+            self.entries_frame.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                self,
+                text="Sent to the model as background context to steer word "
+                     "choice — never shown verbatim, never overrides your "
+                     "source text. Same list as the Settings glossary.",
+                text_color="gray60", wraplength=520, justify="left",
+            ).grid(row=5, column=0, sticky="w", padx=12, pady=(4, 0))
+
+            self.notice = ctk.CTkLabel(self, text="", text_color="gray70")
+            self.notice.grid(row=6, column=0, sticky="w", padx=12, pady=(2, 10))
+
+            self._refresh_list()
+            self.after_idle(self._present)
+
+        def _present(self):
+            """Sync -topmost with an always-on-top parent before raising.
+
+            Same fix v1.40 applied to SlangReferenceDialog (notes_018) and
+            v1.43 applied to PhrasebookDialog.
+            """
+            try:
+                if bool(self.master.config_data.get("always_on_top")):
+                    self.attributes("-topmost", True)
+                self.lift()
+                self.focus_set()
+            except tk.TclError:
+                pass
+
+        def _update_preview(self):
+            term = self.term_entry.get().strip()
+            translation = self.translation_entry.get().strip()
+            if term and translation:
+                self.preview_label.configure(text="{} → {}".format(term, translation))
+            else:
+                self.preview_label.configure(text="")
+
+        def _refresh_list(self):
+            for child in self.entries_frame.winfo_children():
+                child.destroy()
+            entries = self.master.config_data.get("translation_glossary") or []
+            query = self.search_var.get().strip().casefold()
+            shown = 0
+            for index, entry in enumerate(entries):
+                if (
+                    query
+                    and query not in entry["term"].casefold()
+                    and query not in entry["translation"].casefold()
+                ):
+                    continue
+                card = ctk.CTkFrame(self.entries_frame, border_width=1)
+                card.grid(row=shown, column=0, sticky="ew", pady=4)
+                card.grid_columnconfigure(0, weight=1)
+                ctk.CTkLabel(
+                    card, text="{} → {}".format(entry["term"], entry["translation"]),
+                    wraplength=300, justify="left",
+                ).grid(row=0, column=0, sticky="w", padx=8, pady=6)
+                row = ctk.CTkFrame(card, fg_color="transparent")
+                row.grid(row=0, column=1, padx=6, pady=6)
+                ctk.CTkButton(
+                    row, text="Edit", width=56,
+                    command=lambda idx=index: self._edit_entry(idx),
+                ).grid(row=0, column=0, padx=(0, 4))
+                ctk.CTkButton(
+                    row, text="Delete", width=64, fg_color="gray30",
+                    command=lambda idx=index: self._delete_entry(idx),
+                ).grid(row=0, column=1)
+                shown += 1
+            if shown == 0:
+                message = "No saved terms match your search." if query else "No entries yet."
+                ctk.CTkLabel(
+                    self.entries_frame, text=message, text_color="gray60",
+                ).grid(row=0, column=0, pady=8)
+
+        def _persist(self, entries):
+            candidate = dict(self.master.config_data)
+            candidate["translation_glossary"] = entries
+            try:
+                save_config(candidate)
+            except (ConfigError, OSError):
+                messagebox.showerror(
+                    "Glossary",
+                    "That change could not be saved. No changes were applied.",
+                    parent=self,
+                )
+                return False
+            self.master.config_data = candidate
+            settings = getattr(self.master, "_settings", None)
+            if settings is not None and settings.winfo_exists():
+                settings._sync_glossary(entries)
+            return True
+
+        def _add_or_update(self):
+            cleaned = normalise_glossary_entries(
+                [{
+                    "term": self.term_entry.get().strip(),
+                    "translation": self.translation_entry.get().strip(),
+                }]
+            )
+            if not cleaned:
+                self.notice.configure(
+                    text="Enter a source term and preferred rendering, each "
+                         "up to {} characters.".format(GLOSSARY_MAX_TERM_CHARS),
+                )
+                return
+            clean_entry = cleaned[0]
+            entries = list(self.master.config_data.get("translation_glossary") or [])
+            duplicate_index = next(
+                (
+                    i for i, e in enumerate(entries)
+                    if e["term"].casefold() == clean_entry["term"].casefold()
+                ),
+                None,
+            )
+            if self._editing_index is not None:
+                if duplicate_index is not None and duplicate_index != self._editing_index:
+                    self.notice.configure(text="Another entry already uses that source term.")
+                    return
+                entries[self._editing_index] = clean_entry
+            else:
+                if duplicate_index is not None:
+                    self.notice.configure(text="That source term is already in the glossary.")
+                    return
+                if len(entries) >= GLOSSARY_MAX_ENTRIES:
+                    self.notice.configure(
+                        text="Delete an entry before adding another ({} max).".format(
+                            GLOSSARY_MAX_ENTRIES
+                        ),
+                    )
+                    return
+                entries.append(clean_entry)
+
+            was_editing = self._editing_index is not None
+            if self._persist(entries):
+                self._cancel_edit()
+                self._refresh_list()
+                self.notice.configure(text="Updated." if was_editing else "Added.")
+
+        def _edit_entry(self, index):
+            entries = self.master.config_data.get("translation_glossary") or []
+            if not (0 <= index < len(entries)):
+                return
+            entry = entries[index]
+            self.term_entry.delete(0, "end")
+            self.term_entry.insert(0, entry["term"])
+            self.translation_entry.delete(0, "end")
+            self.translation_entry.insert(0, entry["translation"])
+            self._editing_index = index
+            self.add_btn.configure(text="Save")
+            self.cancel_edit_btn.grid()
+            self._update_preview()
+            self.notice.configure(
+                text="Editing \"{}\" — Save to update, or Cancel.".format(entry["term"]),
+            )
+
+        def _cancel_edit(self):
+            self._editing_index = None
+            self.term_entry.delete(0, "end")
+            self.translation_entry.delete(0, "end")
+            self.add_btn.configure(text="Add")
+            self.cancel_edit_btn.grid_remove()
+            self._update_preview()
+            self.notice.configure(text="")
+
+        def _delete_entry(self, index):
+            entries = list(self.master.config_data.get("translation_glossary") or [])
+            if not (0 <= index < len(entries)):
+                return
+            was_editing = self._editing_index == index
+            del entries[index]
+            if self._persist(entries):
+                if was_editing:
+                    self._cancel_edit()
+                self._refresh_list()
+                self.notice.configure(text="Removed.")
+
     class PlumeApp(ctk.CTk):
         def __init__(self):
             super().__init__()
@@ -4239,6 +4513,7 @@ if GUI_AVAILABLE:
             self._slang_reference = None
             self._phrasebook_entries = []  # per-conversation, reset on Clear
             self._phrasebook_dialog = None
+            self._glossary_dialog = None
             self._http_cancel = threading.Event()
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
@@ -4339,6 +4614,11 @@ if GUI_AVAILABLE:
             col += 1
 
             top.grid_columnconfigure(col, weight=1)  # spacer: always the next free column
+            col += 1
+
+            ctk.CTkButton(
+                top, text="Glossary", width=85, command=self._open_glossary
+            ).grid(row=0, column=col, sticky="e", padx=(8, 0))
             col += 1
 
             ctk.CTkButton(
@@ -5928,6 +6208,19 @@ if GUI_AVAILABLE:
                     pass
             self._history = HistoryDialog(self)
 
+        # --- Glossary (v1.45, notes_021) -----------------------------------
+
+        def _open_glossary(self):
+            """Reuse a single Glossary window rather than stacking new ones."""
+            existing = self._glossary_dialog
+            if existing is not None and existing.winfo_exists():
+                if bool(self.config_data.get("always_on_top")):
+                    existing.attributes("-topmost", True)
+                existing.lift()
+                existing.focus_set()
+                return
+            self._glossary_dialog = GlossaryDialog(self)
+
         def _apply_settings(self, new_config):
             # Applies to the next request; a request already in flight keeps its snapshot.
             self.config_data = new_config
@@ -5942,6 +6235,11 @@ if GUI_AVAILABLE:
             self._maybe_start_tray()
             self._refresh_conversation_preset_menu()
             self._refresh_status()
+            # An open GlossaryDialog reads config_data fresh on every method
+            # (see its own docstring), so replacing the dict above already
+            # left it correct — this just repaints it to show that.
+            if self._glossary_dialog is not None and self._glossary_dialog.winfo_exists():
+                self._glossary_dialog._refresh_list()
 
         # --- translation lifecycle ---------------------------------------
 

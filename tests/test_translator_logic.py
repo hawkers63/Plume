@@ -375,6 +375,23 @@ class TestTranslationGlossary(unittest.TestCase):
         self.assertIn("délai", text)
         self.assertIn("source text's own meaning always wins", text.lower())
 
+    def test_instruction_mentions_elision_guidance(self):
+        # notes_021: a gaming term like Auridon/Auridia should be adaptable
+        # to "d'Auridia" without the user having to store that form itself.
+        text = plume.build_glossary_instruction(
+            [{"term": "Auridon", "translation": "Auridia"}]
+        )
+        self.assertIn("elision", text.lower())
+
+    def test_instruction_covers_bidirectional_gaming_pair(self):
+        entries = [
+            {"term": "Auridon", "translation": "Auridia"},
+            {"term": "Auridia", "translation": "Auridon"},
+        ]
+        text = plume.build_glossary_instruction(entries)
+        self.assertIn("Auridon", text)
+        self.assertIn("Auridia", text)
+
     def test_prompt_omits_glossary_clause_when_empty(self):
         prompt = plume.build_translation_prompt(glossary=[])
         self.assertNotIn("Preferred translations", prompt)

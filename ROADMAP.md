@@ -1544,6 +1544,57 @@ schema impact beyond one constants tuple:
   `typography_fn`, both empty-input guards). Full suite: 421 tests pass
   (412 -> 421).
 
+## v1.45 — Glossary dialog for gaming/community terms (notes_021)
+
+- **A new "Glossary" toolbar button**, in the main window's top-right
+  button group alongside History/Settings, opens `GlossaryDialog`: a
+  friendlier front-end for the existing `translation_glossary` config
+  key, aimed at community/gaming terms a user wants translated
+  consistently (e.g. Auridon <-> Auridia) without hand-writing
+  "source = translation" lines in the Settings textbox. Contains a
+  search box, Source term / Preferred rendering entry fields with an
+  Add button, a live preview line, and a scrollable list of saved pairs
+  with per-row Edit/Delete buttons — no raw JSON shown. Changes persist
+  to `plume_config.json` immediately (unlike the ephemeral Phrasebook/
+  French slang windows, which never touch disk).
+- **The Settings textbox is kept, not replaced** (per notes_021's own
+  suggested fallback option), with a one-line tip pointing to the new
+  dialog. Since two live editors now exist for the same config key, an
+  already-open Settings window is kept in step both ways: `GlossaryDialog`
+  reads `master.config_data` fresh in every method rather than caching
+  its own copy (so a concurrent Settings Save is always reflected), and
+  a new `SettingsDialog._sync_glossary()` pushes a `GlossaryDialog`
+  change into an already-open Settings window's textbox — otherwise
+  saving that stale Settings window afterwards would silently revert
+  whatever the Glossary dialog had just persisted. This is the same
+  class of stale-reference bug the M1 conversation-presets fix and
+  v1.43's Clear-reset fix both already addressed for this codebase, just
+  arising here from a second editor rather than a shared mutable list.
+- **`build_glossary_instruction()` now names elision explicitly**: the
+  clause already told the model to adapt a preferred rendering
+  grammatically rather than force it verbatim; notes_021's own worked
+  example (Auridon/Auridia needing to surface as "d'Auridia") is now
+  called out by name — "including French elisions and contractions
+  where grammar requires them (for example, de/le/la contracting to
+  d'/l' before a vowel sound)" — so a user only ever needs to save the
+  base form, never the contracted one, matching notes_021's explicit
+  warning against storing "Auridon = d'Auridia" as an entry.
+- **Deliberately not implemented**: a `direction` field on glossary
+  entries (notes_021's own "more explicit" alternative). The note itself
+  recommends against it "unless the glossary expands significantly" —
+  the existing flat, bidirectional two-line convention (Auridon =
+  Auridia / Auridia = Auridon) already covers the worked example and
+  matches every other flat config list in this project.
+- 2 new unit tests for `build_glossary_instruction` (mentions "elision";
+  covers a bidirectional gaming pair by name). No new tests for
+  `GlossaryDialog` itself (UI-only, no new pure-function surface beyond
+  the existing `normalise_glossary_entries`) — verified live instead:
+  toolbar layout at 1180x760 and the documented 1000x600 minimum (no
+  clipping), open/add/edit/delete/search, and a direct read of the
+  isolated `plume_config.json` after each mutating action confirming
+  real persistence, not just in-memory UI state. Full suite: 423 tests
+  pass (421 -> 423).
+
 ---
 
 ### Notes on sequencing
