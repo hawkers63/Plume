@@ -1,17 +1,14 @@
-# Screenshots (placeholders)
+# Placeholder screenshots
 
-This folder holds **placeholder paths** for CustomTkinter UI captures (main
-window, Settings, Glossary, and similar). The main README lists these paths in a
-text-only Screenshots section until real captures exist.
+These SVG files are **labelled placeholders only** — not mock UI.
 
-- Real screenshots or short GIFs should be added later from a running Plume build
-  on Windows 11.
-- Do **not** commit invented mockups, AI-generated UI fakes, or placeholder
-  binary images.
+Replace with real CustomTkinter captures from a running Plume build on Windows 11 when ready:
 
-Suggested filenames (add when ready):
+| File | Intended capture |
+| --- | --- |
+| `main-window.svg` | Main translation window |
+| `settings-glossary.svg` | Settings and Glossary |
 
-- `main-window.png`
-- `settings-glossary.png`
+Do **not** invent chrome, fake conversation text, or AI-generated UI mockups in replacements. Swap the SVGs (or add `.png` / `.gif` captures alongside) when genuine screenshots exist.
 
 Copyright (c) 2026 Mark Hawksworth. All rights reserved.

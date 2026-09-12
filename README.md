@@ -1,51 +1,134 @@
-# Plume — French ↔ English conversation helper
+<div align="center">
 
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![Windows 11](https://img.shields.io/badge/Windows-11-0078D6.svg)](https://www.microsoft.com/windows)
-[![Licence: Proprietary](https://img.shields.io/badge/Licence-Proprietary-red.svg)](LICENSE)
+<img src="icon/icon-96.png" alt="Plume icon" width="128">
 
-Plume is a small Windows 11 desktop application that translates conversational
-French and English in either direction. For every phrase it returns **one
-faithful main translation** plus **exactly five natural alternatives in the same
-tone**, each with a short English *meaning check* in brackets so you can see what
-a French phrasing says before you send it.
+# Plume
 
-It is built as a dark, native-feeling CustomTkinter interface, British English
-throughout, explicit privacy information, no silent rewriting, and a choice of a
-cloud (Claude) or local (Ollama) backend.
+**French ↔ English conversation helper. Faithful. Private. Windows-native.**
 
-> **Not a game.** Plume is a conversation helper / translator. Some finishing
-> touches (e.g. MMORPG chat slang) support gaming chat, but the product itself
-> is not a game.
+A compact CustomTkinter desktop app: one faithful main translation plus five natural alternatives, each with a short English meaning check — built for real conversation, not lecture.
+
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
+[![GUI](https://img.shields.io/badge/GUI-CustomTkinter-green.svg)](https://customtkinter.tomschimansky.com/)
+[![License](https://img.shields.io/badge/License-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
+
+**Conversation helper** · entry point `plume.py` · launcher `Plume.bat` · app icon `icon/icon-96.ico`
+
+</div>
 
 ---
 
-## Screenshots
+## Why Plume
 
-UI captures will land here once real CustomTkinter shots are ready (no invented mockups).
+Typing into a general chat box and hoping the French comes out right is slow and easy to send the wrong register. Plume keeps the **feel** of a careful bilingual exchange while the machine handles the bookkeeping: direction, form, gender agreement, placeholders, glossary, and copy helpers.
 
-Planned placeholders:
+> **Not a game.** Plume is a conversation helper / translator. Some finishing touches (e.g. MMORPG chat slang) support gaming chat, but the product itself is not a game.
 
-- `docs/screenshots/main-window.png` — main translation window
-- `docs/screenshots/settings-glossary.png` — Settings and Glossary
+The hard rule underneath every release:
 
-See [`docs/screenshots/`](docs/screenshots/) for how to add them.
+> **Faithful translation is sacred.** One primary rendering that preserves meaning, register, tone, punctuation and intent — it never adds facts, softens commitments, or invents context. Alternatives are genuinely distinct; finishing touches apply at copy time only and are never sent to the model.
 
-## Features (at a glance)
+| Pillar | What you get |
+| --- | --- |
+| **Faithfulness** | Main + five alternatives with English meaning checks; no silent rewriting |
+| **Conversation craft** | tu/vous, Me/You gender agreement, situations, tones, writing profile, presets |
+| **Privacy-aware** | Claude (cloud) or Ollama (local); opt-in history; keys masked; no phrase logging |
+| **Windows-native** | Dark CustomTkinter UI, British English throughout, optional tray / exe |
 
-- **Auto-detect** language, or force **English → French** / **French → English**
-- One primary translation plus **five distinct alternatives**, each with an English meaning check
-- **tu / vous** consistency, language-confidence indicator, and **French gender agreement** (Me / You)
-- **Placeholder protection**, **Keep as-is** list, and a **Glossary** for consistent preferred renderings
-- Copy helpers: **Copy main**, **Use this**, **Use as input**, **Copy five**, **Copy all**, **Copy as HTML**
-- Optional finishing touches at copy time only: emotes, casual sign-offs, MMORPG chat terms
-- **French slang…** reference window and ephemeral **Phrasebook**
-- Situation presets, saved situations, conversation presets, register tones, writing profile
-- Optional local history with favourites, search, and Anki/Markdown export
-- Optional ElevenLabs **Speak** (with Stop / Slow), **Correct English**, tray / sign-in autostart
-- Claude (cloud) or Ollama (local) backends; crash-safe file import (`.txt` / `.md`)
+---
 
-Full detail on each capability is in the sections below and in [`ROADMAP.md`](ROADMAP.md).
+## Key features
+
+| | |
+| --- | --- |
+| **Auto-detect or force direction** | English → French / French → English, or let Plume detect |
+| **Main + five alternatives** | Distinct word choice / idiom / order; each with an English meaning check |
+| **tu / vous & gender agreement** | Consistency indicator; separate Me / You (Feminine · Masculine · Avoid) |
+| **Placeholders, Keep as-is, Glossary** | Names/links/markers survive; preferred renderings stay consistent |
+| **Copy helpers** | Copy main · Use this · Use as input · Copy five · Copy all · Copy as HTML |
+| **Finishing touches (copy-time only)** | Emotes, casual sign-offs, MMORPG chat terms — never sent to the model |
+| **French slang… & Phrasebook** | Local reference insert / draft; ephemeral phrasebook |
+| **Situations, tones, presets** | Built-in and saved situations; register tones; conversation presets; writing profile |
+| **History & export** | Optional local favourites, search, Anki/Markdown export, study sheet / diff |
+| **Speak / Correct English** | Optional ElevenLabs Speak (Stop / Slow); Correct English then translate |
+| **Backends** | Claude (cloud) or Ollama (local); optional Claude→Ollama fallback |
+| **One-click launch** | `Plume.bat`, or `python plume.py` / `py -3 plume.py` |
+| **Optional exe** | `pyinstaller plume.spec` (Windows app icon: `icon/icon-96.ico`) |
+
+Full capability detail lives in **What it does** below and in [`ROADMAP.md`](ROADMAP.md).
+
+---
+
+## Glimpse
+
+Captioned **placeholders** until real CustomTkinter captures land. Swap the SVGs under [`docs/screenshots/`](docs/screenshots/) — do not invent UI chrome.
+
+<div align="center">
+  <img src="docs/screenshots/main-window.svg" alt="Main window screenshot placeholder" width="48%">
+  <img src="docs/screenshots/settings-glossary.svg" alt="Settings and Glossary screenshot placeholder" width="48%">
+</div>
+
+---
+
+## Quick start
+
+**Prerequisites:** Windows 11 · **Python 3.10+** · one backend (Claude API key **or** a running Ollama model)
+
+```powershell
+cd C:\Plume
+pip install -r requirements.txt
+python plume.py
+```
+
+Or double-click **`Plume.bat`**. Optional frozen build (embeds `icon/icon-96.ico` as the Windows app icon):
+
+```powershell
+pip install pyinstaller
+pyinstaller plume.spec
+```
+
+That installs `customtkinter>=5.2.0`. Optionally `pip install pystray Pillow` for tray / sign-in autostart / close-to-tray.
+
+On first use of Claude, Plume shows a one-time privacy notice. Open **Settings** to enter your key or switch to Ollama.
+
+### Usage
+
+1. Launch with `python plume.py`, `py -3 plume.py`, or `Plume.bat`.
+2. Type or paste a phrase; set direction, form, situation and tones as needed.
+3. **Ctrl+Enter** to translate; **Ctrl+Shift+Enter** to Correct English then translate.
+4. Copy main or promote an alternative with **Use this**; optional finishing touches apply at copy time only.
+5. Open **History**, **Glossary**, **French slang…**, or **Settings** when needed.
+
+---
+
+## Project layout
+
+| Path | Role |
+| --- | --- |
+| `plume.py` | Entry point and application |
+| `Plume.bat` | Convenient Windows source launcher |
+| `tests/` | Headless unit tests (`unittest`) |
+| `plume.spec` | Optional PyInstaller build (uses `icon/icon-96.ico`) |
+| `requirements.txt` | Runtime dependency (`customtkinter`) |
+| `icon/icon-96.png` | README / UI-friendly icon (GitHub renders PNG) |
+| `icon/icon-96.ico` | Windows app icon (exe, shortcuts, tray asset) |
+| `plume_config.example.json` | Shape of local settings (do not commit live keys) |
+| `docs/screenshots/` | README media (SVG placeholders until real captures) |
+| `.github/` | Issue / PR templates, Dependabot, Release Drafter config |
+| `ROADMAP.md` | Product roadmap by version |
+| `CONTRIBUTING.md` | Private team working agreements |
+| `AGENTS.md` | Agent / steward notes |
+| `LICENSE` / `COPYRIGHT` | Proprietary All Rights Reserved |
+
+### Configuration & data (do not commit secrets)
+
+| Path / setting | Purpose | Tracked in Git? |
+| --- | --- | --- |
+| `plume_config.json` | Live settings (may hold API keys) | No (gitignored) |
+| `plume_history.json` | Optional local history | No |
+| `%LOCALAPPDATA%\Plume` | Frozen-exe config directory | No |
+| `notes/` | Design and concept notes | Yes (selective) |
 
 ---
 
@@ -71,7 +154,7 @@ Full detail on each capability is in the sections below and in [`ROADMAP.md`](RO
   swallowed by "Marie".
 - A **Glossary** (up to 20 pairs) for terms that *should* be translated,
   just consistently — e.g. always "délai" for "deadline", or a
-  community/gaming term like Auridon <-> Auridia — unlike Keep as-is,
+  community/gaming term like Auridon ↔ Auridia — unlike Keep as-is,
   which never translates a term at all. A background-only prompt hint,
   same as tones/situation: the source text still wins, and preferred
   renderings adapt grammatically (French elisions included) rather than
@@ -102,7 +185,7 @@ Full detail on each capability is in the sections below and in [`ROADMAP.md`](RO
   greeting or parting depending on context. Nothing here is sent to the
   model or changes the translation itself.
 - A **Phrasebook** button beside French slang…: a second, free-form local
-  reference — your own source -> note pairs, added as you go, **Insert**ed
+  reference — your own source → note pairs, added as you go, **Insert**ed
   into the message at the caret or **Delete**d. Capped at 30 entries (80
   characters each way); a duplicate phrase is refused rather than added
   twice. Ephemeral by design: cleared on Clear, never saved to disk, never
@@ -195,42 +278,7 @@ Full detail on each capability is in the sections below and in [`ROADMAP.md`](RO
   guillemets. Copy-time only — the on-screen result, the exported study
   sheet/diff and Speak are never affected.
 
----
-
-## Prerequisites
-
-- **Python 3.10 or later** (only needed to run from source).
-- Install dependencies from `requirements.txt`:
-
-  ```
-  pip install -r requirements.txt
-  ```
-
-  That installs `customtkinter>=5.2.0`. Nothing else is required — Plume uses
-  only the Python standard library for HTTP, JSON, threading and validation.
-  Optionally, `pip install pystray Pillow` enables the tray icon, sign-in
-  autostart and close-to-tray; without them Plume runs exactly as before
-  and the tray checkboxes in Settings are simply disabled.
-
-- **One backend**, either:
-  - a **Claude API key** (cloud), or
-  - a running **Ollama** instance with a capable multilingual model (local).
-
----
-
-## Running from source
-
-```
-py -3 plume.py
-```
-
-or simply double-click **`Plume.bat`**.
-
-On first use of Claude, Plume shows a one-time privacy notice explaining that
-submitted text is sent to Anthropic. Open **Settings** to enter your key or
-switch to Ollama.
-
-Keyboard and mouse:
+Keyboard and mouse highlights:
 
 - **Ctrl+Enter** — translate the current input.
 - **Ctrl+Shift+Enter** — correct the input's English, then translate it
@@ -305,7 +353,7 @@ save). See `plume_config.example.json` for the shape. Do **not** commit your
 live file — it may contain an API key.
 
 - Running **from source**: the file sits beside `plume.py`.
-- Running the **frozen executable**: it is written to `%LOCALAPPDATA%\\Plume`,
+- Running the **frozen executable**: it is written to `%LOCALAPPDATA%\Plume`,
   not the temporary extraction folder.
 
 Saving is atomic (temp file → flush → replace). If an existing file is damaged,
@@ -320,14 +368,15 @@ configuration, and whether Plume stays on top of other windows.
 
 ## Building a Windows executable (optional)
 
-```
+```powershell
 pip install pyinstaller
 pyinstaller plume.spec
 ```
 
-This produces `dist\\Plume.exe`, bundling the CustomTkinter assets and the icon.
-Confirm on a real Windows profile that configuration is written to
-`%LOCALAPPDATA%\\Plume`.
+This produces `dist\Plume.exe`, bundling the CustomTkinter assets and both
+icons (`icon/icon-96.ico` as the Windows application icon; `icon/icon-96.png`
+alongside for shortcuts / tray). Confirm on a real Windows profile that
+configuration is written to `%LOCALAPPDATA%\Plume`.
 
 ---
 
@@ -337,7 +386,7 @@ The deterministic logic (config safety, placeholder round trips, prompt
 construction, the full response contract, privacy of diagnostics and the
 stale-request guard) is covered by unit tests that run headless:
 
-```
+```powershell
 python -m unittest discover -s tests -v
 ```
 
@@ -368,13 +417,13 @@ python -m unittest discover -s tests -v
 
 ---
 
-## Roadmap and licence
+## Roadmap, contributing & licence
 
 - Product roadmap: [`ROADMAP.md`](ROADMAP.md)
+- How we test and open PRs: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Agent / steward notes: [`AGENTS.md`](AGENTS.md)
 - Licence terms: [`LICENSE`](LICENSE)
 - Copyright notice: [`COPYRIGHT`](COPYRIGHT)
-- Agent / steward notes: [`AGENTS.md`](AGENTS.md)
-- Private contribution guide: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 ---
 
@@ -388,5 +437,5 @@ Copyright (c) 2026 Mark Hawksworth. All rights reserved.
 
 Plume may not be copied, modified, redistributed or used as the basis of
 another product without Mark Hawksworth's express written permission.
-See `LICENSE` and `COPYRIGHT`. Canonical repository:
+See [`LICENSE`](LICENSE) and [`COPYRIGHT`](COPYRIGHT). Canonical repository:
 https://github.com/hawkers63/Plume
