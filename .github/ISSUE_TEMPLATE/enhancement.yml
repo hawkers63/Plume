@@ -1,0 +1,60 @@
+name: Enhancement
+description: Propose a product or UX change for Mark / the agents team
+title: "[Enhancement] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Plume is a **private proprietary** conversation helper (not an open-source
+        project). Feature ideas go to Mark Hawksworth and the agents team — keep
+        them concrete and scoped.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: What user need or friction does this address?
+      placeholder: e.g. Switching between two regular conversations requires too many toolbar clicks.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should Plume do differently? Prefer the smallest useful change.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches, or why existing presets / Settings are not enough.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Translation / prompts
+        - UI / CustomTkinter
+        - Settings / config
+        - History / export
+        - Backends (Claude / Ollama)
+        - Packaging / Windows
+        - Docs / repo experience
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: copyright
+    attributes:
+      label: Copyright
+      options:
+        - label: I understand Plume is proprietary (Copyright © 2026 Mark Hawksworth) and this request is for the private team only.
+          required: true
