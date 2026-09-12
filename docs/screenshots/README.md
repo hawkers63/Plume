@@ -1,14 +1,13 @@
 # Screenshots (placeholders)
 
-This folder holds **placeholder paths** referenced from the main README for
-CustomTkinter UI captures (main window, Settings, Glossary, and similar).
+This folder holds **placeholder paths** for CustomTkinter UI captures (main
+window, Settings, Glossary, and similar). The main README lists these paths in a
+text-only Screenshots section until real captures exist.
 
 - Real screenshots or short GIFs should be added later from a running Plume build
   on Windows 11.
 - Do **not** commit invented mockups, AI-generated UI fakes, or placeholder
   binary images.
-- Until real captures exist, the README links to these paths with an explicit
-  “Placeholder — add real UI capture” caption.
 
 Suggested filenames (add when ready):
 
