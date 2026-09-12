@@ -22,16 +22,14 @@ cloud (Claude) or local (Ollama) backend.
 
 ## Screenshots
 
-Real CustomTkinter UI captures will be added later from a running Plume build on
-Windows 11. Until then, these paths are reserved (no binary images in the repo yet):
+UI captures will land here once real CustomTkinter shots are ready (no invented mockups).
 
-- `docs/screenshots/main-window.png` — main window
+Planned placeholders:
+
+- `docs/screenshots/main-window.png` — main translation window
 - `docs/screenshots/settings-glossary.png` — Settings and Glossary
 
-See [`docs/screenshots/`](docs/screenshots/) for notes on adding captures. Do not
-commit invented mockups or placeholder binary images.
-
----
+See [`docs/screenshots/`](docs/screenshots/) for how to add them.
 
 ## Features (at a glance)
 
