@@ -62,12 +62,14 @@ Full capability detail lives in **What it does** below and in [`ROADMAP.md`](ROA
 
 ## Glimpse
 
-Captioned **placeholders** until real CustomTkinter captures land. Swap the SVGs under [`docs/screenshots/`](docs/screenshots/) — do not invent UI chrome.
+Real CustomTkinter captures from a Windows session. More shots (Settings, Glossary, History) can join later under [`docs/screenshots/`](docs/screenshots/).
 
 <div align="center">
-  <img src="docs/screenshots/main-window.svg" alt="Main window screenshot placeholder" width="48%">
-  <img src="docs/screenshots/settings-glossary.svg" alt="Settings and Glossary screenshot placeholder" width="48%">
+  <img src="docs/screenshots/main-window.png" alt="Plume main translation window" width="48%">
+  <img src="docs/screenshots/french-slang.png" alt="Plume French slang reference window" width="48%">
 </div>
+
+<p align="center"><em>Main window · French slang…</em></p>
 
 ---
 
@@ -114,7 +116,7 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
 | `icon/icon-96.png` | README / UI-friendly icon (GitHub renders PNG) |
 | `icon/icon-96.ico` | Windows app icon (exe, shortcuts, tray asset) |
 | `plume_config.example.json` | Shape of local settings (do not commit live keys) |
-| `docs/screenshots/` | README media (SVG placeholders until real captures) |
+| `docs/screenshots/` | README media (real UI captures + optional placeholders) |
 | `.github/` | Issue / PR templates, Dependabot, Release Drafter config |
 | `ROADMAP.md` | Product roadmap by version |
 | `CONTRIBUTING.md` | Private team working agreements |
