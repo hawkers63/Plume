@@ -163,6 +163,10 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   being forced verbatim. Editable either in Settings (one pair per line)
   or via the toolbar's **Glossary** button, a dedicated window with
   search, Add/Edit/Delete and a live preview — both edit the same list.
+  **Add to glossary…** and **Keep as-is**, beneath the five alternatives,
+  promote a name straight from a just-seen result — pre-filled from your
+  input selection and the working translation where they're short enough
+  to be one term — without re-typing anything into Settings by hand.
 - A copy button on every result, with a prominent **Copy main translation**;
   alternatives can be promoted with **Use this**, and the current result can
   be re-sent as new input with **Use as input**.

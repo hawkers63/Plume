@@ -410,6 +410,34 @@ class TestTranslationGlossary(unittest.TestCase):
         )
 
 
+class TestLooksLikeSingleTerm(unittest.TestCase):
+    def test_accepts_a_single_word(self):
+        self.assertTrue(plume.looks_like_single_term("Auridon", 40))
+
+    def test_accepts_two_words(self):
+        self.assertTrue(plume.looks_like_single_term("San Francisco", 40))
+
+    def test_rejects_three_or_more_words(self):
+        self.assertFalse(plume.looks_like_single_term("The quick fox", 40))
+
+    def test_rejects_empty_or_blank(self):
+        self.assertFalse(plume.looks_like_single_term("", 40))
+        self.assertFalse(plume.looks_like_single_term("   ", 40))
+        self.assertFalse(plume.looks_like_single_term(None, 40))
+
+    def test_rejects_multiline_text(self):
+        self.assertFalse(plume.looks_like_single_term("Auridon\nAuridia", 40))
+
+    def test_rejects_text_over_the_limit(self):
+        self.assertFalse(plume.looks_like_single_term("x" * 41, 40))
+
+    def test_accepts_text_at_exact_limit(self):
+        self.assertTrue(plume.looks_like_single_term("x" * 40, 40))
+
+    def test_strips_surrounding_whitespace_before_checking(self):
+        self.assertTrue(plume.looks_like_single_term("  Auridon  ", 40))
+
+
 class TestPromptConstruction(unittest.TestCase):
     def test_prompt_mentions_key_constraints(self):
         prompt = plume.build_translation_prompt(

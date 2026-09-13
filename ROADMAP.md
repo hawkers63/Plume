@@ -1639,6 +1639,55 @@ schema impact beyond one constants tuple:
   against a direct read of the isolated `plume_config.json`, and the
   title bar showed the version number, at the documented window size.
 
+## v1.47 — Add-from-result: Glossary and Keep-as-is from a working translation (notes_022 2.B)
+
+- **"Add to glossary…" and "Keep as-is"**, two new buttons on their own
+  row beneath the five-alternatives area, let a user promote a name or
+  term straight from a just-seen result instead of re-typing it into
+  Settings or a separate dialog with empty fields. Neither makes a new
+  backend request; both are disabled until a result is showing
+  (`_current_result`), matching Copy five/Copy all's own gating.
+- **"Add to glossary…"** opens (or raises) the existing `GlossaryDialog`
+  pre-filled from the working result: the source term defaults to the
+  input box's current text selection, or the whole source when it is
+  short enough to be one term (`looks_like_single_term`); the preferred
+  rendering defaults to the working main translation under the same
+  test. Either field is left blank rather than guessing when its
+  candidate is a full sentence. Saving still goes through the same
+  `normalise_glossary_entries` + `save_config` path v1.45 already uses —
+  no new persistence code.
+- **"Keep as-is"** appends the current selection (or a short source) to
+  `keep_as_is_terms` via `normalise_keep_as_is_terms` and `save_config`,
+  refusing an empty/oversized candidate and reporting "Already in Keep
+  as-is." for a casefold duplicate rather than saving a no-op silently.
+  Feedback for both actions is shown on the existing advisory strip.
+- **`SettingsDialog._sync_keep_as_is()`** (new): the same bug class
+  `_sync_glossary` (v1.45) already guards against, now also covered for
+  Keep-as-is now that it has a second writer — an already-open Settings
+  window's textbox is pushed in step so a later stale Save there cannot
+  silently revert what "Keep as-is" just persisted to disk.
+- **Layout correction found during live testing, not left as filed
+  debt**: the two new buttons were first placed in the existing "Copy
+  five / Copy five as HTML / Copy all" row on the assumption (from
+  v1.44's own comment) that it "has ample room" — true for three
+  buttons, not five. At the documented 1000x600 minimum, "Keep as-is"
+  clipped off the right edge. Fixed by giving Add-from-result its own
+  row instead, verified clean at both 1000x600 and the 1180x760 default.
+- 8 new unit tests for `looks_like_single_term` (single word, two words,
+  three-plus words, blank/None, multiline, over/at the character limit,
+  surrounding whitespace). No new tests for the two button handlers
+  themselves (UI-only, driving pre-existing, already-tested pure
+  functions) — verified live instead by populating a real result via
+  `PlumeApp._render_result()` (this project's established technique for
+  exercising result-dependent UI without a live backend call) and
+  exercising both buttons for real: a full-sentence source correctly
+  left blank while a short main translation pre-filled the rendering
+  field, a text selection correctly fed Keep-as-is with a direct read of
+  the isolated `plume_config.json` confirming the write, a repeat click
+  correctly reported "Already in Keep as-is.", and both buttons stayed
+  disabled on a fresh launch with no result yet. Full suite: 448 tests
+  pass (440 -> 448).
+
 ---
 
 ### Notes on sequencing

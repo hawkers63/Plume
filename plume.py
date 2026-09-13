@@ -1492,6 +1492,18 @@ def glossary_entries_to_text(entries) -> str:
     )
 
 
+def looks_like_single_term(text: str, limit: int) -> bool:
+    """True when *text* is short enough and shaped like one glossary/
+    Keep-as-is term (a name, not a sentence), rather than a full source or
+    translation. Used to decide whether Add-from-result (v1.47, notes_022
+    2.B) can pre-fill a field automatically or must leave it blank.
+    """
+    value = (text or "").strip()
+    if not value or "\n" in value or len(value) > limit:
+        return False
+    return len(value.split()) <= 2
+
+
 def build_glossary_instruction(glossary) -> str:
     """Background-only preferred-translation clause, or "" when empty.
 
@@ -3720,6 +3732,20 @@ if GUI_AVAILABLE:
             if entries:
                 self.glossary_box.insert("1.0", glossary_entries_to_text(entries))
 
+        def _sync_keep_as_is(self, terms):
+            """Keep an already-open Settings window in step with a Keep as-is
+            write made elsewhere (v1.47, notes_022 2.B: the primary card's
+            "Keep as-is" button). Same bug class _sync_glossary already
+            guards against — without this, a Settings window opened before
+            that button was pressed would still show its stale open-time
+            snapshot, and saving it afterwards would silently revert what
+            was just persisted to disk.
+            """
+            self._config["keep_as_is_terms"] = terms
+            self.keep_as_is_box.delete("1.0", "end")
+            if terms:
+                self.keep_as_is_box.insert("1.0", "\n".join(terms))
+
 
     class HistoryDialog(ctk.CTkToplevel):
         """Browse, favourite and delete locally stored translation history.
@@ -5133,7 +5159,7 @@ if GUI_AVAILABLE:
             right = ctk.CTkFrame(parent)
             right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
             right.grid_columnconfigure(0, weight=1)
-            right.grid_rowconfigure(4, weight=1)
+            right.grid_rowconfigure(5, weight=1)
 
             ctk.CTkLabel(
                 right, text="Translation",
@@ -5321,10 +5347,33 @@ if GUI_AVAILABLE:
             )
             self.copy_all_btn.grid(row=0, column=2, padx=(6, 0))
 
+            # Add-from-result (v1.47, notes_022 2.B): a shortcut from a
+            # just-seen result straight into Glossary or Keep-as-is,
+            # without re-typing the source and rendering by hand. A
+            # separate row, not squeezed into alts_header above: that row
+            # is itself already at its width budget at the documented
+            # 1000x600 minimum with three buttons (v1.44's own comment
+            # above already flagged this), and two more there clipped off
+            # the right edge in testing.
+            add_from_result_row = ctk.CTkFrame(right, fg_color="transparent")
+            add_from_result_row.grid(row=4, column=0, sticky="ew", padx=12, pady=(4, 0))
+            self.add_glossary_btn = ctk.CTkButton(
+                add_from_result_row, text="Add to glossary…", width=125,
+                fg_color="gray30", command=self._add_main_to_glossary,
+                state="disabled",
+            )
+            self.add_glossary_btn.grid(row=0, column=0)
+            self.keep_as_is_btn = ctk.CTkButton(
+                add_from_result_row, text="Keep as-is", width=90,
+                fg_color="gray30", command=self._keep_selection_as_is,
+                state="disabled",
+            )
+            self.keep_as_is_btn.grid(row=0, column=1, padx=(6, 0))
+
             # Five alternatives (scrollable). The heading is omitted: the numbered
             # cards make the section self-evident and the space is better used.
             self.alts_frame = ctk.CTkScrollableFrame(right)
-            self.alts_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=6)
+            self.alts_frame.grid(row=5, column=0, sticky="nsew", padx=12, pady=6)
             self.alts_frame.grid_columnconfigure(0, weight=1)
 
             # Advisory strip (hidden until needed)
@@ -5332,7 +5381,7 @@ if GUI_AVAILABLE:
                 right, text="", text_color="#e0a000", justify="left", anchor="w",
                 wraplength=460,
             )
-            self.advisory.grid(row=5, column=0, sticky="ew", padx=12, pady=(0, 10))
+            self.advisory.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 10))
             self.advisory.grid_remove()
 
             self._current_main = ""
@@ -6181,6 +6230,8 @@ if GUI_AVAILABLE:
             self.copy_five_html_btn.configure(state="disabled")
             self.export_diff_btn.configure(state="disabled")
             self.copy_all_btn.configure(state="disabled")
+            self.add_glossary_btn.configure(state="disabled")
+            self.keep_as_is_btn.configure(state="disabled")
             self._reset_favourite_button(enabled=False)
             self._stop_speech()
             self._cleanup_tts_file()
@@ -6471,6 +6522,82 @@ if GUI_AVAILABLE:
                 existing.focus_set()
                 return
             self._glossary_dialog = GlossaryDialog(self)
+
+        # --- Add-from-result (v1.47, notes_022 2.B) ------------------------
+        # A shortcut from a just-seen result straight into Glossary or
+        # Keep-as-is, without re-typing the source and rendering by hand.
+        # Neither action makes a new backend request; both refuse when no
+        # result is showing.
+
+        def _selected_input_or_short_source(self) -> str:
+            """The input box's current selection, or the whole source if
+            it is short enough to be one term; "" otherwise, so this never
+            silently proposes a full sentence as a name.
+            """
+            widget = find_slang_text_widget(self.input_box)
+            if widget is not None:
+                try:
+                    selected = widget.get("sel.first", "sel.last").strip()
+                    if selected:
+                        return selected
+                except tk.TclError:
+                    pass
+            text = (self._result_source_text or self._input_text()).strip()
+            return text if looks_like_single_term(text, KEEP_AS_IS_MAX_CHARS) else ""
+
+        def _add_main_to_glossary(self):
+            """Open Glossary pre-filled from the working result, ready to save."""
+            if not self._current_result:
+                return
+            source = self._selected_input_or_short_source()
+            if not looks_like_single_term(source, GLOSSARY_MAX_TERM_CHARS):
+                source = ""
+            rendering = self._current_main or ""
+            if not looks_like_single_term(rendering, GLOSSARY_MAX_TERM_CHARS):
+                rendering = ""
+            self._open_glossary()
+            dialog = self._glossary_dialog
+            if dialog is None:
+                return
+            try:
+                dialog.term_entry.delete(0, "end")
+                dialog.term_entry.insert(0, source)
+                dialog.translation_entry.delete(0, "end")
+                dialog.translation_entry.insert(0, rendering)
+                dialog._update_preview()
+                dialog.lift()
+                dialog.focus_set()
+            except tk.TclError:
+                pass
+
+        def _keep_selection_as_is(self):
+            """Add the current selection (or a short source) to Keep as-is."""
+            if not self._current_result:
+                return
+            term = self._selected_input_or_short_source()
+            existing = list(self.config_data.get("keep_as_is_terms") or [])
+            candidate = normalise_keep_as_is_terms(existing + [term])
+            if not term or term.casefold() not in {item.casefold() for item in candidate}:
+                self.advisory.configure(text="Select a short name in the source first.")
+                self.advisory.grid()
+                return
+            if term.casefold() in {item.casefold() for item in existing}:
+                self.advisory.configure(text="Already in Keep as-is.")
+                self.advisory.grid()
+                return
+            new_config = dict(self.config_data)
+            new_config["keep_as_is_terms"] = candidate
+            try:
+                save_config(new_config)
+            except (ConfigError, OSError) as exc:
+                self.advisory.configure(text=str(exc))
+                self.advisory.grid()
+                return
+            self.config_data = new_config
+            if self._settings is not None and self._settings.winfo_exists():
+                self._settings._sync_keep_as_is(candidate)
+            self.advisory.configure(text="Saved to Keep as-is.")
+            self.advisory.grid()
 
         def _apply_settings(self, new_config):
             # Applies to the next request; a request already in flight keeps its snapshot.
@@ -6851,6 +6978,8 @@ if GUI_AVAILABLE:
             self.copy_five_html_btn.configure(state="normal")
             self.export_diff_btn.configure(state="normal")
             self.copy_all_btn.configure(state="normal")
+            self.add_glossary_btn.configure(state="normal")
+            self.keep_as_is_btn.configure(state="normal")
             self._reset_favourite_button(enabled=True)
             self.language_label.configure(text=format_language_label(result))
 
