@@ -1,0 +1,992 @@
+PLUME — BETWEEN-BURST CONVERSATION HELPERS
+Note 023 | 13 September 2026 | Read-only design and integration proposals
+Author: Grok (Lead Enhancement & Feature Architect)
+Source: live GitHub main (hawkers63/Plume @ 8b6379b)
+        plume.py 7,270 lines; ROADMAP through v1.49; 461 tests
+        APP_VERSION constant still reads "1.46" (title-bar drift, see §2.0)
+Mode: ideation only. No application, configuration or test source is edited.
+
+Name remapping (the standing brief still uses earlier vocabulary):
+
+  Requested                       Live Plume
+  ------------------------------  ------------------------------------------
+  self.original_box               self.input_box  (line 5072)
+  WRITING_PRESETS                 conversation_presets (v1.19/v1.24)
+                                  + writing profile (v1.29)
+                                  + user_situation_presets (v1.35)
+                                  + sticky register defaults (v1.36)
+  Two-tone UI limit               MAX_TONES = 3 since v1.20 (line 646)
+  Native WM_DROPFILES             Attempted v1.18, reverted; v1.32 intake
+  Retry / HTML / metrics / diff   Landed v1.17–v1.27 / v1.37 / v1.44
+  notes_022 A–D                   Landed v1.46–v1.49, note archived
+
+------------------------------------------------------------------------
+0. Out of scope
+------------------------------------------------------------------------
+The standing five-item brief is fully on the roadmap through v1.45, and
+the four utilities notes_022 proposed on top of it have landed as
+v1.46–v1.49. This note does not reopen any of it.
+
+  Brief item                         Status
+  ---------------------------------  ------------------------------------
+  1. Explorer WM_DROPFILES           v1.18 reverted; v1.32 argv/Send to/
+                                     paste-path. Do not subclass Tk's
+                                     WndProc again. Native drop stays
+                                     out of scope.
+  2. User presets + Mode/Strength/   v1.19 / v1.24 / v1.29 / v1.35 / v1.36
+     Role + multi-tones
+  3. 3-tone combinator               v1.20 / v1.24 / v1.33
+                                     validate_tones / build_tone_instruction
+                                     already accept a full 3-tone mix with
+                                     TONE_CONFLICTS resolution and the
+                                     anti-embellishment clause.
+  4. Markdown diff, HTML, metrics    v1.21 / v1.23 / v1.26 / v1.37 / v1.44
+  5. Exponential backoff             v1.17 / v1.27 / v1.38 + notes_017
+                                     Event.wait follow-up. Shared by
+                                     call_anthropic() and call_ollama()
+                                     via _http_post_json().
+
+notes_022 A–D, now shipped:
+
+  A. Persistent named phrasebooks    v1.46
+  B. Add-from-result                 v1.47 (reverse-pair checkbox was
+                                     specified and not shipped — see 2.C)
+  C. Local fidelity lint             v1.48
+  D. Tray completion notice          v1.49
+
+Also excluded (unchanged from notes_022):
+
+  * notes_017 bilingual tone-calibration benchmark (needs live backends
+    and a human reviewer, not a code change).
+  * python-docx, streaming, tkinterdnd2, a second credentials file.
+  * Dumping remaining emotes.txt rows into the three append pickers.
+  * A direction field on glossary entries (notes_021 declined this).
+  * Sending the phrasebook to either backend (v1.43/v1.46 contract).
+  * Attaching any WndProc to the Tk toplevel (v1.18 class of risk).
+
+------------------------------------------------------------------------
+1. Executive summary
+------------------------------------------------------------------------
+Plume is no longer missing a translator, a glossary, a phrasebook, or a
+tray notice. The remaining friction is *between* bursts: the window is
+buried under a game, "Oui, vers 19h" is translated with no memory of
+the cinema turn that Reply just finished, Add-to-glossary still saves
+only one direction, and Clear is still irreversible.
+
+Recommended order (v1.50–v1.53):
+
+  A. Isolated restore hotkey, gated on a throwaway HWND harness.
+     notes_022 2.E designed this and v1.49 explicitly deferred it.
+     Message-only HWND on its own thread, or it does not ship.
+     APP_VERSION is bumped in the same commit.  (v1.50)
+  B. Reply-thread previous exchange. Reply already means "my turn is
+     over"; it should also remember that turn as background context
+     for the next translation, so ellipsis and "vers 19h" resolve.
+     One pair, in memory, never persisted, never a chat agent.  (v1.51)
+  C. Glossary reverse pair + glossary fidelity. The leftover from
+     notes_022 2.B, plus extending v1.48's lint so "Auridon" without
+     "Auridia" (or "d'Auridia") is visible.  (v1.52)
+  D. Undo last Clear. One in-memory snapshot. Clear now also drops
+     the live phrasebook and the v1.51 thread pair; recovering from
+     a mis-click should not cost a backend call.  (v1.53)
+
+UX rationale: a gaming/conversation helper is used in short bursts
+beside Explorer, Discord and a game. Alt-Tab hunting for Plume, a
+context-free "oui", a second glossary Add for the reverse pair, and
+an accidental Clear are the four gestures that still feel heavier
+than they should. None of this changes the JSON contract, the
+two-pane layout, or the "source text wins" prompt rule.
+
+------------------------------------------------------------------------
+2. Detailed architectural proposals
+------------------------------------------------------------------------
+
+2.0  Housekeeping: APP_VERSION drift
+------------------------------------
+ROADMAP v1.46 required `APP_VERSION` to be bumped alongside each later
+version so a rebuilt .exe is identifiable in the title bar. The
+constant at plume.py:104 is still `"1.46"` after v1.47–v1.49 landed.
+This is not its own version. The next commit that touches plume.py
+sets `APP_VERSION` to the version being shipped (1.50 if 2.A lands;
+1.49 if 2.A is dropped after a failed harness). Do not leave it
+stale a second time.
+
+2.A  Isolated restore hotkey  (v1.50)
+-------------------------------------
+notes_022 2.E stands. Restated here only where the live tree has
+moved on (window show path is now `_show_window` at 6227, close path
+is `_on_close_destroy` at 6174, tray menu already has "Show Plume"
+and "Show and paste clipboard").
+
+Do **not** subclass the Tk toplevel WndProc. v1.18 crashed the
+interpreter on a foreign WM_DROPFILES; WM_HOTKEY on the same
+procedure is the same class of risk.
+
+Design, non-negotiable:
+
+  * A dedicated message-only HWND (`HWND_MESSAGE = -3`) created on a
+    daemon thread that owns the window and pumps `GetMessageW`.
+  * That thread's WndProc understands only `WM_HOTKEY` (0x0312) and
+    `WM_DESTROY`. Everything else is `DefWindowProcW`.
+  * On WM_HOTKEY the procedure sets a `threading.Event`; it never
+    calls into Tk.
+  * The Tk thread polls the event with `after(200, ...)` and, when
+    set, calls the existing `_show_window()` (deiconify, lift,
+    focus, honour always-on-top). Never auto-translates. Never
+    pastes. "Show and paste clipboard" stays a tray-menu action.
+  * Default chord: Ctrl+Shift+P (`MOD_CONTROL | MOD_SHIFT |
+    MOD_NOREPEAT`, vk `'P'`). MOD_NOREPEAT so a held chord does not
+    queue fifty restores.
+  * Settings checkbox `restore_hotkey`, off by default, independent
+    of the tray extras — a user who never enables close-to-tray
+    still wants the window back from a game. Placed with the tray
+    checkboxes (around 3568) so the two "how Plume is summoned"
+    controls sit together, with a caption naming the chord.
+  * `RegisterHotKey` failure (chord taken by another app): leave the
+    checkbox off, one-line Settings status, no crash, no retry loop.
+  * Teardown in `_on_close_destroy`: PostMessage a quit to the
+    message-only HWND, UnregisterHotKey, DestroyWindow, join the
+    thread with a short timeout. Never leak the HWND across a
+    Settings toggle: turning the checkbox off takes the same path.
+
+Hard gate: a throwaway harness, not Plume, must survive one
+externally triggered WM_HOTKEY on Mark's machine before this version
+is committed. The harness is a 40-line ctypes script with no Tk, no
+CustomTkinter, no Plume imports. If it crashes, hangs, or fails to
+unregister, drop v1.50 rather than attaching anything to Tk. The
+tray menu already restores the window.
+
+New config key, coerced on load:
+
+  "restore_hotkey": false
+
+Performance: one extra daemon thread that blocks in GetMessageW,
+plus a 200 ms Tk poll that is a single Event.is_set(). Idle cost is
+noise next to the existing tray thread.
+
+2.B  Reply-thread previous exchange  (v1.51)
+--------------------------------------------
+Today `_reply` (5991) copies the working main, swaps direction, and
+clears the input. Situation is left untouched on purpose (v1.9): it
+is a persistent scene descriptor, not a per-turn note. The cost is
+that the next pasted reply — "Oui, vers 19h" — is translated with
+no record of "Tu veux aller au ciné ce soir ?". Users can type that
+into Situation, and in practice they do not.
+
+This is not a chat agent and not a rolling history dump. It is one
+remembered pair, installed by the gesture the user already makes
+when a turn ends.
+
+State on PlumeApp, in-memory only:
+
+  self._previous_exchange = None
+  # or {"source": str, "translation": str}
+
+Rules:
+
+  * Reply, if a working main exists, writes the pair from
+    `_result_source_text` and `_current_main`, each passed through
+    `_safe_short_string(..., PREVIOUS_EXCHANGE_MAX_CHARS)` with
+    PREVIOUS_EXCHANGE_MAX_CHARS = 240 (the existing note cap).
+  * Clear sets it to None. Undo Clear (2.D) restores the snapshot's
+    copy. Closing the app forgets it. It is never written to
+    plume_config.json or plume_history.json.
+  * The next `translate()` includes it when the snapshot carries
+    `_previous_exchange`. Re-translate of the same incoming paste
+    keeps it (Reply is not consumed by success). The next Reply
+    overwrites it with the new pair.
+  * "Use as input" and "Correct English" do not set it. Use-as-input
+    is a different loop (the translation becomes the new source) and
+    must not silently attach the old source as context.
+  * Phrasebook entries are still never sent.
+
+Prompt contract, mirroring Situation/tones/glossary:
+
+  * A system-prompt clause, omitted entirely when no pair is set.
+  * An envelope pair of lines, omitted when empty, so existing
+    callers and tests that omit the argument keep today's shape.
+  * Background only. Must not change JSON shape, add/remove fields,
+    override direction, or outrank the current source. If the
+    previous turn conflicts with what this source says, this source
+    wins. Do not invent facts the current source does not support
+    merely because they appeared last turn.
+  * Not masked with protect_text. Situation is not masked either;
+    this is background, not "text to translate". `_safe_short_string`
+    is the bound.
+
+UI:
+
+  * No new toolbar checkbox. Reply is the opt-in gesture.
+  * A one-line grey caption under the Paste/Clear/Copy source/Reply
+    row, always visible: "Reply remembers this turn for the next
+    translation. Clear ends the thread."
+  * When a pair is set, a short `self.thread_label` on that same
+    row reads "Thread on" (never echoing source text). Hidden when
+    None.
+
+No DEFAULT_CONFIG key. Nothing to coerce on load.
+
+Performance: two 240-character strings on the snapshot and in the
+prompt. Negligible against a 2,000-character source and the existing
+glossary clause.
+
+2.C  Glossary reverse pair + glossary fidelity  (v1.52)
+-------------------------------------------------------
+notes_022 2.B specified a checkbox "Also save the reverse pair"
+(Auridon=Auridia and Auridia=Auridon), default on when both sides
+look like a single proper name. v1.47 shipped Add-from-result
+without it, so a gaming term still needs two Adds. notes_021's
+Auridon example is exactly this pair.
+
+Also, v1.48's `fidelity_notes` checks Keep-as-is terms and ignores
+the glossary. A preferred rendering that the model dropped is
+silent, including the grammatical form `d'Auridia`.
+
+Reverse pair:
+
+  * New helper `looks_like_proper_name(text) -> bool`:
+    `looks_like_single_term(text, GLOSSARY_MAX_TERM_CHARS)` and the
+    trimmed value is one token (no spaces) or one hyphenated /
+    apostrophe token (`Marie-Claire`, `O'Neill`). Letters, hyphen
+    and apostrophe only. Rejects "guardians of Auridon".
+  * New helper `reverse_glossary_entry(entry) -> dict | None`:
+    swaps term/translation and runs the result through
+    `normalise_glossary_entries`. None if it cannot be salvaged or
+    if both sides casefold-equal (a no-op reverse).
+  * GlossaryDialog: a `CTkCheckBox` "Also save the reverse pair"
+    under the Add row (row 2, push the existing caption down).
+    Default on when both fields pass `looks_like_proper_name`, off
+    while editing an existing row (an edit that silently wrote a
+    second entry would surprise). `_add_main_to_glossary` does not
+    need to set it; opening the dialog with both fields filled will
+    tick it via the same KeyRelease preview path.
+  * `_add_or_update` (4755): after a successful forward persist, if
+    the checkbox is on, not editing, and `len(entries) <
+    GLOSSARY_MAX_ENTRIES`, append the reverse if its source is not
+    already present (casefold). If the glossary is full at 19, save
+    the forward pair and notice "Reverse pair skipped (glossary
+    full)." Never delete an existing reverse to make room.
+  * Duplicate reverse source: skip with a notice, keep the forward
+    pair. First-wins stays the glossary rule.
+
+Glossary fidelity, folded into `fidelity_notes` rather than a second
+advisory pass (one cap at MAX_NOTES):
+
+  * New optional argument `glossary=()`.
+  * For each pair, if the source contains the term as a
+    token (`keep_as_is_pattern(term)` casefolded — reuse the
+    existing token-boundary idea, compiled case-insensitive) and
+    the preferred rendering's casefolded form is absent from the
+    haystack *after* stripping French elision prefixes
+    (`d'`, `l'`, `n'`, `m'`, `t'`, `s'`, `j'`, `c'`, `qu'`), append
+    one tentative line: "Glossary term \"Auridon\" does not appear
+    as \"Auridia\" in the translations."
+  * This is the same "does not appear" voice as v1.48. Never "is
+    wrong". Never claims the elision was required.
+  * Cap still MAX_NOTES. Keep-as-is lines stay first (they are
+    stronger promises: the term was supposed to be copied verbatim).
+  * `_deliver` (7014) passes
+    `glossary=self.config_data.get("translation_glossary") or []`.
+
+Do not add a direction field. notes_021 declined it; two one-line
+pairs remain the shape.
+
+Performance: one extra checkbox, one extra normalise call on Add,
+and a handful of casefold scans over ≤ 2,000 characters.
+
+2.D  Undo last Clear  (v1.53)
+-----------------------------
+`_clear` (6148) is now more destructive than in v1.43: it drops the
+input, the result, the live phrasebook, and (once 2.B lands) the
+thread pair. There is no recovery short of Reopen from History, and
+History is off by default.
+
+One in-memory snapshot, taken immediately before Clear mutates
+anything. Not persisted. Not sent to either backend.
+
+Snapshot keys (a plain dict on `self._clear_snapshot`):
+
+  input, situation, direction,
+  current_result, current_main, result_source_text, result_situation,
+  phrasebook_entries (a *copy* of the list of dicts),
+  previous_exchange (a copy or None)
+
+Rules:
+
+  * One level. A second Clear replaces the snapshot.
+  * Empty Clear (already-blank input, no result, empty phrasebook,
+    no thread) still snapshots, so Undo is a true revert rather than
+    a guess at "was there anything".
+  * Restore: write the fields back, slice-assign the phrasebook
+    (never rebind — v1.43 Clear bug), refresh an open
+    PhrasebookDialog, `_render_result` if current_result is not
+    None else `_clear_results`, `_on_input_change`. Do not bump
+    `_request_id` (no in-flight work is involved).
+  * Do not restore finishing-touch / sign-off / MMORPG pickers;
+    Clear resetting those is still correct.
+  * Do not restore an in-flight Translate; Clear still supersedes
+    pending work, and Undo does not resurrect a cancelled request.
+
+UI:
+
+  * `Undo Clear` button on the translate row (5202), left side next
+    to Open file…, width ~90, grey, disabled until a snapshot
+    exists. The Paste/Clear/Copy source/Reply row is already at its
+    four-button budget at 1000×600 (v1.15 moved Translate off it
+    for exactly this reason); do not add a fifth button there.
+  * Ctrl+Shift+Z bound on the toplevel. Not Ctrl+Z — that belongs
+    to the text box's own undo. The handler is a no-op while the
+    button is disabled.
+  * After a successful undo, disable the button (the snapshot is
+    spent). Clearing again re-enables it.
+
+No config key.
+
+Performance: one extra dict holding strings the UI already held.
+Taken only on Clear.
+
+------------------------------------------------------------------------
+3. Modular code snippets
+------------------------------------------------------------------------
+British English. PEP 8. Drop-in. Import-safe helpers live in
+sections 1–5 so tests/test_translator_logic.py can cover them
+without a display.
+
+------------------------------------------------------------------------
+3.0  APP_VERSION
+------------------------------------------------------------------------
+
+# plume.py:104 — set to the version this commit actually ships.
+APP_VERSION = "1.50"
+
+------------------------------------------------------------------------
+3.A  Isolated restore hotkey
+------------------------------------------------------------------------
+
+# Constants, near AUTOSTART_RUN_KEY (line 110).
+
+RESTORE_HOTKEY_VK = 0x50          # 'P'
+RESTORE_HOTKEY_MODS = 0x0002 | 0x0004 | 0x4000  # CONTROL|SHIFT|NOREPEAT
+RESTORE_HOTKEY_ID = 1
+_WM_HOTKEY = 0x0312
+_WM_DESTROY = 0x0002
+_HWND_MESSAGE = -3
+_HOTKEY_CLASS = "PlumeRestoreHotkey"
+
+
+def _restore_hotkey_available() -> bool:
+    """True only on Windows with a working user32/kernel32 ctypes bind."""
+    if sys.platform != "win32":
+        return False
+    try:
+        ctypes.windll.user32
+        ctypes.windll.kernel32
+    except Exception:
+        return False
+    return True
+
+
+class RestoreHotkey:
+    """Message-only HWND on its own thread. Never talks to Tk.
+
+    The Tk thread is expected to poll `self.fired` and call
+    PlumeApp._show_window itself. Construction does not register
+    the hotkey; call start() from Settings/__init__ once the
+    checkbox is on.
+    """
+
+    def __init__(self):
+        self.fired = threading.Event()
+        self._thread = None
+        self._hwnd = 0
+        self._ready = threading.Event()
+        self._error = ""
+
+    def start(self) -> str:
+        """Register the chord. Returns an error string, or \"\"."""
+        if self._thread is not None and self._thread.is_alive():
+            return ""
+        if not _restore_hotkey_available():
+            return "Restore hotkey is only available on Windows."
+        self._ready.clear()
+        self._error = ""
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        self._ready.wait(3.0)
+        return self._error
+
+    def stop(self) -> None:
+        hwnd = self._hwnd
+        if hwnd:
+            try:
+                ctypes.windll.user32.PostMessageW(hwnd, _WM_DESTROY, 0, 0)
+            except Exception:
+                pass
+        thread = self._thread
+        if thread is not None:
+            thread.join(1.0)
+        self._thread = None
+        self._hwnd = 0
+
+    def _run(self) -> None:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        WNDPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p, ctypes.c_uint,
+            ctypes.c_void_p, ctypes.c_void_p,
+        )
+
+        def wndproc(hwnd, msg, wparam, lparam):
+            if msg == _WM_HOTKEY and int(wparam) == RESTORE_HOTKEY_ID:
+                self.fired.set()
+                return 0
+            if msg == _WM_DESTROY:
+                try:
+                    user32.UnregisterHotKey(hwnd, RESTORE_HOTKEY_ID)
+                except Exception:
+                    pass
+                user32.PostQuitMessage(0)
+                return 0
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        self._wndproc_ref = WNDPROC(wndproc)  # keep alive for the pump
+
+        class WNDCLASS(ctypes.Structure):
+            _fields_ = [
+                ("style", ctypes.c_uint),
+                ("lpfnWndProc", WNDPROC),
+                ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int),
+                ("hInstance", ctypes.c_void_p),
+                ("hIcon", ctypes.c_void_p),
+                ("hCursor", ctypes.c_void_p),
+                ("hbrBackground", ctypes.c_void_p),
+                ("lpszMenuName", ctypes.c_wchar_p),
+                ("lpszClassName", ctypes.c_wchar_p),
+            ]
+
+        wc = WNDCLASS()
+        wc.lpfnWndProc = self._wndproc_ref
+        wc.hInstance = kernel32.GetModuleHandleW(None)
+        wc.lpszClassName = _HOTKEY_CLASS
+        if not user32.RegisterClassW(ctypes.byref(wc)):
+            # Already registered from a previous start in this process
+            # is acceptable; a genuine failure is not.
+            err = kernel32.GetLastError()
+            if err not in (1410,):  # ERROR_CLASS_ALREADY_EXISTS
+                self._error = "Could not register the restore-hotkey window class."
+                self._ready.set()
+                return
+
+        hwnd = user32.CreateWindowExW(
+            0, _HOTKEY_CLASS, "Plume hotkey", 0,
+            0, 0, 0, 0, _HWND_MESSAGE, None, wc.hInstance, None,
+        )
+        if not hwnd:
+            self._error = "Could not create the restore-hotkey window."
+            self._ready.set()
+            return
+        self._hwnd = hwnd
+        if not user32.RegisterHotKey(
+            hwnd, RESTORE_HOTKEY_ID, RESTORE_HOTKEY_MODS, RESTORE_HOTKEY_VK
+        ):
+            self._error = (
+                "Ctrl+Shift+P is already in use by another application."
+            )
+            user32.DestroyWindow(hwnd)
+            self._hwnd = 0
+            self._ready.set()
+            return
+        self._ready.set()
+
+        msg = ctypes.create_unicode_buffer(48)  # MSG is 48 bytes on Win64
+        # Peek/GetMessage with a real MSG struct:
+        class MSG(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", ctypes.c_void_p),
+                ("message", ctypes.c_uint),
+                ("wParam", ctypes.c_void_p),
+                ("lParam", ctypes.c_void_p),
+                ("time", ctypes.c_uint),
+                ("pt_x", ctypes.c_long),
+                ("pt_y", ctypes.c_long),
+            ]
+        message = MSG()
+        while user32.GetMessageW(ctypes.byref(message), 0, 0, 0) != 0:
+            user32.TranslateMessage(ctypes.byref(message))
+            user32.DispatchMessageW(ctypes.byref(message))
+
+
+# Throwaway harness (NOT added to plume.py). Run once on Windows
+# before committing v1.50. If this process crashes or never prints
+# "hotkey received", drop the version.
+#
+#   python restore_hotkey_harness.py
+#   then press Ctrl+Shift+P
+#
+# import ctypes, ctypes.wintypes, time
+# ... instantiate RestoreHotkey, start(), wait on fired, stop(),
+# print("hotkey received") / print("FAILED: " + error)
+
+# DEFAULT_CONFIG: "restore_hotkey": False
+# load_config: config["restore_hotkey"] = bool(config.get("restore_hotkey"))
+# plume_config.example.json: the same key, false.
+
+# SettingsDialog, after close_to_tray checkbox (~3572):
+#     self.restore_hotkey_var = ctk.BooleanVar(
+#         value=bool(self._config.get("restore_hotkey"))
+#     )
+#     hotkey_box = ctk.CTkCheckBox(
+#         body,
+#         text="Restore Plume with Ctrl+Shift+P (does not paste or translate)",
+#         variable=self.restore_hotkey_var,
+#     )
+# Independent of TRAY_AVAILABLE. Disabled only when
+# not _restore_hotkey_available(), with caption
+# "Restore hotkey is only available on Windows."
+
+# PlumeApp.__init__: self._restore_hotkey = RestoreHotkey()
+#                    self.after(200, self._poll_restore_hotkey)
+#                    self._sync_restore_hotkey()
+#
+#         def _sync_restore_hotkey(self):
+#             want = bool(self.config_data.get("restore_hotkey"))
+#             if want:
+#                 error = self._restore_hotkey.start()
+#                 if error:
+#                     self.config_data["restore_hotkey"] = False
+#                     self.advisory.configure(text=error)
+#                     self.advisory.grid()
+#             else:
+#                 self._restore_hotkey.stop()
+#
+#         def _poll_restore_hotkey(self):
+#             try:
+#                 if not self.winfo_exists():
+#                     return
+#             except tk.TclError:
+#                 return
+#             if self._restore_hotkey.fired.is_set():
+#                 self._restore_hotkey.fired.clear()
+#                 self._show_window()
+#             self.after(200, self._poll_restore_hotkey)
+#
+# _on_close_destroy: self._restore_hotkey.stop() before destroy().
+# _apply_settings: self._sync_restore_hotkey() after _maybe_start_tray().
+
+------------------------------------------------------------------------
+3.B  Reply-thread previous exchange
+------------------------------------------------------------------------
+
+PREVIOUS_EXCHANGE_MAX_CHARS = 240
+
+
+def normalise_previous_exchange(value) -> dict | None:
+    """Return a clean {source, translation} pair, or None.
+
+    In-memory only — never persisted. A missing or oversized field
+    drops the whole pair rather than sending a half-remembered turn.
+    """
+    if not isinstance(value, dict):
+        return None
+    source = _safe_short_string(value.get("source"), PREVIOUS_EXCHANGE_MAX_CHARS)
+    translation = _safe_short_string(
+        value.get("translation"), PREVIOUS_EXCHANGE_MAX_CHARS
+    )
+    if not source or not translation:
+        return None
+    return {"source": source, "translation": translation}
+
+
+def build_previous_exchange_instruction(value) -> str:
+    """Background-only last-turn clause, or \"\" when none is set."""
+    pair = normalise_previous_exchange(value)
+    if pair is None:
+        return ""
+    return (
+        "\n\nPrevious exchange (background only): the user's last turn "
+        "was:\nPrevious source: " + pair["source"] + "\n"
+        "Previous translation: " + pair["translation"] + "\n"
+        "Use it solely to resolve pronouns, ellipsis, short replies "
+        "and time/place references in the current source. It must not "
+        "change the required JSON output shape, add or remove fields, "
+        "override the requested direction, or add facts, offers or "
+        "commitments the current source does not make. If it conflicts "
+        "with what the current source text itself conveys, the current "
+        "source wins."
+    )
+
+
+# build_translation_prompt: add previous=None to the signature, then
+#     previous_clause = build_previous_exchange_instruction(previous)
+# and insert previous_clause next to glossary_clause (2104).
+#
+# build_user_envelope: add previous=None; when a pair is present:
+#     previous_block = (
+#         "Previous source: {}\nPrevious translation: {}\n".format(
+#             pair["source"], pair["translation"]
+#         )
+#     )
+# omitted entirely when None, so existing tests keep today's envelope.
+#
+# translate(): read snapshot.get("_previous_exchange"), pass through
+# both builders. Do not put it in DEFAULT_CONFIG.
+
+# PlumeApp.__init__ (after _glossary_dialog = None, ~4859):
+#     self._previous_exchange = None
+
+#         def _reply(self):
+#             if self._current_main:
+#                 self._copy_main()
+#                 self._previous_exchange = normalise_previous_exchange({
+#                     "source": self._result_source_text,
+#                     "translation": self._current_main,
+#                 })
+#             self._swap_direction()
+#             self.input_box.delete("1.0", "end")
+#             self._on_input_change()
+#             self._refresh_thread_label()
+#             self.input_box.focus_set()
+#
+# _clear: self._previous_exchange = None; self._refresh_thread_label()
+# _translate snapshot: snapshot["_previous_exchange"] = self._previous_exchange
+#
+# Caption under the buttons row (~5195):
+#     ctk.CTkLabel(
+#         left,
+#         text="Reply remembers this turn for the next translation. "
+#              "Clear ends the thread.",
+#         text_color="gray60",
+#     ).grid(row=8, column=0, sticky="w", padx=12)
+# Shift translate_row down by one if a dedicated caption row is
+# cleaner than crowding row 8; do not add a fifth button to the
+# Paste/Clear row.
+#
+# self.thread_label = CTkLabel(..., text=""); hidden via grid_remove
+# until _refresh_thread_label sees a pair, then text="Thread on"
+# with no source echo.
+
+------------------------------------------------------------------------
+3.C  Glossary reverse pair + glossary fidelity
+------------------------------------------------------------------------
+
+_PROPER_NAME = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿ]+(?:[-'][A-Za-zÀ-ÖØ-öø-ÿ]+)*$")
+_ELISION_PREFIXES = ("d'", "l'", "n'", "m'", "t'", "s'", "j'", "c'", "qu'")
+
+
+def looks_like_proper_name(text: str) -> bool:
+    """True when *text* is one name-shaped token, not a phrase."""
+    if not looks_like_single_term(text, GLOSSARY_MAX_TERM_CHARS):
+        return False
+    value = (text or "").strip()
+    if " " in value:
+        return False
+    return bool(_PROPER_NAME.match(value))
+
+
+def reverse_glossary_entry(entry) -> dict | None:
+    """Swap term/translation. None if it cannot be salvaged."""
+    if not isinstance(entry, dict):
+        return None
+    swapped = normalise_glossary_entries([{
+        "term": entry.get("translation"),
+        "translation": entry.get("term"),
+    }])
+    if not swapped:
+        return None
+    reverse = swapped[0]
+    if reverse["term"].casefold() == reverse["translation"].casefold():
+        return None
+    return reverse
+
+
+def _haystack_without_elision(text: str) -> str:
+    folded = (text or "").casefold()
+    for prefix in _ELISION_PREFIXES:
+        folded = folded.replace(prefix, "")
+    return folded
+
+
+def glossary_fidelity_notes(source, haystack, glossary) -> list:
+    """Tentative advisories when a preferred rendering is absent."""
+    source = source or ""
+    folded_haystack = _haystack_without_elision(haystack)
+    notes = []
+    for entry in normalise_glossary_entries(glossary):
+        term = entry["term"]
+        preferred = entry["translation"]
+        if not re.search(
+            r"(?<!\w)" + re.escape(term) + r"(?!\w)", source, re.IGNORECASE
+        ):
+            continue
+        token = preferred.casefold()
+        if token and token not in folded_haystack:
+            notes.append(
+                "Glossary term \"{}\" does not appear as \"{}\" in the "
+                "translations.".format(term, preferred)
+            )
+            if len(notes) >= MAX_NOTES:
+                break
+    return notes
+
+
+# fidelity_notes: add glossary=() and, after the Keep-as-is loop,
+#     if len(notes) < MAX_NOTES:
+#         notes.extend(glossary_fidelity_notes(source, haystack, glossary))
+#         notes = notes[:MAX_NOTES]
+#
+# _deliver call site (7014):
+#     extra_notes.extend(fidelity_notes(
+#         snap_text, data,
+#         keep_as_is=self.config_data.get("keep_as_is_terms") or [],
+#         glossary=self.config_data.get("translation_glossary") or [],
+#     ))
+
+# GlossaryDialog.__init__, a new row between add_row (row 1) and the
+# existing caption (currently row 2). Shift subsequent rows by one:
+#
+#     self.reverse_pair_var = ctk.BooleanVar(value=False)
+#     self.reverse_box = ctk.CTkCheckBox(
+#         self,
+#         text="Also save the reverse pair (Auridon ↔ Auridia)",
+#         variable=self.reverse_pair_var,
+#     )
+#     self.reverse_box.grid(row=2, column=0, sticky="w", padx=12, pady=(4, 0))
+#
+# _update_preview also:
+#     if self._editing_index is None and looks_like_proper_name(term) \
+#             and looks_like_proper_name(translation):
+#         self.reverse_pair_var.set(True)
+#     elif self._editing_index is not None:
+#         self.reverse_pair_var.set(False)
+#
+# _add_or_update, after a successful forward persist when not editing:
+#     if self.reverse_pair_var.get():
+#         reverse = reverse_glossary_entry(clean_entry)
+#         entries = list(self.master.config_data.get("translation_glossary") or [])
+#         already = {
+#             e["term"].casefold() for e in entries
+#         }
+#         if reverse is None:
+#             pass
+#         elif reverse["term"].casefold() in already:
+#             self.notice.configure(
+#                 text="Added. Reverse pair skipped (already present)."
+#             )
+#         elif len(entries) >= GLOSSARY_MAX_ENTRIES:
+#             self.notice.configure(
+#                 text="Added. Reverse pair skipped (glossary full)."
+#             )
+#         else:
+#             entries.append(reverse)
+#             if self._persist(entries):
+#                 self._refresh_list()
+#                 self.notice.configure(text="Added, with reverse pair.")
+
+------------------------------------------------------------------------
+3.D  Undo last Clear
+------------------------------------------------------------------------
+
+# PlumeApp.__init__:
+#     self._clear_snapshot = None
+
+        def _take_clear_snapshot(self) -> dict:
+            """Capture the fields Clear is about to drop. In-memory only."""
+            previous = None
+            pair = getattr(self, "_previous_exchange", None)
+            if pair:
+                previous = dict(pair)
+            return {
+                "input": self._input_text(),
+                "situation": self._situation_text(),
+                "direction": self.direction_var.get(),
+                "current_result": self._current_result,
+                "current_main": self._current_main,
+                "result_source_text": self._result_source_text,
+                "result_situation": self._result_situation,
+                "phrasebook_entries": [
+                    dict(item) for item in self._phrasebook_entries
+                ],
+                "previous_exchange": previous,
+            }
+
+        def _clear(self):
+            self._clear_snapshot = self._take_clear_snapshot()
+            self._request_id += 1
+            self._speech_request_id += 1
+            self._new_http_cancel()
+            self.translate_btn.configure(state="normal", text="Translate")
+            self.correct_btn.configure(state="normal", text="Correct English")
+            self.reply_btn.configure(state="normal")
+            self.input_box.delete("1.0", "end")
+            self._clear_results()
+            self._phrasebook_entries.clear()
+            if self._phrasebook_dialog is not None and self._phrasebook_dialog.winfo_exists():
+                self._phrasebook_dialog._refresh_list()
+                self._phrasebook_dialog._note_cleared()
+            self._previous_exchange = None
+            self._on_input_change()
+            self._refresh_status(state="ready")
+            self._set_undo_clear_enabled(True)
+
+        def _undo_clear(self):
+            snap = self._clear_snapshot
+            if not snap:
+                return
+            self.direction_var.set(snap["direction"])
+            self.input_box.delete("1.0", "end")
+            self.input_box.insert("1.0", snap["input"])
+            self.situation_entry.delete(0, "end")
+            self.situation_entry.insert(0, snap["situation"])
+            self._phrasebook_entries[:] = [
+                dict(item) for item in snap["phrasebook_entries"]
+            ]
+            if self._phrasebook_dialog is not None and self._phrasebook_dialog.winfo_exists():
+                self._phrasebook_dialog._refresh_list()
+            self._previous_exchange = (
+                dict(snap["previous_exchange"])
+                if snap["previous_exchange"]
+                else None
+            )
+            self._result_source_text = snap["result_source_text"]
+            self._result_situation = snap["result_situation"]
+            self._current_main = snap["current_main"]
+            self._current_result = snap["current_result"]
+            if snap["current_result"]:
+                self._render_result(snap["current_result"])
+            else:
+                self._clear_results()
+            self._clear_snapshot = None
+            self._set_undo_clear_enabled(False)
+            self._on_input_change()
+            self._refresh_status(state="ready")
+
+        def _set_undo_clear_enabled(self, enabled: bool) -> None:
+            state = "normal" if enabled else "disabled"
+            try:
+                self.undo_clear_btn.configure(state=state)
+            except tk.TclError:
+                pass
+
+        def _undo_clear_shortcut(self, event):
+            if str(self.undo_clear_btn.cget("state")) == "normal":
+                self._undo_clear()
+            return "break"
+
+# translate_row (5205), next to Open file…:
+#     self.undo_clear_btn = ctk.CTkButton(
+#         translate_row, text="Undo Clear", width=90,
+#         command=self._undo_clear, fg_color="gray30", state="disabled",
+#     )
+#     self.undo_clear_btn.grid(row=0, column=1, sticky="w", padx=(6, 0))
+# Shift Open file's neighbours only if they collide at 1000×600;
+# Open file is sticky="w" in column 0 and Correct/Translate are on
+# the right via the existing spacer, so column 1 is free.
+#
+#     self.bind("<Control-Shift-z>", self._undo_clear_shortcut)
+#     self.bind("<Control-Shift-Z>", self._undo_clear_shortcut)
+
+------------------------------------------------------------------------
+4. Insertion map
+------------------------------------------------------------------------
+Item   File / symbol                               Around
+-----  ------------------------------------------  ------
+0      APP_VERSION                                 104
+A      RestoreHotkey + constants                   after 110 / near 957
+       DEFAULT_CONFIG restore_hotkey               769
+       load_config bool coerce                     919
+       plume_config.example.json                   restore_hotkey: false
+       SettingsDialog checkbox                     after 3572
+       PlumeApp.__init__ / _sync / _poll           4840 / after 6270
+       PlumeApp._on_close_destroy                  6174
+       PlumeApp._apply_settings                    6694
+B      PREVIOUS_EXCHANGE_MAX_CHARS                 near 667
+       normalise_previous_exchange                 after 1840
+       build_previous_exchange_instruction         after that
+       build_translation_prompt                    2010 / 2104
+       build_user_envelope                         2122
+       translate() snapshot read                   2753 / 2783
+       PlumeApp._previous_exchange                 4859
+       PlumeApp._reply                             5991
+       PlumeApp._clear                             6148
+       PlumeApp._translate snapshot                6899
+       caption + thread_label                      buttons row 5181
+C      looks_like_proper_name                      after 1495
+       reverse_glossary_entry                      after that
+       glossary_fidelity_notes                     after 3210
+       fidelity_notes glossary=                    3210
+       PlumeApp._deliver call                      7014
+       GlossaryDialog checkbox + _add_or_update    4627 / 4755
+       GlossaryDialog._update_preview              4692
+D      PlumeApp._clear_snapshot                    4840
+       PlumeApp._take_clear_snapshot (new)         before _clear 6148
+       PlumeApp._clear (wrap)                      6148
+       PlumeApp._undo_clear (new)                  after _clear
+       undo_clear_btn                              translate_row 5205
+       bind Ctrl+Shift+Z                           near 5464
+
+------------------------------------------------------------------------
+5. Verification plan
+------------------------------------------------------------------------
+Import-safe tests (tests/test_translator_logic.py), expected new
+count on the order of 20–25:
+
+  * normalise_previous_exchange: None/blank/non-dict/oversize/happy.
+  * build_previous_exchange_instruction: empty -> ""; happy path
+    contains "background only" and both strings; source-wins clause
+    present.
+  * build_user_envelope: omitting previous keeps today's shape;
+    with a pair, both lines appear before "Text to translate".
+  * looks_like_proper_name: Auridon yes, Marie-Claire yes, O'Neill
+    yes, "guardians of Auridon" no, "d'Auridia" no (elision is
+    grammar, not the saved form), blank/None no.
+  * reverse_glossary_entry: happy swap, identical sides -> None,
+    malformed -> None, round-trip through normalise_glossary_entries.
+  * glossary_fidelity_notes: term in source and preferred missing;
+    preferred present; preferred present only as d'Auridia; term
+    absent from source (no note); MAX_NOTES cap still holds when
+    combined with Keep-as-is lines.
+  * fidelity_notes glossary=() default keeps v1.48 tests green.
+
+Live (no backend required, same technique as v1.47/v1.48):
+
+  A. Harness first. Then, in Plume, toggle the checkbox on, bury
+     the window, press Ctrl+Shift+P, confirm raise + focus, no
+     paste, no translate. Toggle off, confirm the chord no longer
+     fires. Collision: register the chord in another app, enable
+     the checkbox, confirm the Settings/advisory message and that
+     the checkbox does not stay on.
+  B. Translate a cinema invitation, Reply, paste "Oui, vers 19h",
+     Translate; the French/English rendering should treat 19h as
+     that outing. Clear; the thread label hides; a new unrelated
+     paste must not mention the cinema. Use as input must not
+     install a pair.
+  C. Add-from-result with Auridon / Auridia: checkbox on, one Add
+     writes both pairs (direct read of plume_config.json). Repeat
+     Add of an already-present reverse: forward stays, notice
+     mentions skip. Fill to 20, confirm reverse skipped.
+     Drive _deliver with a fake result whose source contains
+     Auridon and whose translations do not contain Auridia: the
+     advisory strip shows the glossary line.
+  D. Fill input + result + two phrasebook rows + a thread pair,
+     Clear, Undo Clear; all four come back. Ctrl+Z in the input
+     box still undoes typing, not Clear. Ctrl+Shift+Z undoes
+     Clear. A second Clear replaces the snapshot.
+
+Layout: 1000×600 and 1180×760. Undo Clear must not clip
+Correct English / Translate. Reverse-pair checkbox must not clip
+GlossaryDialog's Add/Cancel.
+
+If the v1.50 harness fails, ship B–D as v1.50–v1.52 and leave the
+hotkey uncommitted. Do not "just attach it to Tk" to keep the
+numbering.
+
+------------------------------------------------------------------------
+6. What this note does not change
+------------------------------------------------------------------------
+No plume.py, tests, ROADMAP or example-config edit accompanies this
+note. Implementation waits on Mark's go-ahead, one version at a
+time, on main, with a push only after explicit approval.
+
+End of note 023.
