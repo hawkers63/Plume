@@ -315,7 +315,10 @@ Keyboard and mouse highlights:
 - **Ctrl+Shift+Enter** — correct the input's English, then translate it
   (disabled for a fixed French → English direction).
 - **Paste** / **Clear** buttons, plus per-row **Use this**, **Copy** and
-  **Speak**.
+  **Speak**. **Undo Clear** (or Ctrl+Shift+Z) reverses the last Clear —
+  input, result, phrasebook and reply-thread all come back — one level,
+  in memory only, so a mis-click doesn't cost a re-typed message or
+  another backend call.
 - Use **Swap** to reverse a fixed direction before translating if
   auto-detection guesses wrong.
 - **Reply** copies the main translation, swaps direction and clears the

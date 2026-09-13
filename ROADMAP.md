@@ -1975,6 +1975,65 @@ schema impact beyond one constants tuple:
   but whose translations omitted the preferred rendering showed the new
   advisory line. Screenshotted the checkbox row — no clipping.
 
+## v1.53 — Undo last Clear (notes_023 2.D)
+
+- **`PlumeApp._take_clear_snapshot()`** (new): captures input, situation,
+  direction, the working result (`current_result`/`current_main`/
+  `result_source_text`/`result_situation`), a *copy* of the phrasebook
+  entries, and a copy of the v1.51 previous-exchange pair — everything
+  `_clear()` is about to drop. In-memory only, never persisted, never
+  sent anywhere. `_clear()` now takes this snapshot unconditionally,
+  even when everything is already blank, so Undo is a true revert rather
+  than a guess at "was there anything" — and enables the new button at
+  the end.
+- **`PlumeApp._undo_clear()`** (new): writes the snapshot's fields back;
+  slice-assigns the phrasebook (`self._phrasebook_entries[:] = ...`,
+  never rebinds — the exact v1.43 Clear bug this project already fixed
+  once), refreshing an open PhrasebookDialog. Does not bump
+  `_request_id`: no in-flight work is involved, and Undo Clear does not
+  resurrect a cancelled request. One level — a second Clear before Undo
+  simply replaces the snapshot with the newer one.
+- **Real bug caught during live testing, not in the note's draft**:
+  `_render_result(result)` itself resets `_current_main` from
+  `result["main_translation"]`, but `_use_as_main` ("Use this") already
+  diverges `_current_main` from `_current_result` without touching
+  `_current_result` — so calling `_render_result()` and then setting
+  `_current_main` in the order notes_023's own snippet used would have
+  silently lost a "Use this" promotion on every Undo. Fixed by calling
+  `_render_result()` first and re-applying the snapshotted
+  `_current_main` plus `_refresh_primary_display()` afterwards, the same
+  finishing sequence `_use_as_main` itself already uses. Caught live by
+  promoting an alternative before Clear/Undo and checking the restored
+  primary text, not by unit test (this is UI-lifecycle sequencing, no
+  new pure-function surface).
+- **`Undo Clear` button**, disabled until a snapshot exists, added to
+  `translate_row` sharing column 0 with `Open file…` in their own
+  left-anchored sub-frame (`left_actions`) — columns 1 and 2 of that row
+  were already Correct English and Translate with no spare spacer
+  column to reuse, unlike what the note's insertion map assumed for the
+  live tree. **Ctrl+Shift+Z** is bound on the toplevel (not the input
+  box, unlike Translate/Correct English's shortcuts) since Undo Clear is
+  not text-editing-specific; plain Ctrl+Z is left untouched, staying the
+  input box's own text-undo.
+- **A second real clipping bug caught live**, the same class as v1.51's:
+  `Open file…` (120) + `Undo Clear` (90) + `Correct English` (130) +
+  `Translate` (140) overflowed the left pane by roughly 34px at the
+  documented 1000×600 minimum, truncating "Undo Clear" mid-label
+  (`Open file…`/`Undo Cl`) even though every button rendered its full
+  text comfortably at 1180×760. Fixed by trimming three widths (120→105,
+  90→80, 130→120) and two `padx` gaps (6→4), verified by re-screenshotting
+  at both sizes rather than assuming the note's own draft widths were
+  already tuned for this row's new fifth element.
+- **No new unit tests** (UI-lifecycle state only, matching the
+  precedent set for v1.40/v1.49/v1.50); full suite stays at 484 tests,
+  unchanged. Verified live by driving `PlumeApp` directly from an
+  isolated copy of `plume.py`: filled input, a result, a "Use this"
+  promotion, two phrasebook rows and a v1.51 thread pair; Clear (button
+  enables); Undo Clear — all five came back, including the promoted
+  "Cinema tonight?" rather than the original main translation; a second
+  Clear correctly took a fresh snapshot. Screenshotted at both 1000×600
+  and 1180×760 after the width fix — no clipping at either size.
+
 ---
 
 ### Notes on sequencing

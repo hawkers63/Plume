@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.52"
+APP_VERSION = "1.53"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 CONFIG_FILENAME = "plume_config.json"
 
@@ -5273,6 +5273,7 @@ if GUI_AVAILABLE:
             self._http_cancel = threading.Event()
             self._restore_hotkey = RestoreHotkey()
             self._previous_exchange = None  # v1.51: one Reply pair, in memory only
+            self._clear_snapshot = None  # v1.53: one-level Undo Clear, in memory only
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
@@ -5639,16 +5640,28 @@ if GUI_AVAILABLE:
             translate_row = ctk.CTkFrame(left, fg_color="transparent")
             translate_row.grid(row=10, column=0, sticky="ew", padx=12, pady=(0, 12))
             translate_row.grid_columnconfigure(0, weight=1)
+            # Open file… and Undo Clear share column 0 (which stretches via
+            # weight=1) in their own left-anchored sub-frame, rather than
+            # claiming a whole grid column of translate_row for Undo Clear —
+            # columns 1 and 2 are already Correct English and Translate,
+            # with no spacer column between them and column 0 to reuse.
+            left_actions = ctk.CTkFrame(translate_row, fg_color="transparent")
+            left_actions.grid(row=0, column=0, sticky="w")
             self.open_file_btn = ctk.CTkButton(
-                translate_row, text="Open file…", width=120,
+                left_actions, text="Open file…", width=105,
                 command=self._open_source_file, fg_color="gray30",
             )
             self.open_file_btn.grid(row=0, column=0, sticky="w")
+            self.undo_clear_btn = ctk.CTkButton(
+                left_actions, text="Undo Clear", width=80,
+                command=self._undo_clear, fg_color="gray30", state="disabled",
+            )
+            self.undo_clear_btn.grid(row=0, column=1, sticky="w", padx=(4, 0))
             self.correct_btn = ctk.CTkButton(
-                translate_row, text="Correct English", width=130,
+                translate_row, text="Correct English", width=120,
                 command=self._correct_then_translate, fg_color="gray30",
             )
-            self.correct_btn.grid(row=0, column=1, padx=(0, 6))
+            self.correct_btn.grid(row=0, column=1, padx=(0, 4))
             # Dispatches via the Writing profile's Mode above (Translate by
             # default, so unchanged behaviour unless Mode is deliberately
             # changed); the explicit Correct English button above always
@@ -5900,6 +5913,12 @@ if GUI_AVAILABLE:
             # focus, and so it respects the disabled Translate button.
             self.input_box.bind("<Control-Return>", self._translate_shortcut)
             self.input_box.bind("<Control-Shift-Return>", self._correct_shortcut)
+            # Undo Clear (v1.53) is bound on the toplevel, not the input box:
+            # unlike Translate/Correct English it is not text-editing-specific
+            # and should work regardless of which widget has focus. Plain
+            # Ctrl+Z is left alone — it stays the input box's own undo.
+            self.bind("<Control-Shift-Z>", self._undo_clear_shortcut)
+            self.bind("<Control-Shift-z>", self._undo_clear_shortcut)
 
         # --- small helpers ------------------------------------------------
 
@@ -6602,9 +6621,34 @@ if GUI_AVAILABLE:
             self._http_cancel = threading.Event()
             return self._http_cancel
 
+        def _take_clear_snapshot(self) -> dict:
+            """Capture the fields Clear is about to drop (v1.53, notes_023
+            2.D). In-memory only, never persisted, never sent anywhere.
+            """
+            previous = None
+            pair = getattr(self, "_previous_exchange", None)
+            if pair:
+                previous = dict(pair)
+            return {
+                "input": self._input_text(),
+                "situation": self._situation_text(),
+                "direction": self.direction_var.get(),
+                "current_result": self._current_result,
+                "current_main": self._current_main,
+                "result_source_text": self._result_source_text,
+                "result_situation": self._result_situation,
+                "phrasebook_entries": [dict(item) for item in self._phrasebook_entries],
+                "previous_exchange": previous,
+            }
+
         def _clear(self):
+            # Snapshotted unconditionally, even when everything is already
+            # blank: Undo is then a true revert to "what was here before",
+            # not a guess at whether Clear actually dropped anything.
+            self._clear_snapshot = self._take_clear_snapshot()
             # Bump the request id so any in-flight worker result is treated as
             # stale, honouring the spec's "Clear supersedes a pending request".
+            # Undo Clear deliberately does not resurrect a cancelled request.
             self._request_id += 1
             self._speech_request_id += 1
             self._new_http_cancel()
@@ -6629,6 +6673,60 @@ if GUI_AVAILABLE:
             self._refresh_thread_label()
             self._on_input_change()
             self._refresh_status(state="ready")
+            self._set_undo_clear_enabled(True)
+
+        def _undo_clear(self):
+            """Restore the snapshot _clear() took (v1.53). One level: a
+            second Clear before this runs simply replaces the snapshot.
+            Does not bump _request_id — no in-flight work is involved.
+            """
+            snap = self._clear_snapshot
+            if not snap:
+                return
+            self.direction_var.set(snap["direction"])
+            self.input_box.delete("1.0", "end")
+            self.input_box.insert("1.0", snap["input"])
+            self.situation_entry.delete(0, "end")
+            self.situation_entry.insert(0, snap["situation"])
+            # Slice-assign, never rebind (v1.43 Clear bug), so an already-open
+            # PhrasebookDialog's own reference to this same list still works.
+            self._phrasebook_entries[:] = [dict(item) for item in snap["phrasebook_entries"]]
+            if self._phrasebook_dialog is not None and self._phrasebook_dialog.winfo_exists():
+                self._phrasebook_dialog._refresh_list()
+            self._previous_exchange = (
+                dict(snap["previous_exchange"]) if snap["previous_exchange"] else None
+            )
+            self._refresh_thread_label()
+            self._result_source_text = snap["result_source_text"]
+            self._result_situation = snap["result_situation"]
+            if snap["current_result"] is not None:
+                # _render_result() itself sets _current_main from
+                # result["main_translation"], which would silently lose a
+                # "Use this" promotion (_use_as_main diverges _current_main
+                # from _current_result without touching _current_result) —
+                # so re-apply the snapshotted _current_main afterwards, the
+                # same way _use_as_main itself finishes.
+                self._render_result(snap["current_result"])
+                self._current_main = snap["current_main"]
+                self._refresh_primary_display()
+            else:
+                self._clear_results()  # also resets _current_main/_current_result
+            self._clear_snapshot = None
+            self._set_undo_clear_enabled(False)
+            self._on_input_change()
+            self._refresh_status(state="ready")
+
+        def _set_undo_clear_enabled(self, enabled: bool) -> None:
+            state = "normal" if enabled else "disabled"
+            try:
+                self.undo_clear_btn.configure(state=state)
+            except tk.TclError:  # pragma: no cover - window closed
+                pass
+
+        def _undo_clear_shortcut(self, event):
+            if str(self.undo_clear_btn.cget("state")) == "normal":
+                self._undo_clear()
+            return "break"
 
         def _on_close_destroy(self):
             """Invalidate in-flight work, stop playback, then destroy the window."""
