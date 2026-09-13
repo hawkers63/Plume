@@ -1734,6 +1734,50 @@ schema impact beyond one constants tuple:
   without a live backend call): the advisory strip showed all three
   notes correctly, each on its own bulleted segment.
 
+## v1.49 — Tray completion notice (notes_022 2.D)
+
+- **`PlumeApp._notify_tray(message)`** (new): a best-effort tray balloon
+  for a finished request. Fires only while the main window is actually
+  withdrawn (`winfo_viewable()` false) *and* a tray icon is running
+  (`_tray_icon is not None`) — a visible window already shows the
+  result, so a balloon there would be noise. Never includes source text
+  (privacy): "Translation ready." on success, "Translation failed. Open
+  Plume for the message." on error, generic either way. Missing pystray,
+  a torn-down icon, or `notify()` raising are all swallowed silently —
+  the result is still sitting on the window either way, so a balloon
+  failure is never worth interrupting the user over.
+- **Wired into `_deliver()` only** (not `_deliver_correction`, the
+  speech/file-import deliveries, or the standalone Correct English
+  action) — both its error-path return and its success-path end, exactly
+  where notes_022 pointed. No new config key: off in practice whenever
+  the tray isn't running, the same as every other tray feature.
+- **No new unit tests** (UI/OS-integration behaviour, no new pure-
+  function surface — matches the precedent already set for other
+  UI-lifecycle-only versions such as v1.40). Verified live in two
+  layers, since a Windows balloon itself resists automated screenshot
+  verification the same way the v1.16 tray *icon* already did (see the
+  project's own notes on that): (1) gating logic, by substituting a
+  recording fake for `_tray_icon` and driving `_deliver()` directly
+  through all four cases — visible window (no call), withdrawn+success
+  ("Translation ready."), withdrawn+error (generic message, confirmed
+  not leaking the real error detail), and no tray icon at all (no
+  crash); (2) a real-`pystray.Icon` integration check — genuine tray
+  icon started, window withdrawn, `_notify_tray` called for real —
+  confirming the actual `notify()` call completes without raising. The
+  balloon's on-screen appearance itself was not independently eyeballed
+  this session.
+- **v1.50 (global restore hotkey) intentionally not attempted this
+  session.** notes_022 itself sequences it last and conditionally: "If
+  implemented... If that isolated HWND still proves unsafe... drop the
+  version rather than attaching anything to Tk." Per this project's own
+  hard-won lesson from v1.18 (`WM_DROPFILES` raw `WNDPROC` subclassing
+  crashed the interpreter under real async delivery), a `WM_HOTKEY`
+  handler on a dedicated message-only HWND needs its own live,
+  external-process-triggered safety test before it can be trusted — the
+  same bar v1.18's revert was held to — rather than being implemented
+  speculatively in the same pass as four already-scoped, lower-risk
+  versions.
+
 ---
 
 ### Notes on sequencing

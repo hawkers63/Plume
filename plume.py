@@ -6267,6 +6267,31 @@ if GUI_AVAILABLE:
             except Exception:  # pragma: no cover - window closed
                 pass
 
+        def _notify_tray(self, message: str) -> None:
+            """Best-effort tray balloon for a finished request (v1.49,
+            notes_022 2.D). Only fires while the main window is actually
+            withdrawn and a tray icon is running — a visible window
+            already shows the result, so a balloon there would be noise.
+            Never includes source text (privacy); feature-gated on
+            pystray, so a missing/raising notify() is swallowed rather
+            than surfaced.
+            """
+            icon = self._tray_icon
+            if icon is None:
+                return
+            try:
+                if self.winfo_viewable():
+                    return
+            except tk.TclError:
+                return
+            notify = getattr(icon, "notify", None)
+            if not callable(notify):
+                return
+            try:
+                notify(message, APP_NAME)
+            except Exception:  # pragma: no cover - defensive
+                pass
+
         def _tray_quit(self, icon=None, item=None):
             try:
                 self.after(0, self._quit_from_tray)
@@ -6959,6 +6984,7 @@ if GUI_AVAILABLE:
                 self.advisory.configure(text=data)
                 self.advisory.grid()
                 self._refresh_status(state="ready")
+                self._notify_tray("Translation failed. Open Plume for the message.")
                 return
 
             self._result_source_text = snap_text
@@ -6992,6 +7018,7 @@ if GUI_AVAILABLE:
             if extra_notes:
                 self._show_result_advisories(data, extra_notes=extra_notes)
             self._refresh_status(state="ready")
+            self._notify_tray("Translation ready.")
 
         def _build_variation_card(self, index, variation):
             """Build and grid one alternative card; return the frame.

@@ -240,7 +240,10 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   helper that doesn't need to be relaunched and re-parked every session.
   The tray menu's **Show and paste clipboard** brings the window back
   and pastes what's on the clipboard in one click — it never translates
-  automatically.
+  automatically. While the window is minimised to the tray, a finished
+  translation shows a plain "Translation ready." (or "…failed.") balloon
+  — never the source text — so a request doesn't finish silently out of
+  sight.
 - **Conversation presets:** save the toolbar's direction, French form,
   Me/You gender agreement, situation and tones as a named preset (a
   "Presets…" menu plus Save/Delete beside the toolbar's You control) —
