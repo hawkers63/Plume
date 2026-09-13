@@ -12,6 +12,7 @@ A compact CustomTkinter desktop app: one faithful main translation plus five nat
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
 [![GUI](https://img.shields.io/badge/GUI-CustomTkinter-green.svg)](https://customtkinter.tomschimansky.com/)
 [![License](https://img.shields.io/badge/License-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
+[![CI](https://github.com/hawkers63/Plume/actions/workflows/ci.yml/badge.svg)](https://github.com/hawkers63/Plume/actions/workflows/ci.yml)
 
 **Conversation helper** · entry point `plume.py` · launcher `Plume.bat` · app icon `icon/icon-96.ico`
 
