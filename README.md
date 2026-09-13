@@ -316,7 +316,11 @@ Keyboard and mouse highlights:
 - **Reply** copies the main translation, swaps direction and clears the
   input in one click, ready for the incoming message — the previous
   result stays visible for reference. Situation is left untouched, since
-  it describes the scene, not the last message.
+  it describes the scene, not the last message. Reply also remembers
+  that turn as background context ("Thread on") so a short incoming
+  reply like "Oui, vers 19h" resolves against what was just discussed —
+  one pair, in memory only, never persisted, ended by Clear or "Use as
+  input", and never able to override what the new source text says.
 - Open **History** to revisit, favourite, copy, delete or reopen saved local
   translations when history is enabled.
 

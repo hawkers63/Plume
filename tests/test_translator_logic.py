@@ -3407,5 +3407,115 @@ class TestDocumentationShape(unittest.TestCase):
         self.assertEqual(set(example), set(plume.DEFAULT_CONFIG))
 
 
+class TestPreviousExchange(unittest.TestCase):
+    def test_none_for_non_dict(self):
+        self.assertIsNone(plume.normalise_previous_exchange(None))
+        self.assertIsNone(plume.normalise_previous_exchange("oui"))
+        self.assertIsNone(plume.normalise_previous_exchange(42))
+
+    def test_none_when_a_field_is_blank(self):
+        self.assertIsNone(
+            plume.normalise_previous_exchange({"source": "", "translation": "Yes"})
+        )
+        self.assertIsNone(
+            plume.normalise_previous_exchange({"source": "Oui", "translation": ""})
+        )
+
+    def test_oversized_field_is_truncated_not_dropped(self):
+        long_text = "x" * 400
+        pair = plume.normalise_previous_exchange(
+            {"source": long_text, "translation": "Yes"}
+        )
+        self.assertIsNotNone(pair)
+        self.assertLessEqual(len(pair["source"]), plume.PREVIOUS_EXCHANGE_MAX_CHARS)
+        self.assertTrue(pair["source"].endswith("…"))
+
+    def test_happy_path_round_trips(self):
+        pair = plume.normalise_previous_exchange(
+            {"source": "Tu veux aller au ciné ce soir ?", "translation": "Fancy the cinema tonight?"}
+        )
+        self.assertEqual(
+            pair,
+            {
+                "source": "Tu veux aller au ciné ce soir ?",
+                "translation": "Fancy the cinema tonight?",
+            },
+        )
+
+    def test_instruction_empty_when_none(self):
+        self.assertEqual(plume.build_previous_exchange_instruction(None), "")
+        self.assertEqual(plume.build_previous_exchange_instruction({}), "")
+
+    def test_instruction_is_background_only_with_both_strings(self):
+        text = plume.build_previous_exchange_instruction(
+            {"source": "Tu veux aller au ciné ce soir ?", "translation": "Fancy the cinema tonight?"}
+        )
+        self.assertIn("background only", text)
+        self.assertIn("Tu veux aller au ciné ce soir ?", text)
+        self.assertIn("Fancy the cinema tonight?", text)
+        self.assertIn("current source wins", text)
+
+    def test_envelope_omits_previous_by_default(self):
+        envelope = plume.build_user_envelope("Oui, vers 19h")
+        self.assertNotIn("Previous source", envelope)
+        self.assertNotIn("Previous translation", envelope)
+
+    def test_envelope_includes_previous_pair_before_text(self):
+        envelope = plume.build_user_envelope(
+            "Oui, vers 19h",
+            previous={
+                "source": "Tu veux aller au ciné ce soir ?",
+                "translation": "Fancy the cinema tonight?",
+            },
+        )
+        self.assertIn("Previous source: Tu veux aller au ciné ce soir ?", envelope)
+        self.assertIn("Previous translation: Fancy the cinema tonight?", envelope)
+        self.assertLess(
+            envelope.index("Previous source"), envelope.index("Text to translate")
+        )
+
+    def test_prompt_omits_previous_clause_when_none(self):
+        prompt = plume.build_translation_prompt(previous=None)
+        self.assertNotIn("Previous exchange", prompt)
+
+    def test_prompt_includes_previous_clause(self):
+        prompt = plume.build_translation_prompt(
+            previous={
+                "source": "Tu veux aller au ciné ce soir ?",
+                "translation": "Fancy the cinema tonight?",
+            }
+        )
+        self.assertIn("Previous exchange (background only)", prompt)
+        self.assertIn("current source wins", prompt)
+
+    def test_translate_passes_previous_exchange_through(self):
+        raw = json.dumps({
+            "source_language": "French",
+            "target_language": "English",
+            "language_confidence": "high",
+            "language_note": "",
+            "main_translation": "Yes, around 7pm.",
+            "variations": [
+                {"translation": "Yeah, 7-ish.", "english_meaning_check": "casual"},
+                {"translation": "Sure, 7pm works.", "english_meaning_check": "neutral"},
+                {"translation": "Around 7, yes.", "english_meaning_check": "neutral"},
+                {"translation": "7pm sounds good.", "english_meaning_check": "neutral"},
+                {"translation": "Yes, 7 works for me.", "english_meaning_check": "neutral"},
+            ],
+            "notes": [],
+        })
+        config = dict(plume.DEFAULT_CONFIG)
+        config["_previous_exchange"] = {
+            "source": "Tu veux aller au ciné ce soir ?",
+            "translation": "Fancy the cinema tonight?",
+        }
+        with mock.patch.object(plume, "run_backend", return_value=raw) as backend:
+            plume.translate(config, "Oui, vers 19h")
+        system_prompt = backend.call_args[0][1]
+        user_envelope = backend.call_args[0][2]
+        self.assertIn("Previous exchange (background only)", system_prompt)
+        self.assertIn("Previous source: Tu veux aller au ciné ce soir ?", user_envelope)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

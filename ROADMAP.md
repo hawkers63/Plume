@@ -1843,6 +1843,68 @@ schema impact beyond one constants tuple:
   still pass unchanged. `APP_VERSION` is bumped to "1.50" in this same
   commit, ending the drift that had left it reading "1.46" since v1.47.
 
+## v1.51 — Reply-thread previous exchange (notes_023 2.B)
+
+- **`PlumeApp._previous_exchange`** (new, in-memory only, never persisted,
+  never sent unless a working main translation exists): one remembered
+  `{source, translation}` pair, installed by `_reply()` from
+  `self._result_source_text` and `self._current_main` — the gesture the
+  user already makes when a turn ends. Not a chat agent and not a rolling
+  history dump: exactly one pair, overwritten by the next Reply, dropped
+  by Clear, forgotten on close.
+- **`normalise_previous_exchange(value)`** / **`build_previous_exchange_instruction(value)`**
+  (new, pure, import-safe): the same shape as every other background-only
+  clause (Situation, tones, the glossary) — bounded with
+  `_safe_short_string(..., PREVIOUS_EXCHANGE_MAX_CHARS)`
+  (`PREVIOUS_EXCHANGE_MAX_CHARS = 240`, the existing note cap), omitted
+  entirely from both the prompt and the envelope when unset so every
+  existing caller and test keeps today's shape, and explicit that the
+  current source always wins on conflict. A missing or oversized field
+  drops the whole pair rather than sending a half-remembered turn.
+- **`build_translation_prompt(..., previous=None)`** and
+  **`build_user_envelope(..., previous=None)`**: the clause sits next to
+  the glossary clause in the prompt; the envelope gets two extra
+  "Previous source:" / "Previous translation:" lines directly before
+  "Text to translate:" only when a pair is present. `translate()` reads
+  `config_snapshot.get("_previous_exchange")` and passes it through both.
+- **`_reply()`** now also writes the pair (guarded on `self._current_main`
+  being non-empty) and calls the new `_refresh_thread_label()`.
+  **"Use as input" deliberately does not set it** — a different loop (the
+  translation becomes the new source) that must not silently attach the
+  old source as context. `_clear()` sets it back to `None`. `_translate()`'s
+  snapshot carries `snapshot["_previous_exchange"] = self._previous_exchange`
+  alongside the existing `tones`/`writing` overlay.
+- **UI:** no new toolbar checkbox — Reply is the opt-in gesture. A
+  grey caption under the Paste/Clear/Copy source/Reply row reads "Reply
+  remembers this turn for the next translation. Clear ends the thread.",
+  with a `self.thread_label` reading "Thread on" beside it
+  (`grid_remove()` when no pair is set) — never echoing the remembered
+  text itself. Its own row (row 9, pushing the Open file…/Correct
+  English/Translate row down to row 10) rather than a fifth button on
+  the four-button row, matching the reasoning v1.15 already established
+  for keeping Translate off that row. The caption uses `wraplength=380`
+  (the same pattern as the "Local reference tools" caption above it) —
+  an early screenshot at the documented 1000×600 minimum caught the
+  unwrapped caption running off the window's right edge before this was
+  added.
+- **12 new unit tests**: `normalise_previous_exchange` (non-dict, blank
+  field, oversized-truncated-not-dropped, happy path);
+  `build_previous_exchange_instruction` (empty when `None`, background-only
+  wording with both strings present); the envelope omitting the pair by
+  default and including both lines before "Text to translate" when
+  present; the prompt omitting/including "Previous exchange (background
+  only)"; and `translate()` actually passing a configured
+  `_previous_exchange` through to both the system prompt and the user
+  envelope via a mocked `run_backend`. Full suite: 472 tests pass (461 →
+  472). Verified live by driving `PlumeApp` directly from an isolated
+  copy of `plume.py`: rendered a fake cinema-invitation result, called
+  `_reply()` and confirmed `_previous_exchange` was set and "Thread on"
+  appeared; pasted "Oui, vers 19h" and drove `_translate()` with a mocked
+  backend, confirming the previous exchange reached both the captured
+  system prompt and user envelope; called `_clear()` and confirmed the
+  pair and the label both cleared. Screenshotted at both 1000×600 and
+  1180×760 with a pair active — no clipping at either size.
+
 ---
 
 ### Notes on sequencing

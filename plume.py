@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.50"
+APP_VERSION = "1.51"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 CONFIG_FILENAME = "plume_config.json"
 
@@ -2197,6 +2197,52 @@ def build_writing_profile_instruction(value) -> str:
     )
 
 
+PREVIOUS_EXCHANGE_MAX_CHARS = 240
+
+
+def normalise_previous_exchange(value) -> dict | None:
+    """Return a clean {source, translation} pair, or None.
+
+    In-memory only (v1.51, notes_023 2.B) — never persisted, never sent
+    unless a working main translation exists. A missing or oversized field
+    drops the whole pair rather than sending a half-remembered turn.
+    """
+    if not isinstance(value, dict):
+        return None
+    source = _safe_short_string(value.get("source"), PREVIOUS_EXCHANGE_MAX_CHARS)
+    translation = _safe_short_string(
+        value.get("translation"), PREVIOUS_EXCHANGE_MAX_CHARS
+    )
+    if not source or not translation:
+        return None
+    return {"source": source, "translation": translation}
+
+
+def build_previous_exchange_instruction(value) -> str:
+    """Background-only last-turn clause, or "" when none is set.
+
+    Reply already means "my turn is over"; this lets the next incoming
+    reply ("Oui, vers 19h") resolve against the turn that prompted it,
+    without turning Plume into a chat agent or a rolling history dump —
+    one remembered pair, never outranking the current source.
+    """
+    pair = normalise_previous_exchange(value)
+    if pair is None:
+        return ""
+    return (
+        "\n\nPrevious exchange (background only): the user's last turn "
+        "was:\nPrevious source: " + pair["source"] + "\n"
+        "Previous translation: " + pair["translation"] + "\n"
+        "Use it solely to resolve pronouns, ellipsis, short replies "
+        "and time/place references in the current source. It must not "
+        "change the required JSON output shape, add or remove fields, "
+        "override the requested direction, or add facts, offers or "
+        "commitments the current source does not make. If it conflicts "
+        "with what the current source text itself conveys, the current "
+        "source wins."
+    )
+
+
 def build_translation_prompt(direction=DIR_AUTO,
                              french_formality=FORM_INFORMAL,
                              french_variant=VARIANT_NEUTRAL,
@@ -2205,7 +2251,8 @@ def build_translation_prompt(direction=DIR_AUTO,
                              recipient_gender=GENDER_AVOID,
                              tones=(),
                              writing=None,
-                             glossary=None) -> str:
+                             glossary=None,
+                             previous=None) -> str:
     """Build the system prompt. Pure function: same inputs -> same output.
 
     The prompt states the requested direction, the French address form and
@@ -2274,6 +2321,7 @@ def build_translation_prompt(direction=DIR_AUTO,
     tone_clause = "\n\n" + tone_instruction if tone_instruction else ""
     writing_clause = build_writing_profile_instruction(writing)
     glossary_clause = build_glossary_instruction(glossary)
+    previous_clause = build_previous_exchange_instruction(previous)
 
     return (
         "You are a precise conversational translator between English and "
@@ -2297,6 +2345,7 @@ def build_translation_prompt(direction=DIR_AUTO,
         + tone_clause
         + writing_clause
         + glossary_clause
+        + previous_clause
         + "\n\nReturn one primary translation and exactly five distinct, "
         "idiomatic alternatives in the target language. The five alternatives "
         "must keep the source's tone and formality and must differ meaningfully "
@@ -2321,17 +2370,26 @@ def build_user_envelope(text: str,
                         speaker_gender=GENDER_AVOID,
                         recipient_gender=GENDER_AVOID,
                         situation: str = "",
-                        tones=()) -> str:
+                        tones=(),
+                        previous=None) -> str:
     """Wrap the (already masked) user text in a small labelled envelope.
 
     *situation* is an optional, user-supplied one-line description of the
     conversation's register or context. *tones* is an optional sequence of
-    register tones. Both lines are omitted entirely when empty, so the
-    envelope shape for existing callers is unchanged.
+    register tones. *previous* is an optional {source, translation} pair
+    from the last Reply (v1.51). All are omitted entirely when empty/None,
+    so the envelope shape for existing callers is unchanged.
     """
     situation_line = "Situation: {}\n".format(situation) if situation else ""
     clean_tones = validate_tones(tones)
     tones_line = "Tones: {}\n".format(", ".join(clean_tones)) if clean_tones else ""
+    pair = normalise_previous_exchange(previous)
+    previous_block = (
+        "Previous source: {}\nPrevious translation: {}\n".format(
+            pair["source"], pair["translation"]
+        )
+        if pair is not None else ""
+    )
     return (
         "Requested direction: {}\n"
         "French address preference: {}\n"
@@ -2340,10 +2398,12 @@ def build_user_envelope(text: str,
         "French addressee agreement: {}\n"
         "{}"
         "{}"
+        "{}"
         "Text to translate:\n"
         "{}"
     ).format(direction, french_formality, french_variant,
-             speaker_gender, recipient_gender, situation_line, tones_line, text)
+             speaker_gender, recipient_gender, situation_line, tones_line,
+             previous_block, text)
 
 
 class TranslationValidationError(Exception):
@@ -2967,6 +3027,7 @@ def translate(config_snapshot, text, situation=""):
     tones = validate_tones(config_snapshot.get("tones"))
     writing = normalise_writing_profile(config_snapshot.get("writing"))
     glossary = normalise_glossary_entries(config_snapshot.get("translation_glossary"))
+    previous = normalise_previous_exchange(config_snapshot.get("_previous_exchange"))
 
     masked, mapping = protect_text(
         text,
@@ -2977,11 +3038,11 @@ def translate(config_snapshot, text, situation=""):
     )
     system_prompt = build_translation_prompt(
         direction, formality, variant, protect, speaker_gender, recipient_gender,
-        tones=tones, writing=writing, glossary=glossary,
+        tones=tones, writing=writing, glossary=glossary, previous=previous,
     )
     user_envelope = build_user_envelope(
         masked, direction, formality, variant, speaker_gender, recipient_gender,
-        situation=_safe_short_string(situation), tones=tones,
+        situation=_safe_short_string(situation), tones=tones, previous=previous,
     )
 
     raw = run_backend(config_snapshot, system_prompt, user_envelope)
@@ -5082,6 +5143,7 @@ if GUI_AVAILABLE:
             self._glossary_dialog = None
             self._http_cancel = threading.Event()
             self._restore_hotkey = RestoreHotkey()
+            self._previous_exchange = None  # v1.51: one Reply pair, in memory only
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
@@ -5420,13 +5482,33 @@ if GUI_AVAILABLE:
             )
             self.reply_btn.grid(row=0, column=3, padx=(0, 6))
 
+            # Reply-thread previous exchange (v1.51, notes_023 2.B): a plain
+            # caption rather than a toolbar checkbox, since Reply is itself
+            # the opt-in gesture. Its own row rather than crowding the
+            # four-button budget above (v1.15 already moved Translate off
+            # that row for exactly this reason).
+            thread_row = ctk.CTkFrame(left, fg_color="transparent")
+            thread_row.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 4))
+            thread_row.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                thread_row,
+                text="Reply remembers this turn for the next translation. "
+                     "Clear ends the thread.",
+                text_color="gray60", wraplength=380, justify="left", anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            self.thread_label = ctk.CTkLabel(
+                thread_row, text="Thread on", text_color="gray60",
+            )
+            self.thread_label.grid(row=0, column=1, sticky="e", padx=(12, 0))
+            self.thread_label.grid_remove()
+
             # A second row for the two "do the work" actions, right-aligned as
             # a secondary/primary pair — the same spacer-column pattern the
             # Settings dialog already uses for Cancel/Save. Kept off the row
             # above so a 1180px-wide window has room for both without any of
             # the six buttons being pushed past the visible pane.
             translate_row = ctk.CTkFrame(left, fg_color="transparent")
-            translate_row.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 12))
+            translate_row.grid(row=10, column=0, sticky="ew", padx=12, pady=(0, 12))
             translate_row.grid_columnconfigure(0, weight=1)
             self.open_file_btn = ctk.CTkButton(
                 translate_row, text="Open file…", width=120,
@@ -6224,13 +6306,33 @@ if GUI_AVAILABLE:
             user can still see what they just sent. No network request is
             made, and Situation is left untouched (notes_009/notes_010,
             v1.9): it is a persistent scene descriptor, not a per-turn note.
+
+            Also installs the reply-thread previous exchange (v1.51,
+            notes_023 2.B): Reply already means "my turn is over", so it is
+            the natural gesture to also remember that turn as background
+            context for the next translation. "Use as input" deliberately
+            does not do this — it is a different loop (the translation
+            becomes the new source) and must not silently attach the old
+            source as context.
             """
             if self._current_main:
                 self._copy_main()
+                self._previous_exchange = normalise_previous_exchange({
+                    "source": self._result_source_text,
+                    "translation": self._current_main,
+                })
+                self._refresh_thread_label()
             self._swap_direction()
             self.input_box.delete("1.0", "end")
             self._on_input_change()
             self.input_box.focus_set()
+
+        def _refresh_thread_label(self):
+            """Show/hide the "Thread on" caption; never echoes source text."""
+            if self._previous_exchange:
+                self.thread_label.grid()
+            else:
+                self.thread_label.grid_remove()
 
         def _on_input_change(self, _event=None):
             language = FRENCH if self.direction_var.get() == DIR_FR_EN else None
@@ -6394,6 +6496,8 @@ if GUI_AVAILABLE:
             if self._phrasebook_dialog is not None and self._phrasebook_dialog.winfo_exists():
                 self._phrasebook_dialog._refresh_list()
                 self._phrasebook_dialog._note_cleared()
+            self._previous_exchange = None
+            self._refresh_thread_label()
             self._on_input_change()
             self._refresh_status(state="ready")
 
@@ -7158,6 +7262,7 @@ if GUI_AVAILABLE:
             snapshot["default_french_recipient_gender"] = self.recipient_gender_var.get()
             snapshot["tones"] = self._current_tones()
             snapshot["writing"] = self._current_writing_profile()
+            snapshot["_previous_exchange"] = self._previous_exchange
 
             if snapshot.get("backend") == "anthropic" and not snapshot.get("privacy_ack"):
                 proceed = messagebox.askokcancel(
