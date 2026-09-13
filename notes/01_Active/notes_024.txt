@@ -1,0 +1,410 @@
+PLUME — ABOUT AND LOWERCASE TRANSLATIONS
+Note 024 | 13 September 2026 | Read-only feature proposals
+Baseline: C:\Plume\plume.py, APP_VERSION 1.53, Git f81e45b (main).
+Status: design only; snippets below are proposed, not installed.
+
+1. EXECUTIVE SUMMARY
+
+A. Add an About panel directly beneath the Settings heading. Show the
+application name, current version, purpose and existing copyright notice:
+Copyright (c) 2026 Mark Hawksworth. All rights reserved.
+This makes ownership discoverable inside the application and avoids another
+toolbar control or another window to manage.
+
+B. Add a "Lowercase translations" checkbox beneath the output alternatives.
+It converts the displayed and copied translation text locally, including
+finishing touches. Unticking it immediately restores the original casing.
+Example: "Je viens d'Auridia ! xD" becomes "je viens d'auridia ! xd".
+There is no additional translation request or API cost.
+
+Recommend two separately reviewable releases: About first, lowercase second.
+Version numbers remain unassigned until implementation is authorised.
+
+The standing mandate's five priority areas are considered below against the
+current code. They are context, not five additional unimplemented features.
+The two additions above are the scope of this note.
+
+2. DETAILED ARCHITECTURAL PROPOSALS
+
+2.A About panel
+
+Place a compact CTkFrame within SettingsDialog's existing scrollable body,
+immediately after the Settings heading and before the Backend selector.
+Display "About Plume — v1.53", with the version supplied by APP_VERSION;
+then "French ↔ English conversation helper" and the copyright notice.
+
+Use the owner and year already present in C:\Plume\COPYRIGHT and
+C:\Plume\LICENSE. This proposal displays their existing attribution; it
+does not revise the licence. Do not calculate the copyright year from the
+current date or invent an email address or ownership claim.
+
+Store the short notice in a module-level APP_COPYRIGHT constant next to
+APP_NAME/APP_VERSION. It is release metadata, not user configuration. This
+avoids reading a missing external COPYRIGHT file in a frozen executable.
+Review the constant against COPYRIGHT and LICENSE when attribution changes.
+No new bundled resource, dependency, JSON field, thread or network call.
+
+Visual specification: existing Settings size 560x780, minimum 480x480;
+outer horizontal padding 16, vertical padding 8; panel inner padding 12;
+corner radius 8; dark panel #242424; main text #F2F2F2; secondary text
+#C7C7C7; Segoe UI 15 bold heading and 13 body. Wrap the two body labels
+to the available panel width. The existing fixed Save/Cancel footer remains
+outside the scrolling body. An extra dialogue is unnecessary.
+
+2.B Lowercase translations: behavioural contract
+
+Apply Unicode str.lower() only at the presentation/clipboard boundary.
+Keep _current_main and _current_result in their original form. Never
+lowercase the input, prompt, response JSON, glossary or history storage.
+Do not use casefold(): it is intended for caseless matching and can change
+text more aggressively, such as converting German ß to ss. Python's lower()
+retains accents, but Unicode casing can change code-point count, so recalculate
+metrics from the displayed string. Reference:
+https://docs.python.org/3/library/stdtypes.html#str.lower
+https://docs.python.org/3/library/stdtypes.html#str.casefold
+
+Scope matrix:
+
+Surface                              Proposed behaviour when checked
+Main translation display             Lowercase, including appended touches
+Alternative translation labels       Lowercase; meaning checks unchanged
+Copy main / Reply                    Lowercase composed translation
+Individual alternative Copy          Lowercase composed translation
+Copy five / Copy five as HTML        Lowercase translations; existing numbering
+Copy main as HTML                    Same translation as plain Copy main
+Copy all                             Lowercase main and alternative translations;
+                                     source, situation, headings and meanings
+                                     retain their existing casing
+Copy source / phrasebook Copy         Existing original text
+History Copy / History export        Existing stored original text
+Markdown study sheet / diff export   Existing original-cased study material
+Speak / Use as input / Add glossary  Existing original translation
+
+This is a chat-output preference, not a document-wide case converter.
+Use as input keeps its existing raw-text semantics; pasting copied lowercase
+text remains available when that is deliberately wanted as the next source.
+Reply's clipboard honours lowercase, while its previous-exchange context
+keeps the original accepted translation. Favourite and Undo Clear preserve
+their raw snapshots; reopening either result applies the current display mode.
+
+Strict lowercase also lowercases proper names, acronyms, Latin-letter emotes,
+Keep-as-is terms and case-sensitive strings within translated output. Thus
+Auridia becomes auridia and xD becomes xd. Keep-as-is still protects wording
+from translation, but this explicit local formatting mode overrides casing
+on display/copy. Show the following help text in the output footer:
+"Display and chat copies only. Names and exact tokens also become lowercase."
+This is material to the proposed feature, especially for URLs, placeholders
+and commands. Users needing exact casing should leave the option unticked.
+Do not silently introduce exceptions while calling the mode all-lowercase.
+
+Ordering: raw translation -> existing finishing-touch composition where
+applicable -> lowercase -> existing optional French typography for clipboard
+operations -> HTML escaping/CF_HTML construction. Never lowercase completed
+HTML markup. Copy five continues to omit touches. Copy all continues to add
+touches to the main translation only. French typography remains copy-only.
+
+State and persistence: first release uses one ctk.BooleanVar, initially False,
+for the current application session. Clear, Undo Clear, Reply and new results
+retain the selection; restarting Plume resets it. No change to DEFAULT_CONFIG,
+plume_config.json, the example configuration or history schemas. This is an
+explicit scope choice; cross-session persistence was not requested.
+
+If a remembered preference is subsequently desired, add lowercase_output:
+false to DEFAULT_CONFIG and the example configuration; accept only a JSON
+boolean at load time (the string "false" must not turn it on). Use the existing
+atomic save_config path, preserve damaged-file protection, and reconcile
+SettingsDialog's open-time snapshot with the live output preference before
+saving. That extension needs its own save/failure tests; it is not secretly
+included in these session-only snippets.
+
+Visual specification: pin an output footer at right-pane grid row 6 beneath
+the row-5 alternatives; move the existing advisory to row 7. Keep row 5 as
+the sole vertically expanding output row. Use horizontal padding 12 and
+bottom padding 8; checkbox height 24, box 20x20, width 220, Segoe UI 13;
+fill #1F6AA5, hover #144870, text #F2F2F2. Place the help text on a separate
+wrapping line, Segoe UI 12, #C7C7C7. Budget roughly 60-80 logical pixels,
+depending on wrapping. Do not assume the current alternatives viewport has
+spare height at 1000x600; verify it with a visible advisory and long results.
+
+Performance/lifecycle: six bounded strings are reformatted on a toggle.
+Update existing labels rather than rebuilding the result or cards. Calling
+_render_result on a toggle would reset a promoted "Use this" main translation,
+stop speech and alter favourite state. No widget work belongs on a worker
+thread here; the callback performs only in-memory formatting on the UI thread.
+An in-flight translation continues normally and renders with the current
+checkbox value when its accepted result arrives.
+
+2.C Reconciliation with the standing priority areas
+
+1. Explorer intake: self.original_box is now self.input_box (line 5490).
+   Native WM_DROPFILES was attempted and reverted at v1.18 after documented
+   interpreter crashes. read_import_text (1933-1962) accepts .txt/.md only;
+   argv/Send to/pasted-path intake is available. .docx is not implemented.
+   Do not present Tk WndProc subclassing as a safe drop-in addition. Any
+   future native-drop proposal needs a separate isolated Windows harness
+   proving real cross-process delivery and clean teardown before app use.
+2. Presets: conversation_presets, writing profiles and user situation presets
+   already supply the relevant persistence surfaces. See normalise_conversation_
+   preset at 1771 and the toolbar's Save/Delete controls at 5426-5447.
+   WRITING_PRESETS and the old Mode/Strength/Role model are not current names;
+   do not add parallel configuration based on that obsolete vocabulary.
+3. Three tones: MAX_TONES = 3 (646), three UI variables (5540), validation
+   (2143-2168) and source-faithful prompt constraints (2171-2190) exist.
+   The model is explicitly told not to add facts or embellish the source.
+   This establishes code intent, not a claim of verified model fidelity.
+4. Exports/clipboard/metrics: Markdown study-sheet and diff helpers exist
+   at 1496/1545; CF_HTML at 3184/3216; metrics at 3354/3374. Extend their
+   translation formatting seams for this checkbox as specified; do not
+   introduce duplicate export or clipboard systems.
+5. Resilience: _backoff_delay (2697), _http_post_json (2732) and retryable
+   429/502/503/504 constants (705-708) already serve both backends through
+   call_anthropic (2893) and call_ollama (2946). Streaming is separate future
+   work; these two proposed features need no backend changes.
+
+3. MODULAR CODE SNIPPETS
+
+The blocks are proposed insertions/replacements, not a complete replacement
+module. Indent members to match their destination. GUI classes already sit
+inside if GUI_AVAILABLE. No imports or new source modules are required.
+
+3.A Attribution constant — insert after APP_TITLE
+
+```python
+# Keep this release metadata aligned with COPYRIGHT and LICENSE.
+APP_COPYRIGHT = (
+    "Copyright (c) 2026 Mark Hawksworth. All rights reserved."
+)
+```
+
+3.B About panel — SettingsDialog.__init__, after heading row += 1
+
+```python
+# Reuse the scrolling Settings body and its existing row counter.
+about = ctk.CTkFrame(body, fg_color="#242424", corner_radius=8)
+about.grid(row=row, column=0, sticky="ew", padx=16, pady=8)
+about.grid_columnconfigure(0, weight=1)
+ctk.CTkLabel(
+    about, text="About {} — v{}".format(APP_NAME, APP_VERSION),
+    font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+    text_color="#F2F2F2", anchor="w",
+).grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 4))
+about_labels = []
+for index, text in enumerate(
+    ("French ↔ English conversation helper", APP_COPYRIGHT), start=1
+):
+    label = ctk.CTkLabel(
+        about, text=text, justify="left", anchor="w", wraplength=360,
+        font=ctk.CTkFont(family="Segoe UI", size=13),
+        text_color="#C7C7C7",
+    )
+    label.grid(row=index, column=0, sticky="ew", padx=12, pady=(0, 8))
+    about_labels.append(label)
+
+
+def wrap_about(event):
+    # Follow the actual width when Settings is resized or scaled.
+    for label in about_labels:
+        label.configure(wraplength=max(160, event.width - 24))
+
+
+about.bind("<Configure>", wrap_about, add="+")
+row += 1
+```
+
+3.C Pure formatter — insert before adopt_main_translation
+
+```python
+def format_translation_case(text: str, lowercase: bool = False) -> str:
+    """Format output casing without changing the stored translation."""
+    return text.lower() if lowercase else text
+```
+
+3.D Session state and output footer
+
+Insert this state in PlumeApp.__init__ before _build_body():
+
+```python
+# A session preference, retained by Clear and Undo Clear.
+self.lowercase_var = ctk.BooleanVar(master=self, value=False)
+```
+
+In _build_right, insert after alts_frame.grid_columnconfigure; change the
+existing advisory.grid row from 6 to 7. Its hide/show behaviour stays intact.
+
+```python
+# Keep the option visible below the scrolling alternatives.
+output_options = ctk.CTkFrame(right, fg_color="transparent")
+output_options.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 8))
+output_options.grid_columnconfigure(0, weight=1)
+ctk.CTkCheckBox(
+    output_options, text="Lowercase translations",
+    variable=self.lowercase_var, command=self._on_lowercase_change,
+    width=220, height=24, checkbox_width=20, checkbox_height=20,
+    font=ctk.CTkFont(family="Segoe UI", size=13),
+    fg_color="#1F6AA5", hover_color="#144870", text_color="#F2F2F2",
+).grid(row=0, column=0, sticky="w")
+lowercase_help = ctk.CTkLabel(
+    output_options,
+    text=("Display and chat copies only. Names and exact tokens "
+          "also become lowercase."),
+    justify="left", anchor="w", wraplength=400,
+    font=ctk.CTkFont(family="Segoe UI", size=12),
+    text_color="#C7C7C7",
+)
+lowercase_help.grid(row=1, column=0, sticky="ew", pady=(3, 0))
+output_options.bind(
+    "<Configure>",
+    lambda event: lowercase_help.configure(
+        wraplength=max(160, event.width)
+    ),
+    add="+",
+)
+```
+
+3.E PlumeApp methods — insert beside _refresh_primary_display
+
+```python
+def _display_translation(self, text):
+    """Apply the live output preference to a raw translation."""
+    return format_translation_case(text, self.lowercase_var.get())
+
+
+def _on_lowercase_change(self):
+    """Refresh text without resetting the accepted result or selection."""
+    self._refresh_primary_display()
+    variations = (self._current_result or {}).get("variations", [])
+    for index, (card, variation) in enumerate(
+        zip(self._variation_cards, variations), start=1
+    ):
+        card._translation_label.configure(
+            text="{}. {}".format(
+                index, self._display_translation(variation["translation"])
+            )
+        )
+```
+
+3.F Required display/copy seam edits
+
+In _refresh_primary_display, immediately after the existing
+append_finishing_touch assignment and before _set_primary_text, insert:
+
+```python
+# Metrics below now describe the same case-converted display string.
+composed = self._display_translation(composed)
+```
+
+Replace only the first label construction in _build_variation_card with:
+
+```python
+# Retain the label so toggling case does not recreate cards or callbacks.
+card._translation_label = ctk.CTkLabel(
+    card,
+    text="{}. {}".format(
+        index, self._display_translation(variation["translation"])
+    ),
+    justify="left", anchor="w", wraplength=430,
+    font=ctk.CTkFont(size=14),
+)
+card._translation_label.grid(
+    row=0, column=0, sticky="ew", padx=10, pady=(6, 0)
+)
+```
+
+Retain the raw variation text captured by Use this, Copy and Speak callbacks.
+Replace _maybe_french_typography with this shared clipboard formatter. Keep
+its existing name for a small integration patch, but update its docstring:
+
+```python
+def _maybe_french_typography(self, text: str) -> str:
+    """Format copied translations with casing and optional punctuation."""
+    text = self._display_translation(text)
+    if self.config_data.get("french_typography") and self._result_is_french():
+        return apply_french_typography(text)
+    return text
+```
+
+_copy_main, _copy_five, _copy_current_result_as_html and the translation-only
+callback in _copy_all already use this seam. Copy all applies its callback
+only to translated fields, before escaping HTML; do not lowercase the final
+document. Individual alternative Copy currently bypasses that seam, so replace:
+
+```python
+def _copy_variation(self, text):
+    """Copy an alternative with the current output preferences."""
+    composed = append_finishing_touch(text, self._current_touch())
+    self._copy(self._maybe_french_typography(composed))
+```
+
+This also brings individual alternative Copy into line with the already
+configured French typography preference. Record that small consistency change
+in implementation review. Do not modify generic _copy: it also copies source
+and other content outside the checkbox's translation-only scope.
+
+4. INSERTION MAP AND VALIDATION
+
+All numbers below refer to the inspected C:\Plume\plume.py at f81e45b;
+use the method/statement anchors when earlier insertions move the numbers.
+
+Block  Class/method                         Baseline anchor
+3.A    Module constants                     After APP_TITLE, 105
+3.B    SettingsDialog.__init__               After heading row increment, 3728;
+                                            before Backend selector, 3730
+3.C    Module helper                        Before adopt_main_translation, 3677
+3.D    PlumeApp.__init__                     Before construction, 5289-5290
+3.D    PlumeApp._build_right                After alternatives setup, 5894;
+                                            advisory row 6 -> 7 at 5901
+3.E    PlumeApp new methods                 Beside _refresh_primary_display, 5952
+3.F    PlumeApp._refresh_primary_display    Between composition/display, 5961-5962
+3.F    PlumeApp._build_variation_card       Replace translation label, 7626-7630
+3.F    PlumeApp._maybe_french_typography    Replace method, 5974-5983
+3.F    PlumeApp._copy_variation             Replace method, 6427-6429
+
+Required path review during implementation:
+_copy_main 5985; _copy_five 5990; _copy_all 6012; _reply 6447;
+_clear_results 6898; _use_as_main 6947; _use_main_as_input 6969;
+_render_result 7654; _export_current_result 7764; _export_current_diff 7798;
+_copy_current_result_as_html 7823; build_copy_all_content 3425.
+Confirm labels track the current _variation_cards list after Clear and Reopen.
+Do not change _render_result, raw snapshots or generic clipboard behaviour.
+
+Headless acceptance checks to add only when implementation is authorised:
+- Disabled mode returns the original string, including whitespace/newlines.
+- Enabled mode converts English/French capitals and retains accented letters.
+- "Je viens d'Auridia ! xD" -> "je viens d'auridia ! xd"; empty text stays empty.
+- ß stays ß; a Unicode mapping that expands in length is reflected in metrics.
+- Original result structures and promoted main text remain unchanged.
+- All named clipboard routes transform only the designated translation fields;
+  plain text and HTML agree; source/meaning checks retain their original case.
+- About uses APP_VERSION and exactly matches the repository attribution.
+
+Real Windows 11 acceptance checks:
+- Default 1180x760 and minimum 1000x600, dark mode, 100/125/150/200% scaling.
+- Footer is reachable with five long alternatives and the advisory visible;
+  the alternatives remain usable. Settings About text wraps without clipping,
+  including at Settings' 480x480 minimum; Save/Cancel remain reachable.
+- Space toggles the focused checkbox; keyboard focus is visible; copy buttons
+  remain disabled before a result. Toggle empty output without exceptions.
+- Promote an alternative, toggle on/off, Copy main and Reply; promotion survives.
+- Toggle during a request, Clear, Undo Clear, Reopen history and translate again;
+  no stale result reappears and the session preference remains consistent.
+- Case-sensitive tokens visibly follow the explained opt-in behaviour.
+- Verify CF_HTML in a rich-text target and fallback plain text in a chat editor.
+- Restart resets the proposed session-only option. Check a packaged build for
+  About attribution and version without relying on an external COPYRIGHT file.
+
+Validation boundary for this note: local source, roadmap, repository attribution
+and note numbering were inspected. All ten Python blocks passed AST syntax
+parsing; the application source SHA-256 was unchanged. Snippets are design
+material. Syntax checking
+does not establish widget layout, clipboard behaviour, lifecycle correctness or
+release readiness. No application source, configuration, tests or executable
+was changed; no GUI session, backend call or application test suite was run.
+The roadmap reports 484 tests for v1.53; this note does not independently verify
+that prior result. Future implementation requires the relevant checks above and
+the existing suite: python -m unittest discover -s tests -v.
+
+CustomTkinter reference for the proposed widgets and scaling behaviour:
+https://customtkinter.tomschimansky.com/documentation/widgets/
+https://customtkinter.tomschimansky.com/documentation/scaling/
+
+END OF NOTE 024
