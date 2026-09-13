@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.55"
+APP_VERSION = "1.56"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -802,6 +802,7 @@ DEFAULT_CONFIG = {
     "default_writing_profile": {},
     "french_typography": False,
     "fallback_to_ollama": False,
+    "lowercase_output": False,
 }
 
 
@@ -923,6 +924,7 @@ def load_config():
     )
     config["french_typography"] = bool(config.get("french_typography"))
     config["fallback_to_ollama"] = bool(config.get("fallback_to_ollama"))
+    config["lowercase_output"] = bool(config.get("lowercase_output"))
 
     return config, None
 
@@ -4162,6 +4164,8 @@ if GUI_AVAILABLE:
                 self._config["default_french_recipient_gender"] = master.recipient_gender_var.get()
             if hasattr(master, "backend_var"):
                 self._config["backend"] = master.backend_var.get()
+            if hasattr(master, "lowercase_var"):
+                self._config["lowercase_output"] = bool(master.lowercase_var.get())
             if hasattr(master, "_current_tones"):
                 self._config["default_tones"] = master._current_tones()
             if hasattr(master, "_current_writing_profile"):
@@ -5313,8 +5317,11 @@ if GUI_AVAILABLE:
             self._previous_exchange = None  # v1.51: one Reply pair, in memory only
             self._clear_snapshot = None  # v1.53: one-level Undo Clear, in memory only
 
-            # A session preference retained by Clear and Undo Clear.
-            self.lowercase_var = ctk.BooleanVar(master=self, value=False)
+            # A preference retained by Clear/Undo Clear and, since v1.56,
+            # across restarts (config_data["lowercase_output"]).
+            self.lowercase_var = ctk.BooleanVar(
+                master=self, value=bool(self.config_data.get("lowercase_output"))
+            )
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
@@ -5941,8 +5948,13 @@ if GUI_AVAILABLE:
             # A plain frame, not its own CTkScrollableFrame (v1.55): `right`
             # itself now scrolls, and a scrollable-inside-scrollable nesting
             # makes the mouse wheel target whichever one last had it, which
-            # is confusing rather than useful here.
-            self.alts_frame = ctk.CTkFrame(right, fg_color="transparent")
+            # is confusing rather than useful here. height=1 (v1.56):
+            # CTkFrame otherwise defaults to a 200px-tall minimum even with
+            # zero cards, leaving a large dead gap above the Lowercase
+            # checkbox whenever no result is showing yet; it still grows to
+            # fit real cards once a result renders (grid_propagate is not
+            # disabled), so this only removes the empty-state floor.
+            self.alts_frame = ctk.CTkFrame(right, fg_color="transparent", height=1)
             self.alts_frame.grid(row=5, column=0, sticky="ew", padx=12, pady=6)
             self.alts_frame.grid_columnconfigure(0, weight=1)
 
@@ -6049,6 +6061,14 @@ if GUI_AVAILABLE:
                         index, self._display_translation(variation["translation"])
                     )
                 )
+            # Persist immediately (v1.56) so the preference survives a
+            # restart without requiring a Settings save first, the same
+            # best-effort pattern already used for elevenlabs_privacy_ack.
+            self.config_data["lowercase_output"] = bool(self.lowercase_var.get())
+            try:
+                save_config(self.config_data)
+            except ConfigError:
+                pass  # best-effort; the preference still applies this session
 
         def _refresh_primary_display(self):
             """Show the main translation with the finishing touch composed in.

@@ -965,6 +965,14 @@ class TestConfigCoercion(unittest.TestCase):
         config, _ = self._load_with({})
         self.assertIs(config["fallback_to_ollama"], False)
 
+    def test_lowercase_output_coerced_to_bool(self):
+        config, _ = self._load_with({"lowercase_output": "yes"})
+        self.assertIs(config["lowercase_output"], True)
+
+    def test_lowercase_output_defaults_false(self):
+        config, _ = self._load_with({})
+        self.assertIs(config["lowercase_output"], False)
+
     def test_coerce_positive_int(self):
         self.assertEqual(plume.coerce_positive_int("5000", 2000), 5000)
         self.assertEqual(plume.coerce_positive_int("banana", 2000), 2000)

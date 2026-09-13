@@ -2129,6 +2129,65 @@ schema impact beyond one constants tuple:
   regression — content renders identically, scrolling only appears
   when content actually exceeds the pane.
 
+## v1.56 — Lowercase translations follow-up (user feedback on v1.55)
+
+Two fixes requested directly by the user after screenshotting v1.55 on
+a large monitor and asking for the Lowercase checkbox to sit closer to
+the top and to stay on until manually turned off.
+
+- **Fixed a real, separate bug the user's screenshots exposed**: the
+  empty-state `alts_frame` had no explicit height, so CustomTkinter's
+  `CTkFrame` default of `width=200, height=200` applied — a ~200px
+  dead floor above the checkbox whenever no result is showing, on top
+  of v1.55's own scrollable-pane fix. Diagnosed with the same
+  `winfo_reqheight()` technique as v1.55's overflow (confirmed
+  `alts_frame.winfo_reqheight() == 200` with zero children, tracked to
+  `CTkFrame`'s literal constructor default). Fixed by passing
+  `height=1` explicitly; `grid_propagate` still lets it grow to fit
+  real cards once a result renders (confirmed live: 5 populated cards
+  still reach 580px), so this only removes the empty-state floor.
+  Verified live at a large window (matching the user's own
+  screenshots): the checkbox now sits directly under "Add to
+  glossary…/Keep as-is" instead of far down the pane.
+- **`lowercase_output` now persists across restarts**, not just across
+  Clear/Undo Clear within a session — the follow-up notes_024 itself
+  anticipated ("Should a remembered preference be required in the
+  future..."). New `DEFAULT_CONFIG["lowercase_output"] = False`,
+  loaded with the same `bool(config.get(...))` coercion every other
+  boolean in this config already uses (deliberately not the stricter
+  JSON-boolean-only check notes_024's draft suggested — consistency
+  with every existing boolean field beat introducing a one-off
+  exception for this one). `PlumeApp.__init__` seeds `lowercase_var`
+  from it; `_on_lowercase_change` writes it straight back with
+  `save_config()` on every toggle — a best-effort immediate persist,
+  the same pattern already used for `elevenlabs_privacy_ack`, chosen
+  over waiting for a Settings save so quitting without ever opening
+  Settings still remembers the toggle.
+- **A real dual-editor race, caught before it shipped, not after**:
+  `SettingsDialog._save()` writes from `self._config`, a snapshot
+  taken when Settings opened — exactly the class of bug this project
+  has hit before (v1.43 Clear, M1 presets) whenever a value can also
+  change from the main window while Settings stays open. Added
+  `lowercase_var` to the same live-remirror block Settings already
+  uses for `direction_var`/`backend_var`/etc., so a stale Settings
+  Save can never revert a toggle made after Settings was opened.
+  Verified live end-to-end: opened Settings, toggled Lowercase off
+  from the main window (confirmed the immediate write landed on disk),
+  clicked Save in the still-open, stale-snapshotted Settings dialog,
+  and confirmed the file still read the live (off) value, not the
+  stale (on) snapshot.
+- 2 new headless tests (`lowercase_output` boolean coercion and
+  default, mirroring the existing `french_typography`/
+  `fallback_to_ollama` pattern exactly). 490 → 492 tests. The gap fix
+  and the Settings-mirror are UI-lifecycle wiring verified live only,
+  same precedent as v1.40/v1.49/v1.50/v1.53/v1.55.
+- Deliberately kept the checkbox on the main window rather than moving
+  it into Settings, per discussion with the user: something toggled
+  "frequently" (the user's own framing) is better served by staying
+  one click away than being buried behind Settings' open/toggle/Save
+  round trip — and the gap fix above already closes most of the visual
+  distance that prompted the Settings suggestion in the first place.
+
 ---
 
 ### Notes on sequencing

@@ -310,9 +310,9 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   sheet/diff and Speak are never affected.
 - **Lowercase translations** checkbox under the alternatives: lowercases
   the displayed and copied translation text (accents kept, `ß` never
-  expanded to `ss`), off by default and reset on restart. Display/chat
-  copies only — Export, Export diff, Favourite, History and "Use as
-  input" always keep the original casing.
+  expanded to `ss`), off by default and remembered across restarts.
+  Display/chat copies only — Export, Export diff, Favourite, History
+  and "Use as input" always keep the original casing.
 
 Keyboard and mouse highlights:
 
