@@ -167,6 +167,12 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   promote a name straight from a just-seen result — pre-filled from your
   input selection and the working translation where they're short enough
   to be one term — without re-typing anything into Settings by hand.
+- A local **fidelity check** runs on every result, with no extra API
+  call: if a number, date, web address or a Keep-as-is term from the
+  source doesn't turn up in any translation or alternative, a tentative
+  advisory note says so (never a verdict that the translation is wrong)
+  — useful for catching a dropped detail the model's own notes stayed
+  silent about.
 - A copy button on every result, with a prominent **Copy main translation**;
   alternatives can be promoted with **Use this**, and the current result can
   be re-sent as new input with **Use as input**.

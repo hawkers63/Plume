@@ -1688,6 +1688,52 @@ schema impact beyond one constants tuple:
   disabled on a fresh launch with no result yet. Full suite: 448 tests
   pass (440 -> 448).
 
+## v1.48 — Local fidelity lint (notes_022 2.C)
+
+- **`fidelity_notes(source, result, keep_as_is=())`** (new, pure and
+  import-safe): a *local* second pass over the accepted result — the
+  model already returns `notes`, but this catches a dropped detail even
+  when the model stays silent, with no extra backend call. Checks, each
+  tentative and never a verdict on translation quality ("does not
+  appear", never "is wrong"):
+  1. Decimal numbers/years in the source absent from every translation
+     field (main plus all five alternatives), one line, French thin-
+     space/NBSP thousands-grouping normalised before comparing so a
+     correctly-rendered "1 500" isn't a false positive against a plain
+     "1500" in the source.
+  2. A source URL absent from every translation field, one line. No
+     protected/unprotected distinction is needed here: by the time
+     `_deliver()` runs, `restore_result_tokens` has already resolved
+     placeholder tokens back to real text on both sides.
+  3. Each `keep_as_is_terms` entry present in the source but absent from
+     every translation field, one line per missing term, with the
+     overall list still capped at `MAX_NOTES` so a source with many
+     Keep-as-is terms cannot flood the advisory strip.
+- **Wired into `_deliver()`**, appended onto the same `extra_notes` list
+  as the existing "generated for an earlier message" warning, so it
+  shows on the advisory strip alongside any other notice. Naturally
+  never runs on a correction-only payload, since `_deliver_correction`
+  (the standalone "Correct English" action) is a separate method that
+  never calls this.
+- **Deviates from the note's own draft snippet in one place** (the kind
+  of judgement call notes_018/019 sessions already established this
+  project expects, not a silent departure): the snippet's `_lint_haystack`
+  read `result.get("translation")`, but this codebase's actual result
+  contract keys the main translation as `"main_translation"` (confirmed
+  against `_render_result`/`restore_result_tokens`) — using the note's
+  key verbatim would have made every fidelity check compare against an
+  always-empty haystack.
+- 13 new unit tests (missing/present number in the main translation and
+  in an alternative, thin-space normalisation, missing/present URL,
+  missing/present/absent-from-source Keep-as-is term, the `MAX_NOTES`
+  cap, a non-dict result tolerated without raising, blank source
+  produces no notes). Full suite: 461 tests pass (448 -> 461). Verified
+  live by driving `PlumeApp._deliver()` directly with a fake result
+  missing a number, a URL and a Keep-as-is term all at once (this
+  project's established technique for exercising delivery-path UI
+  without a live backend call): the advisory strip showed all three
+  notes correctly, each on its own bulleted segment.
+
 ---
 
 ### Notes on sequencing

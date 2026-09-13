@@ -3195,6 +3195,73 @@ def build_copy_all_content(source_text, situation, result, main_text, typography
     return plain_text, html_fragment
 
 
+_FIDELITY_NUMBER = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?(?![\w.])")
+_FIDELITY_URL = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+
+
+def _lint_haystack(result: dict) -> str:
+    """All translation text a fidelity check should search, one result."""
+    parts = [result.get("main_translation") or ""]
+    for item in result.get("variations") or []:
+        parts.append((item or {}).get("translation") or "")
+    return "\n".join(parts)
+
+
+def fidelity_notes(source, result, keep_as_is=()) -> list:
+    """Local, tentative advisories about content that may not have
+    survived translation (v1.48, notes_022 2.C).
+
+    The model already returns `notes`; this is a *local* second pass over
+    the accepted snapshot, so a dropped date, URL or Keep-as-is term is
+    visible even when the model stays silent. Heuristic, never a claim of
+    translation quality: wording stays tentative ("does not appear"), not
+    "is wrong". By the time _deliver() calls this, protect_text's tokens
+    have already been restored to real text (restore_result_tokens runs
+    inside translate(), before delivery), so no protected/unprotected
+    distinction is needed here — a genuinely dropped item is simply
+    absent from every translation field.
+
+    Numbers and URLs are capped at one line each, matching how many
+    times that specific class of thing usually needs flagging in one
+    short message. Keep-as-is checks every term (a user may have several
+    names in play at once), each missing one its own line, with the
+    overall list still capped at MAX_NOTES so a source with many
+    Keep-as-is terms cannot flood the advisory label.
+    """
+    source = source or ""
+    haystack = _lint_haystack(result if isinstance(result, dict) else {})
+    folded = haystack.casefold()
+    notes = []
+
+    compact_haystack = haystack.replace(" ", "").replace(" ", "").replace(" ", "")
+    for number in _FIDELITY_NUMBER.findall(source):
+        token = number.replace(" ", "").replace(" ", "").replace(" ", "")
+        if token and token not in compact_haystack:
+            notes.append(
+                "The source contains {}, which does not appear in the "
+                "translations.".format(number)
+            )
+            break
+
+    for url in _FIDELITY_URL.findall(source):
+        if url not in haystack:
+            notes.append("A source web address is missing from the translations.")
+            break
+
+    folded_source = source.casefold()
+    for term in keep_as_is or []:
+        if not term:
+            continue
+        if term.casefold() in folded_source and term.casefold() not in folded:
+            notes.append(
+                "Keep-as-is term \"{}\" does not appear in the translations.".format(term)
+            )
+            if len(notes) >= MAX_NOTES:
+                break
+
+    return notes[:MAX_NOTES]
+
+
 def advisory_text_from_result(result: dict, extra_notes=None) -> str:
     """Return advisory text that should be shown for a translation result.
 
@@ -6914,6 +6981,14 @@ if GUI_AVAILABLE:
             # (extra_notes-less) _show_result_advisories call above.
             if correction_notes:
                 extra_notes.extend(correction_notes)
+            # Local fidelity lint (v1.48, notes_022 2.C): a second, local
+            # pass over the accepted result — cheap (one pass over a short
+            # string), so it runs on every delivery rather than needing an
+            # opt-in setting.
+            extra_notes.extend(fidelity_notes(
+                snap_text, data,
+                keep_as_is=self.config_data.get("keep_as_is_terms") or [],
+            ))
             if extra_notes:
                 self._show_result_advisories(data, extra_notes=extra_notes)
             self._refresh_status(state="ready")

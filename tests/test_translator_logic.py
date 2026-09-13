@@ -723,6 +723,89 @@ class TestAdvisories(unittest.TestCase):
         self.assertIn("Input changed.", text)
 
 
+class TestFidelityNotes(unittest.TestCase):
+    def test_flags_a_number_missing_from_every_translation(self):
+        result = valid_result(main="Salut.")
+        notes = plume.fidelity_notes("Meet at 1900 hours.", result)
+        self.assertTrue(any("1900" in n for n in notes))
+
+    def test_stays_quiet_when_the_number_is_in_an_alternative(self):
+        result = valid_result(main="Salut.")
+        result["variations"][0]["translation"] = "Rendez-vous a 1900."
+        notes = plume.fidelity_notes("Meet at 1900 hours.", result)
+        self.assertEqual(notes, [])
+
+    def test_stays_quiet_when_the_number_is_in_the_main_translation(self):
+        result = valid_result(main="Rendez-vous a 1900.")
+        notes = plume.fidelity_notes("Meet at 1900 hours.", result)
+        self.assertEqual(notes, [])
+
+    def test_ignores_french_thin_space_grouping_in_the_translation(self):
+        # The regex never matches across a space, so a plain source number
+        # like "1500" is one contiguous token; only the *translation*
+        # commonly renders it with a French thin-space thousands grouping
+        # ("1 500"). Stripping that (and a plain/NBSP space) before
+        # comparing is what keeps this from being a false positive.
+        result = valid_result(main="Il y a 1 500 personnes.")
+        notes = plume.fidelity_notes("There are 1500 people.", result)
+        self.assertEqual(notes, [])
+
+    def test_flags_a_missing_url(self):
+        result = valid_result(main="Va sur le site.")
+        notes = plume.fidelity_notes("Go to https://example.com now.", result)
+        self.assertTrue(any("web address" in n for n in notes))
+
+    def test_stays_quiet_when_the_url_survives(self):
+        result = valid_result(main="Va sur https://example.com maintenant.")
+        notes = plume.fidelity_notes("Go to https://example.com now.", result)
+        self.assertEqual(notes, [])
+
+    def test_flags_a_missing_keep_as_is_term(self):
+        result = valid_result(main="Salut tout le monde.")
+        notes = plume.fidelity_notes(
+            "Tell Kes hello.", result, keep_as_is=["Kes"],
+        )
+        self.assertTrue(any("Kes" in n for n in notes))
+
+    def test_stays_quiet_when_the_keep_as_is_term_survives(self):
+        result = valid_result(main="Dis bonjour a Kes.")
+        notes = plume.fidelity_notes(
+            "Tell Kes hello.", result, keep_as_is=["Kes"],
+        )
+        self.assertEqual(notes, [])
+
+    def test_ignores_a_keep_as_is_term_not_in_the_source(self):
+        result = valid_result(main="Salut tout le monde.")
+        notes = plume.fidelity_notes(
+            "Tell everyone hello.", result, keep_as_is=["Kes"],
+        )
+        self.assertEqual(notes, [])
+
+    def test_caps_at_max_notes(self):
+        terms = ["Term{}".format(i) for i in range(plume.MAX_NOTES + 5)]
+        source = " ".join(terms) + "."
+        result = valid_result(main="Nothing survived.")
+        notes = plume.fidelity_notes(source, result, keep_as_is=terms)
+        self.assertEqual(len(notes), plume.MAX_NOTES)
+
+    def test_does_not_include_the_source_sentence_itself(self):
+        source = "Meet at 19:00 please."
+        result = valid_result(main="Salut.")
+        notes = plume.fidelity_notes(source, result)
+        self.assertNotIn(source, notes)
+
+    def test_tolerates_a_non_dict_result(self):
+        # An empty haystack legitimately flags every number in the source
+        # as missing; the point of this test is that a non-dict result
+        # does not raise, not that it stays quiet.
+        notes = plume.fidelity_notes("Meet at 1900 hours.", "not a dict")
+        self.assertTrue(any("1900" in n for n in notes))
+
+    def test_blank_source_produces_no_notes(self):
+        self.assertEqual(plume.fidelity_notes("", valid_result()), [])
+        self.assertEqual(plume.fidelity_notes(None, valid_result()), [])
+
+
 class TestConfigCoercion(unittest.TestCase):
     def _load_with(self, raw_dict):
         with tempfile.TemporaryDirectory() as tmp:
