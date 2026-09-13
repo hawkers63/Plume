@@ -1,6 +1,7 @@
 # Release Drafter config for Plume
 # Drafts release notes from merged PRs into main.
-# Workflow Action not installed yet (needs workflow scope on the token).
+# Workflow: .github/workflows/release-drafter.yml — updates the draft Release on push to main.
+# Publishing a Release / tag remains a human-approved step.
 
 name-template: 'Plume v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
