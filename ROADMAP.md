@@ -2034,6 +2034,32 @@ schema impact beyond one constants tuple:
   Clear correctly took a fresh snapshot. Screenshotted at both 1000×600
   and 1180×760 after the width fix — no clipping at either size.
 
+## v1.54 — About panel (notes_024 2.A)
+
+- A compact `CTkFrame` ("About Plume — v{APP_VERSION}", the app's one-line
+  description, and the copyright notice) sits inside `SettingsDialog`'s
+  existing scrollable body, directly after the "Settings" heading and
+  before the Backend selector — no new toolbar button or window.
+- **`APP_COPYRIGHT`** (new module constant, beside `APP_NAME`/
+  `APP_VERSION`): the short notice as release metadata, matching
+  `COPYRIGHT`/`LICENSE` verbatim, not read from either file at runtime —
+  so a frozen `.exe` never depends on an external file for its own
+  About text. Review this constant against `COPYRIGHT`/`LICENSE`
+  whenever attribution changes.
+- Both body labels rebind their own `wraplength` on `<Configure>`, the
+  same self-resizing pattern already used elsewhere in this dialog, so
+  the panel wraps cleanly rather than clipping as Settings is resized
+  down to its documented 480×480 minimum.
+- No config schema, dependency, thread, or network call changed —
+  implemented exactly as notes_024's own snippets (3.A/3.B), taken
+  essentially verbatim. No new unit tests (static release metadata, no
+  new pure-function surface); full suite stays at 484 tests. Verified
+  live: launched from an isolated copy of `plume.py`, opened Settings,
+  confirmed the panel reads "About Plume — v1.54" with the correct
+  copyright line at both the default 560×780 size and the 480×480
+  minimum (wraps without clipping; Save/Cancel stay reachable in the
+  fixed footer at both sizes).
+
 ---
 
 ### Notes on sequencing

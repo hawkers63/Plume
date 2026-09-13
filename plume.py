@@ -101,8 +101,12 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.53"
+APP_VERSION = "1.54"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
+# Ensure this release metadata aligns with COPYRIGHT and LICENSE.
+APP_COPYRIGHT = (
+    "Copyright (c) 2026 Mark Hawksworth. All rights reserved."
+)
 CONFIG_FILENAME = "plume_config.json"
 
 # Sign-in autostart (v1.16): the HKCU Run value Plume writes when enabled.
@@ -3725,6 +3729,35 @@ if GUI_AVAILABLE:
                 body, text="Settings", font=ctk.CTkFont(size=18, weight="bold")
             )
             heading.grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+
+            # Reuse the existing scrolling Settings body and its row counter.
+            about = ctk.CTkFrame(body, fg_color="#242424", corner_radius=8)
+            about.grid(row=row, column=0, sticky="ew", padx=16, pady=8)
+            about.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                about, text="About {} — v{}".format(APP_NAME, APP_VERSION),
+                font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+                text_color="#F2F2F2", anchor="w",
+            ).grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 4))
+            about_labels = []
+            for index, text in enumerate(
+                ("French ↔ English conversation helper", APP_COPYRIGHT), start=1
+            ):
+                label = ctk.CTkLabel(
+                    about, text=text, justify="left", anchor="w", wraplength=360,
+                    font=ctk.CTkFont(family="Segoe UI", size=13),
+                    text_color="#C7C7C7",
+                )
+                label.grid(row=index, column=0, sticky="ew", padx=12, pady=(0, 8))
+                about_labels.append(label)
+
+            def wrap_about(event):
+                # Adjust to the actual width when Settings is resized or scaled.
+                for label in about_labels:
+                    label.configure(wraplength=max(160, event.width - 24))
+
+            about.bind("<Configure>", wrap_about, add="+")
             row += 1
 
             # Backend selector

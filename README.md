@@ -400,7 +400,9 @@ recovery prompt to replace it deliberately.
 
 Settings also controls placeholder protection (including the Keep as-is
 term list), local history, maximum message length, optional ElevenLabs voice
-configuration, and whether Plume stays on top of other windows.
+configuration, and whether Plume stays on top of other windows. An **About**
+panel at the top of Settings shows the app name, current version and the
+copyright notice.
 
 ---
 
