@@ -28,3 +28,6 @@ bug_hunter.md
 enhancement_agent.md
 grok_bot_bug_hunter.md
 grok_bot_repo_steward.md
+
+# Local working notes - stay on this machine only; never commit to GitHub.
+notes/
