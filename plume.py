@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.51"
+APP_VERSION = "1.52"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 CONFIG_FILENAME = "plume_config.json"
 
@@ -1697,6 +1697,45 @@ def looks_like_single_term(text: str, limit: int) -> bool:
     if not value or "\n" in value or len(value) > limit:
         return False
     return len(value.split()) <= 2
+
+
+_PROPER_NAME = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿ]+(?:[-'][A-Za-zÀ-ÖØ-öø-ÿ]+)*$")
+_ELISION_PREFIXES = ("d'", "l'", "n'", "m'", "t'", "s'", "j'", "c'", "qu'")
+
+
+def looks_like_proper_name(text: str) -> bool:
+    """True when *text* is one name-shaped token, not a phrase (v1.52,
+    notes_023 2.C). Used to default the glossary's "Also save the reverse
+    pair" checkbox on for a gaming/community name pair (Auridon/Auridia)
+    without offering it for an ordinary multi-word glossary entry.
+    """
+    if not looks_like_single_term(text, GLOSSARY_MAX_TERM_CHARS):
+        return False
+    value = (text or "").strip()
+    if " " in value:
+        return False
+    if value.casefold().startswith(_ELISION_PREFIXES):
+        return False  # d'Auridia is grammar, not the saved base form
+    return bool(_PROPER_NAME.match(value))
+
+
+def reverse_glossary_entry(entry) -> dict | None:
+    """Swap term/translation for the reverse-pair checkbox. None if it
+    cannot be salvaged (malformed, or both sides casefold-equal — a no-op
+    reverse that would just duplicate the forward entry).
+    """
+    if not isinstance(entry, dict):
+        return None
+    swapped = normalise_glossary_entries([{
+        "term": entry.get("translation"),
+        "translation": entry.get("term"),
+    }])
+    if not swapped:
+        return None
+    reverse = swapped[0]
+    if reverse["term"].casefold() == reverse["translation"].casefold():
+        return None
+    return reverse
 
 
 def build_glossary_instruction(glossary) -> str:
@@ -3463,7 +3502,46 @@ def _lint_haystack(result: dict) -> str:
     return "\n".join(parts)
 
 
-def fidelity_notes(source, result, keep_as_is=()) -> list:
+def _haystack_without_elision(text: str) -> str:
+    """Casefolded haystack with French elision prefixes stripped, so a
+    glossary preferred rendering that only appears as "d'Auridia" is still
+    found when the saved base form is "Auridia" (v1.52, notes_023 2.C).
+    """
+    folded = (text or "").casefold()
+    for prefix in _ELISION_PREFIXES:
+        folded = folded.replace(prefix, "")
+    return folded
+
+
+def glossary_fidelity_notes(source, haystack, glossary) -> list:
+    """Tentative advisories when a glossary term's preferred rendering is
+    absent from the translations (v1.52, notes_023 2.C), folded into
+    fidelity_notes rather than a second advisory pass. Same tentative
+    voice as the rest of fidelity_notes: "does not appear", never "is
+    wrong", and never a claim that an elision was grammatically required.
+    """
+    source = source or ""
+    folded_haystack = _haystack_without_elision(haystack)
+    notes = []
+    for entry in normalise_glossary_entries(glossary):
+        term = entry["term"]
+        preferred = entry["translation"]
+        if not re.search(
+            r"(?<!\w)" + re.escape(term) + r"(?!\w)", source, re.IGNORECASE
+        ):
+            continue
+        token = preferred.casefold()
+        if token and token not in folded_haystack:
+            notes.append(
+                "Glossary term \"{}\" does not appear as \"{}\" in the "
+                "translations.".format(term, preferred)
+            )
+            if len(notes) >= MAX_NOTES:
+                break
+    return notes
+
+
+def fidelity_notes(source, result, keep_as_is=(), glossary=()) -> list:
     """Local, tentative advisories about content that may not have
     survived translation (v1.48, notes_022 2.C).
 
@@ -3482,7 +3560,10 @@ def fidelity_notes(source, result, keep_as_is=()) -> list:
     short message. Keep-as-is checks every term (a user may have several
     names in play at once), each missing one its own line, with the
     overall list still capped at MAX_NOTES so a source with many
-    Keep-as-is terms cannot flood the advisory label.
+    Keep-as-is terms cannot flood the advisory label. Keep-as-is lines
+    stay first — they are the stronger promise (the term was supposed to
+    be copied verbatim) — with glossary_fidelity_notes() (v1.52,
+    notes_023 2.C) appended after if there is still room under the cap.
     """
     source = source or ""
     haystack = _lint_haystack(result if isinstance(result, dict) else {})
@@ -3514,6 +3595,9 @@ def fidelity_notes(source, result, keep_as_is=()) -> list:
             )
             if len(notes) >= MAX_NOTES:
                 break
+
+    if len(notes) < MAX_NOTES:
+        notes.extend(glossary_fidelity_notes(source, haystack, glossary))
 
     return notes[:MAX_NOTES]
 
@@ -4894,7 +4978,7 @@ if GUI_AVAILABLE:
             self.minsize(440, 420)
             self.transient(master)
             self.grid_columnconfigure(0, weight=1)
-            self.grid_rowconfigure(4, weight=1)
+            self.grid_rowconfigure(5, weight=1)
 
             self._editing_index = None
 
@@ -4931,18 +5015,30 @@ if GUI_AVAILABLE:
             self.cancel_edit_btn.grid(row=0, column=3, padx=(4, 0))
             self.cancel_edit_btn.grid_remove()
 
+            # Reverse pair (v1.52, notes_023 2.C): a gaming/community name
+            # like Auridon/Auridia otherwise needs two separate Adds.
+            # Defaulted by _update_preview from looks_like_proper_name on
+            # both fields; off while editing an existing row, so editing
+            # one entry never silently writes a second.
+            self.reverse_pair_var = ctk.BooleanVar(value=False)
+            self.reverse_box = ctk.CTkCheckBox(
+                self, text="Also save the reverse pair (Auridon ↔ Auridia)",
+                variable=self.reverse_pair_var,
+            )
+            self.reverse_box.grid(row=2, column=0, sticky="w", padx=12, pady=(4, 0))
+
             ctk.CTkLabel(
                 self,
                 text="Save base forms (Auridon, not d'Auridia) — grammar and "
                      "elisions are adapted automatically.",
                 text_color="gray60",
-            ).grid(row=2, column=0, sticky="w", padx=12, pady=(4, 0))
+            ).grid(row=3, column=0, sticky="w", padx=12, pady=(4, 0))
 
             self.preview_label = ctk.CTkLabel(self, text="", text_color="gray60")
-            self.preview_label.grid(row=3, column=0, sticky="w", padx=12)
+            self.preview_label.grid(row=4, column=0, sticky="w", padx=12)
 
             self.entries_frame = ctk.CTkScrollableFrame(self)
-            self.entries_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=4)
+            self.entries_frame.grid(row=5, column=0, sticky="nsew", padx=12, pady=4)
             self.entries_frame.grid_columnconfigure(0, weight=1)
 
             ctk.CTkLabel(
@@ -4951,10 +5047,10 @@ if GUI_AVAILABLE:
                      "choice — never shown verbatim, never overrides your "
                      "source text. Same list as the Settings glossary.",
                 text_color="gray60", wraplength=520, justify="left",
-            ).grid(row=5, column=0, sticky="w", padx=12, pady=(4, 0))
+            ).grid(row=6, column=0, sticky="w", padx=12, pady=(4, 0))
 
             self.notice = ctk.CTkLabel(self, text="", text_color="gray70")
-            self.notice.grid(row=6, column=0, sticky="w", padx=12, pady=(2, 10))
+            self.notice.grid(row=7, column=0, sticky="w", padx=12, pady=(2, 10))
 
             self._refresh_list()
             self.after_idle(self._present)
@@ -4980,6 +5076,15 @@ if GUI_AVAILABLE:
                 self.preview_label.configure(text="{} → {}".format(term, translation))
             else:
                 self.preview_label.configure(text="")
+            # Reverse pair (v1.52): actively set, not just set-True, so
+            # Cancel (blank fields, editing_index already None) correctly
+            # lands back on unchecked rather than keeping a stale value.
+            if self._editing_index is None:
+                self.reverse_pair_var.set(
+                    looks_like_proper_name(term) and looks_like_proper_name(translation)
+                )
+            else:
+                self.reverse_pair_var.set(False)
 
         def _refresh_list(self):
             for child in self.entries_frame.winfo_children():
@@ -5077,10 +5182,34 @@ if GUI_AVAILABLE:
                 entries.append(clean_entry)
 
             was_editing = self._editing_index is not None
+            add_reverse = bool(self.reverse_pair_var.get()) and not was_editing
             if self._persist(entries):
+                message = "Updated." if was_editing else "Added."
+                if add_reverse:
+                    message = self._add_reverse_pair(clean_entry)
                 self._cancel_edit()
                 self._refresh_list()
-                self.notice.configure(text="Updated." if was_editing else "Added.")
+                self.notice.configure(text=message)
+
+        def _add_reverse_pair(self, clean_entry) -> str:
+            """Append the swapped pair after a successful forward Add
+            (v1.52, notes_023 2.C). Never deletes an existing reverse to
+            make room, and never overwrites an already-present entry —
+            first-wins stays the glossary rule.
+            """
+            reverse = reverse_glossary_entry(clean_entry)
+            if reverse is None:
+                return "Added."
+            entries = list(self.master.config_data.get("translation_glossary") or [])
+            already = {e["term"].casefold() for e in entries}
+            if reverse["term"].casefold() in already:
+                return "Added. Reverse pair skipped (already present)."
+            if len(entries) >= GLOSSARY_MAX_ENTRIES:
+                return "Added. Reverse pair skipped (glossary full)."
+            entries.append(reverse)
+            if self._persist(entries):
+                return "Added, with reverse pair."
+            return "Added."
 
         def _edit_entry(self, index):
             entries = self.master.config_data.get("translation_glossary") or []
@@ -7374,6 +7503,7 @@ if GUI_AVAILABLE:
             extra_notes.extend(fidelity_notes(
                 snap_text, data,
                 keep_as_is=self.config_data.get("keep_as_is_terms") or [],
+                glossary=self.config_data.get("translation_glossary") or [],
             ))
             if extra_notes:
                 self._show_result_advisories(data, extra_notes=extra_notes)

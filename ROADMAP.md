@@ -1905,6 +1905,76 @@ schema impact beyond one constants tuple:
   pair and the label both cleared. Screenshotted at both 1000×600 and
   1180×760 with a pair active — no clipping at either size.
 
+## v1.52 — Glossary reverse pair + glossary fidelity (notes_023 2.C)
+
+- **`looks_like_proper_name(text)`** (new, pure): true only for one
+  name-shaped token — a single word, or a hyphenated/apostrophe name
+  (`Marie-Claire`, `O'Neill`) — never a phrase ("guardians of Auridon")
+  and never an elided form (`d'Auridia` is grammar, not the saved base
+  form, so it is explicitly excluded even though the character class
+  alone would have matched it). Used only to default the glossary's new
+  checkbox; never validated at Add time, so nothing already saved can
+  become invalid retroactively.
+- **`reverse_glossary_entry(entry)`** (new, pure): swaps term/translation
+  and re-runs the result through `normalise_glossary_entries` so the
+  reverse gets the exact same trimming/length rules as any other entry.
+  Returns `None` for a malformed entry or when both sides casefold-equal
+  (a no-op reverse that would just duplicate the forward entry).
+- **GlossaryDialog "Also save the reverse pair (Auridon ↔ Auridia)"
+  checkbox** (new row, between the Add row and the existing "Save base
+  forms..." caption, pushing every row below it down by one):
+  `_update_preview()` now *actively* sets it — on when not editing and
+  both fields pass `looks_like_proper_name`, off otherwise — rather than
+  only ever setting it `True`, so Cancel (blank fields, editing index
+  already cleared) correctly lands back on unchecked instead of keeping
+  a stale value from before the last edit. A small, deliberate departure
+  from the note's own draft pseudocode, which only set the variable in
+  one direction.
+- **`GlossaryDialog._add_or_update()`**: after a successful forward
+  persist, when the checkbox is on and this was a genuine Add (not an
+  edit), `_add_reverse_pair()` appends the swapped entry — skipped with
+  its own notice ("...Reverse pair skipped (already present)." /
+  "...(glossary full).") rather than ever overwriting an existing
+  reverse or deleting another entry to make room. First-wins stays the
+  glossary's rule.
+- **`glossary_fidelity_notes(source, haystack, glossary)`** and
+  **`_haystack_without_elision(text)`** (new, pure), folded into
+  `fidelity_notes(..., glossary=())` after the Keep-as-is lines (which
+  stay first — a Keep-as-is promise is stronger, since the term was
+  supposed to be copied verbatim) rather than a second advisory pass, so
+  the existing `MAX_NOTES` cap still applies to the combined list. For
+  each glossary pair whose term appears in the source, flags one
+  tentative line if the preferred rendering is absent from the
+  translations *after* stripping French elision prefixes
+  (`d'`, `l'`, `n'`, `m'`, `t'`, `s'`, `j'`, `c'`, `qu'`) from the
+  haystack — so a translation that correctly rendered "d'Auridia" is not
+  flagged just because the bare form "Auridia" never appears verbatim.
+  Same tentative voice as v1.48: "does not appear", never "is wrong",
+  never a claim that the elision was grammatically required.
+  `_deliver()` (7014-ish) now passes
+  `glossary=self.config_data.get("translation_glossary") or []`.
+  notes_021's declined direction field stays declined — two one-line
+  pairs remain the shape; nothing here adds a third field.
+- **12 new unit tests**: `looks_like_proper_name` (single token,
+  hyphenated/apostrophe, rejects a phrase, rejects an elided form,
+  rejects blank/`None`); `reverse_glossary_entry` (happy swap, identical
+  sides → `None`, malformed → `None`, round-trips through
+  `normalise_glossary_entries`); `glossary_fidelity_notes` folded into
+  `fidelity_notes` (default `glossary=()` keeps every v1.48 test green,
+  a present preferred rendering stays quiet, a missing one is flagged
+  naming both the term and the preferred rendering). Full suite: 484
+  tests pass (472 → 484). Verified live by driving `GlossaryDialog`
+  directly from an isolated copy of `plume.py`: typing Auridon/Auridia
+  auto-checked the box; Add wrote both pairs to `plume_config.json`
+  ("Added, with reverse pair."); editing an existing row and then
+  Cancel both left the checkbox correctly unchecked; adding a term whose
+  reverse already existed showed the "already present" skip while still
+  keeping the forward pair; filling the glossary to `GLOSSARY_MAX_ENTRIES`
+  and adding one more showed the "glossary full" skip; and driving
+  `_deliver()` with a fake result whose source contained a glossary term
+  but whose translations omitted the preferred rendering showed the new
+  advisory line. Screenshotted the checkbox row — no clipping.
+
 ---
 
 ### Notes on sequencing

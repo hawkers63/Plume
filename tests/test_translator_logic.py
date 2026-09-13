@@ -805,6 +805,77 @@ class TestFidelityNotes(unittest.TestCase):
         self.assertEqual(plume.fidelity_notes("", valid_result()), [])
         self.assertEqual(plume.fidelity_notes(None, valid_result()), [])
 
+    def test_glossary_default_keeps_v148_tests_green(self):
+        # fidelity_notes(source, result, keep_as_is=...) with no glossary
+        # argument must behave exactly as before v1.52.
+        result = valid_result(main="Salut tout le monde.")
+        notes = plume.fidelity_notes(
+            "Tell Kes hello.", result, keep_as_is=["Kes"],
+        )
+        self.assertTrue(any("Kes" in n for n in notes))
+
+    def test_glossary_note_folded_in_after_keep_as_is(self):
+        result = valid_result(main="Bienvenue a Auridon.")
+        notes = plume.fidelity_notes(
+            "Welcome to Auridia.",
+            result,
+            keep_as_is=["Kes"],
+            glossary=[{"term": "Auridia", "translation": "Auridon"}],
+        )
+        self.assertEqual(notes, [])  # Auridon does appear, so no note
+
+    def test_glossary_note_when_preferred_rendering_missing(self):
+        result = valid_result(main="Bienvenue.")
+        notes = plume.fidelity_notes(
+            "Welcome to Auridia.",
+            result,
+            glossary=[{"term": "Auridia", "translation": "Auridon"}],
+        )
+        self.assertTrue(any("Auridia" in n and "Auridon" in n for n in notes))
+
+
+class TestGlossaryReversePair(unittest.TestCase):
+    def test_looks_like_proper_name_single_token(self):
+        self.assertTrue(plume.looks_like_proper_name("Auridon"))
+
+    def test_looks_like_proper_name_hyphenated_and_apostrophe(self):
+        self.assertTrue(plume.looks_like_proper_name("Marie-Claire"))
+        self.assertTrue(plume.looks_like_proper_name("O'Neill"))
+
+    def test_looks_like_proper_name_rejects_a_phrase(self):
+        self.assertFalse(plume.looks_like_proper_name("guardians of Auridon"))
+
+    def test_looks_like_proper_name_rejects_an_elided_form(self):
+        # d'Auridia is grammar, not the saved base form.
+        self.assertFalse(plume.looks_like_proper_name("d'Auridia"))
+
+    def test_looks_like_proper_name_rejects_blank(self):
+        self.assertFalse(plume.looks_like_proper_name(""))
+        self.assertFalse(plume.looks_like_proper_name(None))
+
+    def test_reverse_glossary_entry_happy_swap(self):
+        reverse = plume.reverse_glossary_entry(
+            {"term": "Auridon", "translation": "Auridia"}
+        )
+        self.assertEqual(reverse, {"term": "Auridia", "translation": "Auridon"})
+
+    def test_reverse_glossary_entry_identical_sides_is_none(self):
+        self.assertIsNone(
+            plume.reverse_glossary_entry({"term": "Kes", "translation": "Kes"})
+        )
+
+    def test_reverse_glossary_entry_malformed_is_none(self):
+        self.assertIsNone(plume.reverse_glossary_entry("not a dict"))
+        self.assertIsNone(plume.reverse_glossary_entry({}))
+
+    def test_reverse_glossary_entry_round_trips_through_normalise(self):
+        reverse = plume.reverse_glossary_entry(
+            {"term": "  Auridon  ", "translation": "Auridia"}
+        )
+        self.assertEqual(
+            plume.normalise_glossary_entries([reverse]), [reverse]
+        )
+
 
 class TestConfigCoercion(unittest.TestCase):
     def _load_with(self, raw_dict):
