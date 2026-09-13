@@ -1,0 +1,524 @@
+PLUME — NEXT-WAVE TRANSLATOR UTILITIES
+Note 022 | 13 September 2026 | Read-only design and integration proposals
+Author: Grok (Lead Enhancement & Feature Architect)
+Source: live C:\Plume on GitHub main (hawkers63/Plume @ 85f1682)
+        plume.py 6,788 lines; ROADMAP through v1.45; notes_018–021 on tree
+Mode: ideation only. No application, configuration or test source is edited.
+
+Name remapping (the standing brief still uses earlier vocabulary):
+
+  Requested                       Live Plume
+  ------------------------------  ------------------------------------------
+  self.original_box               self.input_box  (line 4729)
+  WRITING_PRESETS                 conversation_presets + writing profile
+                                  + user_situation_presets
+  Two-tone UI limit               MAX_TONES = 3 since v1.20
+  Native WM_DROPFILES             Attempted v1.18, reverted; v1.32 intake
+  Retry / HTML / metrics / diff   Landed v1.17–v1.27 / v1.37 / v1.44
+
+------------------------------------------------------------------------
+0. Out of scope
+------------------------------------------------------------------------
+The standing five-item brief is fully on the roadmap through v1.45.
+This note does not reopen any of it.
+
+  Brief item                         Status
+  ---------------------------------  ------------------------------------
+  1. Explorer WM_DROPFILES           v1.18 reverted; v1.32 argv/Send to/
+                                     paste-path. Do not subclass Tk's
+                                     WndProc again.
+  2. User presets + Mode/Strength/   v1.19 / v1.24 / v1.29 / v1.35 / v1.36
+     Role + multi-tones
+  3. 3-tone combinator               v1.20 / v1.24 / v1.33
+  4. Markdown diff, HTML, metrics    v1.21 / v1.23 / v1.26 / v1.37 / v1.44
+  5. Exponential backoff             v1.17 / v1.27 / v1.38 + notes_017
+                                     Event.wait follow-up
+
+Also excluded:
+
+  * notes_017 bilingual tone-calibration benchmark (needs live backends
+    and a human reviewer, not a code change).
+  * python-docx, streaming, tkinterdnd2, a second credentials file.
+  * Dumping remaining emotes.txt rows into the three append pickers.
+  * A direction field on glossary entries (notes_021 declined this).
+
+notes_019–021 are already implemented as v1.43–v1.45. This note is the
+follow-on those three notes themselves left open.
+
+------------------------------------------------------------------------
+1. Executive summary
+------------------------------------------------------------------------
+Plume is no longer missing a translator. The remaining friction is
+*around* a translation: keeping a phrasebook across sessions, promoting
+a just-seen name into Glossary or Keep-as-is without opening Settings,
+spotting dropped numbers without another API call, and noticing a
+finished request when the window is in the tray.
+
+Recommended order (v1.46–v1.49):
+
+  A. Persistent named phrasebooks. Session-only was v1.43's explicit
+     first ship; notes_019 called persistence "a logical progression".
+     Still never sent to the model.  (v1.46)
+  B. Add-from-result: one click from the working translation into
+     Glossary or Keep-as-is, with a bidirectional glossary pair offered
+     for short proper names.  (v1.47)
+  C. Local fidelity lint: numbers, URLs and Keep-as-is terms checked
+     in the accepted result, surfaced as advisories. No extra backend
+     call.  (v1.48)
+  D. Tray completion notice when the main window is withdrawn.
+     Feature-gated on pystray. Never auto-translates.  (v1.49)
+
+A fifth item, a global restore hotkey, is designed but sequenced last
+(v1.50) because it must not touch Tk's WndProc (v1.18). It uses a
+separate message-only HWND, or it does not ship.
+
+UX rationale: a gaming/conversation helper is used in short bursts
+beside Explorer, Discord and a game. Users already type Auridon and
+guild callouts; v1.45 gave them a Glossary window, but the path from
+"I just saw this spelling in the result" to "save it" is still Settings
+or a separate dialog with empty fields. Phrasebooks evaporate on Clear.
+A finished Claude call while Plume is in the tray is silent. None of
+this changes the JSON contract or the two-pane layout.
+
+------------------------------------------------------------------------
+2. Detailed architectural proposals
+------------------------------------------------------------------------
+
+2.A  Persistent named phrasebooks  (v1.46)
+------------------------------------------
+Today `_phrasebook_entries` is a list on PlumeApp, mutated in place,
+wiped by `_clear()`, never written to disk (lines 530–553, 4104–4151).
+That remains the *default* working set: Clear still empties the live
+list. Persistence is opt-in.
+
+New config key, coerced on load:
+
+  "phrasebooks": [
+    {
+      "id": "stable-uuid",
+      "name": "ESO — Auridon",
+      "entries": [{"source": "Auridon", "note": "Auridia"}]
+    }
+  ]
+
+Rules, mirroring conversation presets / user situations:
+
+  * MAX_PHRASEBOOKS = 8, PHRASEBOOK_NAME_MAX = 40.
+  * Each book's entries reuse normalise_phrasebook_entry and the
+    existing 30 × 80/80 caps.
+  * Names unique by casefold; placeholder "Phrasebooks…" reserved.
+  * save_config() first, then publish to config_data (v1.24 pattern).
+    Never force=True. ConfigError/OSError on the dialog notice.
+  * Not exported with history. Not sent to either backend. Not mixed
+    into translation_glossary.
+
+UI, inside the existing PhrasebookDialog (do not add a fourth
+top-level button on the already-tight heading_row):
+
+  * A menu of saved books plus "This session (unsaved)".
+  * "Save as…" writes the live list under a new name.
+  * "Update" overwrites the selected saved book with the live list.
+  * "Load" replaces the live list from the selected book (confirm if
+    the live list is dirty).
+  * "Delete book" removes a saved book, not live entries.
+  * Clear on the main window still only empties the live list; saved
+    books are untouched. Caption becomes: "The working list is local
+    and cleared with Clear. Saved books live in plume_config.json and
+    are never sent to the model."
+
+Dirty flag: compare the live list to the loaded book's entries by
+normalised (source, note) tuples. Load/Save as… reset it.
+
+Performance: one extra list in an already-atomic JSON write. Typical
+payload is tens of short strings.
+
+2.B  Add-from-result  (v1.47)
+-----------------------------
+GlossaryDialog and Settings already edit translation_glossary.
+Keep-as-is is still a Settings textbox. After a result, the user has
+the source and a preferred rendering on screen and must re-type both.
+
+Add two actions on the primary-card button row (next to Copy all, which
+already proved that row has width headroom at 1000×600 — v1.44):
+
+  * "Add to glossary…" — opens a tiny modal (or pre-fills GlossaryDialog
+    fields and lifts it). Source defaults to the first Keep-as-is-shaped
+    token in `_result_source_text` if the user has a selection in the
+    input box, otherwise the whole source if it is ≤ GLOSSARY_MAX_TERM_CHARS,
+    otherwise the field is left blank for the user to paste. Preferred
+    rendering defaults to the working main translation if it is similarly
+    short, else blank. Saving goes through the same
+    normalise_glossary_entries + save_config + Settings._sync_glossary
+    path v1.45 already uses. Offer a checkbox "Also save the reverse
+    pair" (Auridon=Auridia and Auridia=Auridon), default on when both
+    sides look like a single proper name (no spaces, or one hyphenated
+    token). Never store "d'Auridia" — v1.45's elision clause covers that.
+
+  * "Keep as-is" — appends the current input *selection* (or a short
+    source if it is one token) to keep_as_is_terms via
+    normalise_keep_as_is_terms, then save_config. Disabled when the
+    candidate is empty, too long, or already present (casefold).
+
+Neither action sends a new backend request. Both refuse when no result
+is showing. Duplicate glossary sources still "first wins" as today.
+
+Do not put these buttons on every alternative card — that row is
+already Use this / Copy / Speak. The working main is the one the user
+has accepted.
+
+2.C  Local fidelity lint  (v1.48)
+---------------------------------
+The model already returns `notes`. This is a *local* second pass over
+the accepted snapshot, so a dropped date or URL is visible even when
+the model stays silent. Heuristic, British English advisories, never a
+claim of translation quality.
+
+Pure helper, import-safe:
+
+  fidelity_notes(source, result, keep_as_is=()) -> list[str]
+
+Checks, each producing at most one short line:
+
+  1. Decimal numbers and years in the source (regex
+     r"(?<![\w.])\d+(?:[.,]\d+)?(?![\w.])") that appear in neither the
+     main translation nor any alternative. Normalise spaces and
+     French thin spaces before comparing.
+  2. URLs and @handles already masked by protect_text: if protection
+     was on, skip (they should have come back as tokens). If it was
+     off, flag any source URL absent from the main translation.
+  3. Each keep_as_is term whose casefold form is in the source but
+     in no translation field.
+
+Call from `_deliver` after a successful parse, append onto extra_notes
+beside the existing "Generated for an earlier message" warning
+(line 6525). Cap at MAX_NOTES so a noisy source cannot flood the
+advisory label. Do not run on correction-only payloads.
+
+False positives will happen (a number that is correctly spelled out).
+Wording must stay tentative: "The source contains 19, which does not
+appear in the translations." Never "the translation is wrong."
+
+No config key. Cheap: one pass over ≤ 2,000 characters.
+
+2.D  Tray completion notice  (v1.49)
+------------------------------------
+When the window is withdrawn (start-minimised or close-to-tray) a
+finished request currently only re-enables buttons the user cannot
+see. pystray.Icon.notify exists on Windows.
+
+In `_deliver`, after a non-stale success or error, if
+`not self.winfo_viewable()` and `_tray_icon is not None`, call
+`self._tray_icon.notify(title, message)` with a generic title
+"Plume" and a message that contains *no source text* (privacy):
+
+  * success: "Translation ready."
+  * error: "Translation failed. Open Plume for the message."
+
+Clicking the balloon should not auto-translate; pystray's default
+click already maps to the default menu item (Show Plume). Feature
+gate: if notify is missing or raises, swallow and continue — the
+result is still on the window.
+
+No new config. Off in practice whenever the tray is not running.
+
+2.E  Optional global restore hotkey  (v1.50)
+--------------------------------------------
+Do **not** subclass the Tk toplevel WndProc. v1.18 crashed the
+interpreter on a foreign WM_DROPFILES; WM_HOTKEY on the same
+procedure is the same class of risk.
+
+If implemented, create a dedicated message-only HWND
+(`HWND_MESSAGE`) with its *own* WndProc that only understands
+WM_HOTKEY and WM_DESTROY, RegisterHotKey on that HWND, and a
+tiny thread or Tk after-poll that reads a thread-safe flag set
+by the hotkey procedure. Default chord: Ctrl+Shift+P. Settings
+checkbox `restore_hotkey`, off by default. UnregisterHotKey and
+DestroyWindow on `_on_close_destroy`. Collision with another
+app: RegisterHotKey fails, surface a one-line Settings status,
+leave the checkbox off.
+
+If that isolated HWND still proves unsafe in a throwaway test
+harness, drop the version rather than attaching anything to Tk.
+The tray menu already has "Show and paste clipboard".
+
+------------------------------------------------------------------------
+3. Modular code snippets
+------------------------------------------------------------------------
+British English. PEP 8. Drop-in.
+
+------------------------------------------------------------------------
+3.A  Phrasebook persistence helpers
+------------------------------------------------------------------------
+
+MAX_PHRASEBOOKS = 8
+PHRASEBOOK_NAME_MAX = 40
+PHRASEBOOK_UNSAVED = "This session (unsaved)"
+
+
+def normalise_phrasebook(entry) -> dict | None:
+    """Return a saved book, or None if it cannot be salvaged."""
+    if not isinstance(entry, dict):
+        return None
+    name = _safe_short_string(entry.get("name"), PHRASEBOOK_NAME_MAX)
+    if not name or name.casefold() == PHRASEBOOK_UNSAVED.casefold():
+        return None
+    ident = str(entry.get("id") or "").strip() or uuid.uuid4().hex
+    rows = []
+    seen = set()
+    for item in entry.get("entries") or []:
+        if not isinstance(item, dict):
+            continue
+        clean = normalise_phrasebook_entry(item.get("source"), item.get("note"))
+        if clean is None:
+            continue
+        key = clean["source"].casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(clean)
+        if len(rows) >= PHRASEBOOK_MAX_ENTRIES:
+            break
+    return {"id": ident, "name": name, "entries": rows}
+
+
+def normalise_phrasebooks(value) -> list:
+    if not isinstance(value, list):
+        return []
+    out, names = [], set()
+    for item in value:
+        book = normalise_phrasebook(item)
+        if book is None:
+            continue
+        key = book["name"].casefold()
+        if key in names:
+            continue
+        names.add(key)
+        out.append(book)
+        if len(out) >= MAX_PHRASEBOOKS:
+            break
+    return out
+
+# DEFAULT_CONFIG: "phrasebooks": []
+# load_config: config["phrasebooks"] = normalise_phrasebooks(
+#     config.get("phrasebooks"))
+
+# PhrasebookDialog: add a book_row above add_row with
+# CTkOptionMenu(values=[PHRASEBOOK_UNSAVED] + names),
+# Save as… / Update / Load / Delete book. Persistence uses
+# dict(self.master.config_data), save_config, then assign back.
+# Load copies book["entries"] into master._phrasebook_entries[:]
+# (slice assignment, not rebind — v1.43 Clear bug).
+
+------------------------------------------------------------------------
+3.B  Add-from-result
+------------------------------------------------------------------------
+
+def looks_like_single_term(text: str, limit: int) -> bool:
+    """True when *text* is one glossary/keep-as-is sized token."""
+    value = (text or "").strip()
+    if not value or "\n" in value or len(value) > limit:
+        return False
+    return len(value.split()) <= 2
+
+
+        def _add_main_to_glossary(self):
+            if not self._current_result:
+                return
+            source = (self._selected_input_or_short_source() or "").strip()
+            rendering = (self._current_main or "").strip()
+            if not looks_like_single_term(source, GLOSSARY_MAX_TERM_CHARS):
+                source = ""
+            if not looks_like_single_term(rendering, GLOSSARY_MAX_TERM_CHARS):
+                rendering = ""
+            self._open_glossary()
+            dialog = self._glossary_dialog
+            if dialog is None:
+                return
+            try:
+                dialog.term_entry.delete(0, "end")
+                dialog.term_entry.insert(0, source)
+                dialog.rendering_entry.delete(0, "end")
+                dialog.rendering_entry.insert(0, rendering)
+                dialog.lift()
+            except tk.TclError:
+                pass
+
+        def _keep_selection_as_is(self):
+            term = self._selected_input_or_short_source()
+            candidate = normalise_keep_as_is_terms(
+                list(self.config_data.get("keep_as_is_terms") or []) + [term]
+            )
+            if not term or term.casefold() not in {
+                item.casefold() for item in candidate
+            }:
+                self.advisory.configure(
+                    text="Select a short name in the source first."
+                )
+                self.advisory.grid()
+                return
+            new_config = dict(self.config_data)
+            new_config["keep_as_is_terms"] = candidate
+            try:
+                save_config(new_config)
+            except (ConfigError, OSError) as exc:
+                self.advisory.configure(text=str(exc))
+                self.advisory.grid()
+                return
+            self.config_data = new_config
+            self.advisory.configure(text="Saved to Keep as-is.")
+            self.advisory.grid()
+
+        def _selected_input_or_short_source(self) -> str:
+            widget = find_slang_text_widget(self.input_box)
+            if widget is not None:
+                try:
+                    selected = widget.get("sel.first", "sel.last").strip()
+                    if selected:
+                        return selected
+                except tk.TclError:
+                    pass
+            text = (self._result_source_text or self._input_text()).strip()
+            return text if looks_like_single_term(text, KEEP_AS_IS_MAX_CHARS) else ""
+
+# Primary-card button row (near Copy all, ~5168): two extra CTkButtons,
+# grey, width ~120. Disabled when no _current_result.
+
+------------------------------------------------------------------------
+3.C  Fidelity lint
+------------------------------------------------------------------------
+
+_FIDELITY_NUMBER = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?(?![\w.])")
+_FIDELITY_URL = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+
+
+def _lint_haystack(result: dict) -> str:
+    parts = [result.get("translation") or ""]
+    for item in result.get("variations") or []:
+        parts.append((item or {}).get("translation") or "")
+    return "\n".join(parts)
+
+
+def fidelity_notes(source, result, keep_as_is=()) -> list:
+    """Local, tentative advisories. Never a quality verdict."""
+    source = source or ""
+    haystack = _lint_haystack(result if isinstance(result, dict) else {})
+    folded = haystack.casefold()
+    notes = []
+    for number in _FIDELITY_NUMBER.findall(source):
+        token = number.replace(" ", "").replace("\u202f", "")
+        compact = haystack.replace(" ", "").replace("\u202f", "")
+        if token not in compact:
+            notes.append(
+                "The source contains {}, which does not appear in the "
+                "translations.".format(number)
+            )
+            break
+        for url in _FIDELITY_URL.findall(source):
+        if url not in haystack:
+            notes.append("A source web address is missing from the translations.")
+            break
+    for term in keep_as_is or []:
+        if term and term.casefold() in source.casefold() and term.casefold() not in folded:
+            notes.append(
+                "Keep-as-is term '{}' is missing from the translations.".format(term)
+            )
+            if len(notes) >= MAX_NOTES:
+                break
+    return notes[:MAX_NOTES]
+
+# _deliver, after extra_notes from input-changed / correction_notes:
+#     extra_notes.extend(fidelity_notes(
+#         snap_text, data,
+#         keep_as_is=self.config_data.get("keep_as_is_terms") or [],
+#     ))
+
+------------------------------------------------------------------------
+3.D  Tray completion notice
+------------------------------------------------------------------------
+
+        def _notify_tray(self, message: str) -> None:
+            """Best-effort balloon. Never include source text."""
+            icon = self._tray_icon
+            if icon is None:
+                return
+            try:
+                if self.winfo_viewable():
+                    return
+            except tk.TclError:
+                return
+            notify = getattr(icon, "notify", None)
+            if not callable(notify):
+                return
+            try:
+                notify(message, APP_NAME)
+            except Exception:
+                pass
+
+# End of _deliver, both the error return and the success path:
+#     self._notify_tray(
+#         "Translation failed. Open Plume for the message."
+#         if kind == "error" else "Translation ready."
+#     )
+# On the error path, call it before return.
+
+------------------------------------------------------------------------
+4. Insertion map
+------------------------------------------------------------------------
+Item   File / symbol                               Around
+-----  ------------------------------------------  ------
+A      normalise_phrasebook(s)                     after 540
+       DEFAULT_CONFIG phrasebooks                  726
+       load_config                                 772
+       PhrasebookDialog book menu / save           4104–4151
+B      looks_like_single_term                      near 1372
+       PlumeApp._add_main_to_glossary (new)        near _open_glossary 6213
+       PlumeApp._keep_selection_as_is (new)        same
+       primary-card button row                     _copy_all 5190 / _build_right
+C      fidelity_notes                              near advisory_text_from_result 3111
+       PlumeApp._deliver                           6496–6541
+D      PlumeApp._notify_tray (new)                 after _tray_paste 5883
+       PlumeApp._deliver                           6513 and 6541
+E      dedicated message-only HWND (only if a      new helpers near tray 5832
+       throwaway harness does not crash)
+
+Tests to add (headless):
+
+  * normalise_phrasebooks drops unnamed/duplicate/oversize books
+  * round-trip of one named book through save_config shape (dict only)
+  * looks_like_single_term: "Auridon" true, a paragraph false
+  * fidelity_notes flags a missing 19, stays quiet when 19 is in an
+    alternative, flags a missing keep-as-is, caps at MAX_NOTES
+  * fidelity_notes does not include the source sentence itself
+
+Manual gates:
+
+  * Save as… / Load / Clear: live list empties, saved book remains.
+  * Add to glossary from a short EN→FR result; reverse pair appears;
+    Settings textbox updates if that window is open (v1.45 sync).
+  * Keep as-is with a selection; Settings Keep-as-is box matches.
+  * Source "Meet at 19:00" translated without 19 → advisory.
+  * Withdraw to tray, translate, balloon "Translation ready." with no
+    source text in the balloon.
+
+------------------------------------------------------------------------
+5. Sequencing
+------------------------------------------------------------------------
+v1.46  Persistent named phrasebooks
+v1.47  Add-from-result (glossary + keep-as-is)
+v1.48  Local fidelity lint
+v1.49  Tray completion notice
+v1.50  Global restore hotkey — only after an isolated HWND harness
+       survives; otherwise omit
+
+------------------------------------------------------------------------
+6. Verification this session
+------------------------------------------------------------------------
+Read-only. Core files not modified. This note is the only write.
+
+  Inspected: GitHub plume.py (6,788 lines), ROADMAP.md (through v1.45),
+  notes_018–021. notes_021 lives in notes/02_Archive; 019 and 020 remain
+  in notes/01_Active. Next sequential file is therefore notes_022.txt.
+
+  Not run: unittest, live GUI, Claude/Ollama/ElevenLabs, git push.
+
+End of notes_022.
