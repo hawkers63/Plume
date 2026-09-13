@@ -2011,7 +2011,9 @@ class TestHttpLoopbackIntegration(unittest.TestCase):
         class Handler(_QuietHandler):
             def do_POST(self):
                 self._read_body()
-                time.sleep(0.15)
+                # Slightly above the assert floor so Windows timer slack
+                # cannot flake (CI saw 0.14 < 0.15 with sleep(0.15)).
+                time.sleep(0.2)
                 self._send_json(200, {"ok": True})
 
         server, thread = _start_loopback_server(Handler)
