@@ -23,6 +23,7 @@
   "launch_at_sign_in": false,
   "start_minimised_to_tray": false,
   "close_to_tray": false,
+  "restore_hotkey": false,
   "send_to_shortcut": false,
   "user_situation_presets": [],
   "default_tones": [],

@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.46"
+APP_VERSION = "1.50"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 CONFIG_FILENAME = "plume_config.json"
 
@@ -791,6 +791,7 @@ DEFAULT_CONFIG = {
     "launch_at_sign_in": False,
     "start_minimised_to_tray": False,
     "close_to_tray": False,
+    "restore_hotkey": False,
     "send_to_shortcut": False,
     "user_situation_presets": [],
     "default_tones": [],
@@ -907,6 +908,7 @@ def load_config():
     config["launch_at_sign_in"] = bool(config.get("launch_at_sign_in"))
     config["start_minimised_to_tray"] = bool(config.get("start_minimised_to_tray"))
     config["close_to_tray"] = bool(config.get("close_to_tray"))
+    config["restore_hotkey"] = bool(config.get("restore_hotkey"))
     config["send_to_shortcut"] = bool(config.get("send_to_shortcut"))
     config["user_situation_presets"] = normalise_user_situations(
         config.get("user_situation_presets")
@@ -1012,6 +1014,199 @@ def launch_at_sign_in_is_set() -> bool:
         return False
     except OSError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Global restore hotkey (v1.50, notes_022 2.E / notes_023 2.A). Windows-only.
+#
+# v1.18 subclassed the Tk toplevel's own WndProc for WM_DROPFILES and crashed
+# the interpreter the moment a message arrived asynchronously from outside
+# the process — a same-process/self-triggered test passed while the real
+# cross-process path did not. WM_HOTKEY on the same WndProc would be the same
+# class of risk, so this never touches Tk's window. Instead it is a message-
+# only HWND (HWND_MESSAGE) on its own daemon thread with its own WndProc that
+# understands only WM_HOTKEY and WM_DESTROY; on WM_HOTKEY it sets a
+# threading.Event and never calls into Tk. The Tk thread polls that event
+# with after(200, ...) and calls the existing _show_window() itself. A
+# throwaway, Plume-free harness using this exact class was required to
+# survive one externally triggered WM_HOTKEY before this was wired in.
+# ---------------------------------------------------------------------------
+
+RESTORE_HOTKEY_VK = 0x50  # 'P'
+RESTORE_HOTKEY_MODS = 0x0002 | 0x0004 | 0x4000  # MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT
+RESTORE_HOTKEY_ID = 1
+_RESTORE_WM_HOTKEY = 0x0312
+_RESTORE_WM_DESTROY = 0x0002
+_RESTORE_HWND_MESSAGE = -3
+_RESTORE_HOTKEY_CLASS = "PlumeRestoreHotkey"
+
+
+def _restore_hotkey_available() -> bool:
+    """True only on Windows with a working user32/kernel32 ctypes bind."""
+    if sys.platform != "win32":
+        return False
+    try:
+        ctypes.windll.user32
+        ctypes.windll.kernel32
+    except Exception:
+        return False
+    return True
+
+
+class RestoreHotkey:
+    """A message-only HWND on its own thread. Never talks to Tk directly.
+
+    The Tk thread is expected to poll ``self.fired`` (e.g. via
+    ``after(200, ...)``) and call ``PlumeApp._show_window`` itself.
+    Construction does not register the hotkey; call start() once the
+    Settings checkbox is on, and stop() to unregister and tear down.
+    """
+
+    def __init__(self):
+        self.fired = threading.Event()
+        self._thread = None
+        self._hwnd = 0
+        self._ready = threading.Event()
+        self._error = ""
+
+    def start(self) -> str:
+        """Register the chord on a new daemon thread. Returns "" or an error."""
+        if self._thread is not None and self._thread.is_alive():
+            return ""
+        if not _restore_hotkey_available():
+            return "Restore hotkey is only available on Windows."
+        self._ready.clear()
+        self._error = ""
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        self._ready.wait(3.0)
+        return self._error
+
+    def stop(self) -> None:
+        """Ask the message pump to quit and unregister, then join the thread."""
+        hwnd = self._hwnd
+        if hwnd:
+            try:
+                ctypes.windll.user32.PostMessageW(hwnd, _RESTORE_WM_DESTROY, 0, 0)
+            except Exception:
+                pass
+        thread = self._thread
+        if thread is not None:
+            thread.join(1.0)
+        self._thread = None
+        self._hwnd = 0
+
+    def _run(self) -> None:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        # Explicit argtypes/restype on every call: ctypes otherwise assumes a
+        # 32-bit int return, which silently overflows on a real 64-bit handle
+        # (the same class of bug v1.18's DragFinish(hdrop) hit).
+        kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+        kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+        user32.RegisterClassW.restype = ctypes.c_ushort
+        user32.CreateWindowExW.restype = ctypes.c_void_p
+        user32.CreateWindowExW.argtypes = [
+            ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        user32.DefWindowProcW.restype = ctypes.c_long
+        user32.DefWindowProcW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        user32.RegisterHotKey.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_uint,
+        ]
+        user32.UnregisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.DestroyWindow.argtypes = [ctypes.c_void_p]
+        user32.PostMessageW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        user32.GetMessageW.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint,
+        ]
+
+        WNDPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p, ctypes.c_uint,
+            ctypes.c_void_p, ctypes.c_void_p,
+        )
+
+        def wndproc(hwnd, msg, wparam, lparam):
+            if msg == _RESTORE_WM_HOTKEY and int(wparam) == RESTORE_HOTKEY_ID:
+                self.fired.set()
+                return 0
+            if msg == _RESTORE_WM_DESTROY:
+                try:
+                    user32.UnregisterHotKey(hwnd, RESTORE_HOTKEY_ID)
+                except Exception:
+                    pass
+                user32.PostQuitMessage(0)
+                return 0
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        self._wndproc_ref = WNDPROC(wndproc)  # keep alive for the message pump
+
+        class _RestoreHotkeyWndClass(ctypes.Structure):
+            _fields_ = [
+                ("style", ctypes.c_uint),
+                ("lpfnWndProc", WNDPROC),
+                ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int),
+                ("hInstance", ctypes.c_void_p),
+                ("hIcon", ctypes.c_void_p),
+                ("hCursor", ctypes.c_void_p),
+                ("hbrBackground", ctypes.c_void_p),
+                ("lpszMenuName", ctypes.c_wchar_p),
+                ("lpszClassName", ctypes.c_wchar_p),
+            ]
+
+        wc = _RestoreHotkeyWndClass()
+        wc.lpfnWndProc = self._wndproc_ref
+        wc.hInstance = kernel32.GetModuleHandleW(None)
+        wc.lpszClassName = _RESTORE_HOTKEY_CLASS
+        if not user32.RegisterClassW(ctypes.byref(wc)):
+            err = kernel32.GetLastError()
+            if err != 1410:  # ERROR_CLASS_ALREADY_EXISTS: fine, reuse it
+                self._error = "Could not register the restore-hotkey window class."
+                self._ready.set()
+                return
+
+        hwnd = user32.CreateWindowExW(
+            0, _RESTORE_HOTKEY_CLASS, "Plume hotkey", 0,
+            0, 0, 0, 0, _RESTORE_HWND_MESSAGE, None, wc.hInstance, None,
+        )
+        if not hwnd:
+            self._error = "Could not create the restore-hotkey window."
+            self._ready.set()
+            return
+        self._hwnd = hwnd
+        if not user32.RegisterHotKey(
+            hwnd, RESTORE_HOTKEY_ID, RESTORE_HOTKEY_MODS, RESTORE_HOTKEY_VK
+        ):
+            self._error = "Ctrl+Shift+P is already in use by another application."
+            user32.DestroyWindow(hwnd)
+            self._hwnd = 0
+            self._ready.set()
+            return
+        self._ready.set()
+
+        class _RestoreHotkeyMsg(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", ctypes.c_void_p),
+                ("message", ctypes.c_uint),
+                ("wParam", ctypes.c_void_p),
+                ("lParam", ctypes.c_void_p),
+                ("time", ctypes.c_uint),
+                ("pt_x", ctypes.c_long),
+                ("pt_y", ctypes.c_long),
+            ]
+
+        message = _RestoreHotkeyMsg()
+        while user32.GetMessageW(ctypes.byref(message), 0, 0, 0) != 0:
+            user32.TranslateMessage(ctypes.byref(message))
+            user32.DispatchMessageW(ctypes.byref(message))
 
 
 # ---------------------------------------------------------------------------
@@ -3582,6 +3777,31 @@ if GUI_AVAILABLE:
                 ).grid(row=row, column=0, sticky="w", padx=16)
                 row += 1
 
+            # Global restore hotkey (v1.50, notes_023 2.A). Independent of the
+            # tray extras above: a user who never enables close-to-tray still
+            # wants the window back from a buried game. Placed with the tray
+            # checkboxes so the two "how Plume is summoned" controls sit
+            # together.
+            self.restore_hotkey_var = ctk.BooleanVar(
+                value=bool(self._config.get("restore_hotkey"))
+            )
+            restore_hotkey_box = ctk.CTkCheckBox(
+                body,
+                text="Restore Plume with Ctrl+Shift+P (does not paste or "
+                     "translate)",
+                variable=self.restore_hotkey_var,
+            )
+            restore_hotkey_box.grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+            if not _restore_hotkey_available():
+                restore_hotkey_box.configure(state="disabled")
+                ctk.CTkLabel(
+                    body,
+                    text="Restore hotkey is only available on Windows.",
+                    text_color="gray60",
+                ).grid(row=row, column=0, sticky="w", padx=16)
+                row += 1
+
             # Explorer "Send to" file intake (v1.32). Independent of the tray
             # extras above: it is a plain .cmd file, not a pystray feature.
             self.send_to_var = ctk.BooleanVar(
@@ -3727,6 +3947,9 @@ if GUI_AVAILABLE:
             self._config["launch_at_sign_in"] = want_launch
             self._config["start_minimised_to_tray"] = want_minimised
             self._config["close_to_tray"] = want_close_to_tray
+            self._config["restore_hotkey"] = (
+                bool(self.restore_hotkey_var.get()) and _restore_hotkey_available()
+            )
             try:
                 set_launch_at_sign_in(want_launch)
             except ConfigError as exc:
@@ -4858,6 +5081,7 @@ if GUI_AVAILABLE:
             self._phrasebook_dialog = None
             self._glossary_dialog = None
             self._http_cancel = threading.Event()
+            self._restore_hotkey = RestoreHotkey()
 
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
@@ -4877,6 +5101,8 @@ if GUI_AVAILABLE:
             self._bind_shortcuts()
             self._apply_always_on_top()
             self._maybe_start_tray()
+            self._sync_restore_hotkey()
+            self.after(200, self._poll_restore_hotkey)
             self._maybe_start_import(sys.argv)
 
             # Invalidate any in-flight worker when the window is closed so a
@@ -6178,6 +6404,7 @@ if GUI_AVAILABLE:
             self._speech_request_id += 1
             self._stop_speech()
             self._cleanup_tts_file()
+            self._restore_hotkey.stop()
             self.destroy()
 
         def _on_close(self):
@@ -6230,6 +6457,33 @@ if GUI_AVAILABLE:
             self.lift()
             self.focus_force()
             self._apply_always_on_top()
+
+        def _sync_restore_hotkey(self):
+            """Start/stop the restore hotkey to match config_data (v1.50)."""
+            want = bool(self.config_data.get("restore_hotkey"))
+            if want:
+                error = self._restore_hotkey.start()
+                if error:
+                    self.config_data["restore_hotkey"] = False
+                    self.advisory.configure(text=error)
+                    self.advisory.grid()
+            else:
+                self._restore_hotkey.stop()
+
+        def _poll_restore_hotkey(self):
+            """Tk-thread poll of the hotkey's Event; never called from the
+            hotkey's own message-pump thread. Deiconify only, no paste, no
+            translate — "Show and paste clipboard" stays a tray-menu action.
+            """
+            try:
+                if not self.winfo_exists():
+                    return
+            except tk.TclError:  # pragma: no cover - window closed
+                return
+            if self._restore_hotkey.fired.is_set():
+                self._restore_hotkey.fired.clear()
+                self._show_window()
+            self.after(200, self._poll_restore_hotkey)
 
         def _tray_show(self, icon=None, item=None):
             # pystray's callback runs on its own thread; every UI action must
@@ -6703,6 +6957,7 @@ if GUI_AVAILABLE:
             self.backend_var.set(normalise_backend(new_config.get("backend")))
             self._apply_always_on_top()
             self._maybe_start_tray()
+            self._sync_restore_hotkey()
             self._refresh_conversation_preset_menu()
             self._refresh_status()
             # An open GlossaryDialog reads config_data fresh on every method

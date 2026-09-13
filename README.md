@@ -244,6 +244,14 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   translation shows a plain "Translation ready." (or "…failed.") balloon
   — never the source text — so a request doesn't finish silently out of
   sight.
+- Optional **restore hotkey** (Windows only, off by default in
+  Settings): Ctrl+Shift+P brings a buried window back — deiconify, lift,
+  focus — without pasting or translating anything. Runs on its own
+  message-only window, never a subclass of the main Tk window, so it
+  cannot crash the interpreter the way a foreign message on the main
+  window once did (see ROADMAP v1.18/v1.50). If the chord is already
+  claimed by another application, the checkbox turns itself back off
+  with a one-line explanation rather than silently doing nothing.
 - **Conversation presets:** save the toolbar's direction, French form,
   Me/You gender agreement, situation and tones as a named preset (a
   "Presets…" menu plus Save/Delete beside the toolbar's You control) —

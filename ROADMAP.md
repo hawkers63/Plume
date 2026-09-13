@@ -1778,6 +1778,71 @@ schema impact beyond one constants tuple:
   speculatively in the same pass as four already-scoped, lower-risk
   versions.
 
+## v1.50 — Global restore hotkey (notes_022 2.E, notes_023 2.A)
+
+- **Hard gate cleared first, exactly as required.** A throwaway,
+  Plume-free harness (`ctypes` only, no Tk, no CustomTkinter) built the
+  same message-only-HWND design and was run standalone. It registered
+  Ctrl+Shift+P, received one genuine externally triggered `WM_HOTKEY`
+  (a real key press, not a same-process `PostMessage`), and unregistered
+  and tore down cleanly — no crash, no hang. This is the same bar v1.18's
+  `WM_DROPFILES` revert was held to, now met on the safety property that
+  actually matters: async delivery into a foreign-thread ctypes callback
+  does not touch Tk and does not crash the interpreter. The harness's
+  first draft did hit a real bug on the way — `CreateWindowExW`'s
+  `hInstance` argument overflowed (`ArgumentError: int too long to
+  convert`) because `GetModuleHandleW`'s 64-bit return was never given an
+  explicit `restype` — the exact class of bug the project's own
+  `DragFinish(hdrop)` lesson from v1.18 already warned about. Fixed by
+  setting explicit `argtypes`/`restype` on every Win32 call, matching the
+  pattern the v1.21 CF_HTML clipboard code already established.
+- **`RestoreHotkey`** (new, Windows-only, import-safe): a message-only
+  HWND (`HWND_MESSAGE`) on its own daemon thread with its own `WNDPROC`
+  that understands only `WM_HOTKEY` and `WM_DESTROY` — everything else is
+  `DefWindowProcW`. On `WM_HOTKEY` it only sets a `threading.Event`; it
+  never calls into Tk. `start()` registers Ctrl+Shift+P
+  (`MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT`, so a held chord cannot queue
+  repeats) and returns an error string on failure (already in use by
+  another application, or class/window creation failure) instead of
+  raising. `stop()` posts a quit to the message-only window, unregisters,
+  and joins the thread with a short timeout. Never subclasses Tk's own
+  toplevel — the v1.18 class of risk stays out of scope entirely.
+- **`PlumeApp._sync_restore_hotkey()` / `_poll_restore_hotkey()`** (new):
+  the Tk thread never touches the hotkey thread directly. It polls
+  `self._restore_hotkey.fired` every 200 ms via `after(...)` and, when
+  set, clears it and calls the existing `_show_window()` — deiconify,
+  lift, focus, honour always-on-top. Never auto-translates, never
+  pastes; "Show and paste clipboard" stays a tray-menu-only action, as
+  notes_023 required. A registration failure clears the config flag and
+  surfaces the one-line reason on the existing `self.advisory` strip
+  rather than leaving a checkbox silently on with nothing running.
+- **Settings checkbox** "Restore Plume with Ctrl+Shift+P (does not paste
+  or translate)", off by default, placed directly under "Close to the
+  tray rather than quitting" — independent of `TRAY_AVAILABLE` (a user
+  who never enables close-to-tray still wants the window back from a
+  buried game), gated instead on its own `_restore_hotkey_available()`
+  (Windows + a working user32/kernel32 ctypes bind), disabled with its
+  own one-line caption otherwise.
+- **New config key** `"restore_hotkey": false`, coerced with `bool()` on
+  load like every other boolean flag; added to
+  `plume_config.example.json`. Started/stopped from
+  `PlumeApp.__init__` (after `_maybe_start_tray()`) and re-synced from
+  `_apply_settings()` after every Settings save; stopped in
+  `_on_close_destroy()` before `destroy()` so the thread and the
+  registration never outlive the window.
+- **No new unit tests** (Windows Win32 message-loop behaviour, no new
+  pure-function surface — matches the precedent set for v1.16's tray
+  icon and v1.49's tray notice). Verified live: the isolated harness
+  (above); driving `PlumeApp` and `SettingsDialog` directly from an
+  isolated copy of `plume.py` confirmed the checkbox toggles
+  `config_data["restore_hotkey"]`, `_save()` actually starts the real
+  `RestoreHotkey` thread, and `_on_close_destroy()` stops it cleanly
+  (`_thread.is_alive()` False afterwards); a screenshot of the scrolled
+  Settings body confirmed the new row sits directly under "Close to the
+  tray..." with no clipping at 1180×760, and the existing 461 tests
+  still pass unchanged. `APP_VERSION` is bumped to "1.50" in this same
+  commit, ending the drift that had left it reading "1.46" since v1.47.
+
 ---
 
 ### Notes on sequencing
