@@ -13,6 +13,7 @@
   "keep_as_is_terms": [],
   "translation_glossary": [],
   "conversation_presets": [],
+  "phrasebooks": [],
   "save_local_history": false,
   "max_input_chars": 2000,
   "elevenlabs_api_key": "",

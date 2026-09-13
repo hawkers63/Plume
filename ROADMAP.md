@@ -1595,6 +1595,50 @@ schema impact beyond one constants tuple:
   real persistence, not just in-memory UI state. Full suite: 423 tests
   pass (421 -> 423).
 
+## v1.46 — Persistent named phrasebooks; version number in the title bar (notes_022 2.A)
+
+- **Title bar now shows the running version**: a new `APP_VERSION`
+  constant is appended to the main window's title
+  ("Plume — French ↔ English conversation helper — v1.46"), so it is
+  easy to tell at a glance which build is running — the user's own
+  standing request after finding a rebuilt `.exe` can go stale for days
+  between rebuilds. `APP_VERSION` is bumped alongside each roadmap
+  version from here on, the same way `ROADMAP.md` already numbers them.
+- **Persistent named phrasebooks**: the per-conversation phrasebook
+  (v1.43) stays the default working set — `Clear` still empties it, and
+  it is still never sent to the model. This adds an opt-in second layer:
+  "Save as…" snapshots the live list under a name into a new
+  `phrasebooks` config key (`normalise_phrasebook`/`normalise_phrasebooks`,
+  mirroring the existing `normalise_conversation_preset(s)` shape and
+  its duplicate-name-repair/id-dedupe/cap rules — `MAX_PHRASEBOOKS = 8`,
+  `PHRASEBOOK_NAME_MAX = 40`), so a named book survives `Clear` and a
+  restart while a saved book is still never sent to the model.
+- **UI lives inside the existing `PhrasebookDialog`** rather than adding
+  a fourth button to the already-tight main-window heading row: a new
+  book-selector row (a menu of saved books plus "This session
+  (unsaved)", and a Load button) and an actions row (Save as… / Update /
+  Delete book) sit above the existing add-entry row. "Load" warns via a
+  confirm dialog when the live list differs from the book about to be
+  loaded (compared by normalised source/note pairs) before replacing it
+  — via slice assignment on the shared `master._phrasebook_entries` list,
+  never a rebind, the same fix v1.43's Clear bug already established.
+  "Delete book" removes a saved book only, never the live list. The
+  dialog's caption now explains both layers: "The working list is local
+  and cleared with Clear. Saved books live in plume_config.json and are
+  never sent to the model." Pressing the main window's Clear also resets
+  the dialog's book indicator back to "This session (unsaved)" via a new
+  `_note_cleared()` hook, since the live list it was tracking just
+  emptied.
+- 17 new unit tests for `normalise_phrasebook`/`normalise_phrasebooks`
+  (malformed/blank/oversized names, id dedupe, name-collision repair,
+  entry normalisation/dedupe/cap, non-list rejection, a `save_config`
+  JSON round-trip). `plume_config.example.json` updated with the new
+  `phrasebooks: []` key. Full suite: 440 tests pass (423 -> 440).
+  Verified live: Save as…/Update/Load (both the confirm-and-cancel and
+  confirm-and-proceed paths)/Delete book all round-tripped correctly
+  against a direct read of the isolated `plume_config.json`, and the
+  title bar showed the version number, at the documented window size.
+
 ---
 
 ### Notes on sequencing

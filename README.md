@@ -48,7 +48,7 @@ The hard rule underneath every release:
 | **Placeholders, Keep as-is, Glossary** | Names/links/markers survive; preferred renderings stay consistent |
 | **Copy helpers** | Copy main · Use this · Use as input · Copy five · Copy all · Copy as HTML |
 | **Finishing touches (copy-time only)** | Emotes, casual sign-offs, MMORPG chat terms — never sent to the model |
-| **French slang… & Phrasebook** | Local reference insert / draft; ephemeral phrasebook |
+| **French slang… & Phrasebook** | Local reference insert / draft; phrasebook, optionally saved as a named book |
 | **Situations, tones, presets** | Built-in and saved situations; register tones; conversation presets; writing profile |
 | **History & export** | Optional local favourites, search, Anki/Markdown export, study sheet / diff |
 | **Speak / Correct English** | Optional ElevenLabs Speak (Stop / Slow); Correct English then translate |
@@ -190,8 +190,11 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   reference — your own source → note pairs, added as you go, **Insert**ed
   into the message at the caret or **Delete**d. Capped at 30 entries (80
   characters each way); a duplicate phrase is refused rather than added
-  twice. Ephemeral by design: cleared on Clear, never saved to disk, never
-  sent to the model.
+  twice. The working list is ephemeral by design (cleared on Clear) and
+  never sent to the model, but it can optionally be named and saved —
+  **Save as…**/**Update**/**Load**/**Delete book**, up to 8 books — so a
+  phrasebook you use often (e.g. a guild's callouts) survives Clear and a
+  restart in `plume_config.json`, still never sent to the model.
 - **Copy source** and **Situation presets** (Close friend, Formal work
   email, Neighbour, Appointment, Dating/chat) for faster back-and-forth,
   plus up to 12 of your own **saved situations** (Save…/Delete beside the

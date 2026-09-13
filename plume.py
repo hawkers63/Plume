@@ -101,6 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
+APP_VERSION = "1.46"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 CONFIG_FILENAME = "plume_config.json"
 
@@ -553,6 +554,78 @@ def normalise_phrasebook_entry(source: str, note: str):
     return {"source": source, "note": note}
 
 
+# --- Persistent named phrasebooks (v1.46, notes_022 2.A) --------------------
+# The per-conversation list above stays the default working set — Clear
+# still empties it, and it is still never sent to the model. This is an
+# opt-in second layer: a named snapshot of that list, saved to
+# plume_config.json so it survives Clear and a restart, mirroring the
+# existing conversation-presets pattern (normalise_conversation_preset(s))
+# rather than inventing a new shape.
+MAX_PHRASEBOOKS = 8
+PHRASEBOOK_NAME_MAX = 40
+PHRASEBOOK_UNSAVED = "This session (unsaved)"
+
+
+def normalise_phrasebook(entry) -> dict | None:
+    """Return a clean saved phrasebook, or None if it cannot be salvaged."""
+    if not isinstance(entry, dict):
+        return None
+    name = _safe_short_string(entry.get("name"), PHRASEBOOK_NAME_MAX)
+    if not name or name.casefold() == PHRASEBOOK_UNSAVED.casefold():
+        return None
+    ident = entry.get("id")
+    if not isinstance(ident, str) or not ident.strip():
+        ident = uuid.uuid4().hex
+    rows = []
+    seen = set()
+    for item in entry.get("entries") or []:
+        if not isinstance(item, dict):
+            continue
+        clean = normalise_phrasebook_entry(item.get("source"), item.get("note"))
+        if clean is None:
+            continue
+        key = clean["source"].casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(clean)
+        if len(rows) >= PHRASEBOOK_MAX_ENTRIES:
+            break
+    return {"id": ident.strip(), "name": name, "entries": rows}
+
+
+def normalise_phrasebooks(value) -> list:
+    """Return a short list of clean saved phrasebooks, de-duplicated by id.
+
+    Caps at MAX_PHRASEBOOKS. A duplicate display name (from a hand edit)
+    is repaired with a "(2)", "(3)", ... suffix rather than left
+    ambiguous, since the Save as…/Load/Delete book menu keys on name —
+    the same repair normalise_conversation_presets already applies.
+    """
+    if not isinstance(value, list):
+        return []
+    out, seen_ids = [], set()
+    seen_names = {PHRASEBOOK_UNSAVED.casefold()}
+    for item in value:
+        clean = normalise_phrasebook(item)
+        if clean is None or clean["id"] in seen_ids:
+            continue
+        base_name = clean["name"]
+        name = base_name
+        suffix_number = 2
+        while name.casefold() in seen_names:
+            suffix = " ({})".format(suffix_number)
+            name = base_name[:PHRASEBOOK_NAME_MAX - len(suffix)] + suffix
+            suffix_number += 1
+        clean["name"] = name
+        seen_ids.add(clean["id"])
+        seen_names.add(name.casefold())
+        out.append(clean)
+        if len(out) >= MAX_PHRASEBOOKS:
+            break
+    return out
+
+
 # --- Register tones (v1.20, notes_011 Feature E) ----------------------------
 # Background register hints for the translator — the same class of
 # information as Situation, and just as strictly non-authoritative: they
@@ -708,6 +781,7 @@ DEFAULT_CONFIG = {
     "keep_as_is_terms": [],
     "translation_glossary": [],
     "conversation_presets": [],
+    "phrasebooks": [],
     "save_local_history": False,
     "max_input_chars": DEFAULT_MAX_INPUT_CHARS,
     "elevenlabs_api_key": "",
@@ -819,6 +893,7 @@ def load_config():
     config["conversation_presets"] = normalise_conversation_presets(
         config.get("conversation_presets")
     )
+    config["phrasebooks"] = normalise_phrasebooks(config.get("phrasebooks"))
     config["privacy_ack"] = bool(config.get("privacy_ack"))
     config["save_local_history"] = bool(config.get("save_local_history"))
     config["max_input_chars"] = coerce_positive_int(
@@ -4104,26 +4179,57 @@ if GUI_AVAILABLE:
     class PhrasebookDialog(ctk.CTkToplevel):
         """Editable per-conversation source -> note list (v1.43, notes_019).
 
-        Ephemeral by design: entries live only in the shared
-        master._phrasebook_entries list for the current conversation,
-        reset on Clear, never written to config_data or plume_config.json,
-        and never sent to the model — the same local-only guarantee the
-        French slang reference above makes.
+        The working list stays ephemeral by default: entries live in the
+        shared master._phrasebook_entries list for the current
+        conversation, reset on Clear, never sent to the model — the same
+        local-only guarantee the French slang reference above makes.
+        Persistence is opt-in (v1.46, notes_022 2.A): "Save as…" snapshots
+        the working list under a name in plume_config.json's "phrasebooks"
+        key, so a named book survives Clear and a restart, but a saved
+        book is still never sent to the model.
         """
 
         def __init__(self, master):
             super().__init__(master)
             self.title("{} — Phrasebook".format(APP_NAME))
-            self.geometry("520x480")
-            self.minsize(420, 380)
+            self.geometry("540x560")
+            self.minsize(460, 430)
             self.transient(master)
             self.grid_columnconfigure(0, weight=1)
-            self.grid_rowconfigure(2, weight=1)
+            self.grid_rowconfigure(4, weight=1)
 
             self._entries = master._phrasebook_entries  # shared list, edited in place
+            self._loaded_book_id = None
+
+            book_row = ctk.CTkFrame(self, fg_color="transparent")
+            book_row.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+            book_row.grid_columnconfigure(0, weight=1)
+            self.book_var = ctk.StringVar(value=PHRASEBOOK_UNSAVED)
+            self.book_menu = ctk.CTkOptionMenu(
+                book_row, values=self._book_menu_values(), variable=self.book_var,
+            )
+            self.book_menu.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+            ctk.CTkButton(
+                book_row, text="Load", width=56, command=self._load_selected_book,
+            ).grid(row=0, column=1)
+
+            book_actions_row = ctk.CTkFrame(self, fg_color="transparent")
+            book_actions_row.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
+            ctk.CTkButton(
+                book_actions_row, text="Save as…", width=90,
+                command=self._save_phrasebook_dialog,
+            ).grid(row=0, column=0, padx=(0, 6))
+            ctk.CTkButton(
+                book_actions_row, text="Update", width=80, fg_color="gray30",
+                command=self._update_selected_book,
+            ).grid(row=0, column=1, padx=(0, 6))
+            ctk.CTkButton(
+                book_actions_row, text="Delete book", width=95, fg_color="gray30",
+                command=self._delete_selected_book,
+            ).grid(row=0, column=2)
 
             add_row = ctk.CTkFrame(self, fg_color="transparent")
-            add_row.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+            add_row.grid(row=2, column=0, sticky="ew", padx=12, pady=(8, 4))
             add_row.grid_columnconfigure(0, weight=1)
             add_row.grid_columnconfigure(1, weight=1)
             self.source_entry = ctk.CTkEntry(add_row, placeholder_text="Source phrase")
@@ -4137,24 +4243,168 @@ if GUI_AVAILABLE:
             ctk.CTkLabel(
                 self, text="Phrasebook",
                 font=ctk.CTkFont(weight="bold"),
-            ).grid(row=1, column=0, sticky="w", padx=12)
+            ).grid(row=3, column=0, sticky="w", padx=12)
 
             self.entries_frame = ctk.CTkScrollableFrame(self)
-            self.entries_frame.grid(row=2, column=0, sticky="nsew", padx=12, pady=4)
+            self.entries_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=4)
             self.entries_frame.grid_columnconfigure(0, weight=1)
 
             ctk.CTkLabel(
                 self,
-                text="Local reference only — not sent to the model, cleared "
-                     "when you press Clear.",
-                text_color="gray60", wraplength=480, justify="left",
-            ).grid(row=3, column=0, sticky="w", padx=12, pady=(8, 0))
+                text="The working list is local and cleared with Clear. "
+                     "Saved books live in plume_config.json and are never "
+                     "sent to the model.",
+                text_color="gray60", wraplength=500, justify="left",
+            ).grid(row=5, column=0, sticky="w", padx=12, pady=(8, 0))
 
             self.notice = ctk.CTkLabel(self, text="", text_color="gray70")
-            self.notice.grid(row=4, column=0, sticky="w", padx=12, pady=(2, 10))
+            self.notice.grid(row=6, column=0, sticky="w", padx=12, pady=(2, 10))
 
             self._refresh_list()
             self.after_idle(self._present)
+
+        # --- persistent named phrasebooks (v1.46, notes_022 2.A) ----------
+
+        @staticmethod
+        def _entries_signature(entries):
+            return tuple(sorted((e["source"].casefold(), e["note"]) for e in entries))
+
+        def _book_menu_values(self):
+            names = [b["name"] for b in self.master.config_data.get("phrasebooks") or []]
+            return [PHRASEBOOK_UNSAVED] + names
+
+        def _refresh_book_menu(self, select=None):
+            self.book_menu.configure(values=self._book_menu_values())
+            self.book_var.set(select or PHRASEBOOK_UNSAVED)
+
+        def _find_book(self, name):
+            for book in self.master.config_data.get("phrasebooks") or []:
+                if book["name"] == name:
+                    return book
+            return None
+
+        def _persist_books(self, books):
+            candidate = dict(self.master.config_data)
+            candidate["phrasebooks"] = books
+            try:
+                save_config(candidate)
+            except (ConfigError, OSError):
+                messagebox.showerror(
+                    "Phrasebooks",
+                    "That change could not be saved. No changes were applied.",
+                    parent=self,
+                )
+                return False
+            self.master.config_data = candidate
+            return True
+
+        def _note_cleared(self):
+            """Called by PlumeApp._clear(): the live list just emptied.
+
+            Saved books are untouched, but the dialog's "currently loaded"
+            state no longer matches anything on screen.
+            """
+            self._loaded_book_id = None
+            self.book_var.set(PHRASEBOOK_UNSAVED)
+
+        def _save_phrasebook_dialog(self):
+            if not self._entries:
+                self.notice.configure(text="Add at least one entry before saving a book.")
+                return
+            dialog = ctk.CTkInputDialog(
+                text="Name this phrasebook:", title="Save phrasebook",
+            )
+            name = _safe_short_string(dialog.get_input(), PHRASEBOOK_NAME_MAX)
+            if not name:
+                return
+            books = self.master.config_data.get("phrasebooks") or []
+            used_names = {b["name"].casefold() for b in books}
+            used_names.add(PHRASEBOOK_UNSAVED.casefold())
+            if name.casefold() in used_names:
+                messagebox.showinfo(
+                    "Save phrasebook", "Choose a different book name.", parent=self,
+                )
+                return
+            if len(books) >= MAX_PHRASEBOOKS:
+                messagebox.showinfo(
+                    "Save phrasebook",
+                    "Delete a book before saving another ({} max).".format(
+                        MAX_PHRASEBOOKS
+                    ),
+                    parent=self,
+                )
+                return
+            book = normalise_phrasebook({"name": name, "entries": list(self._entries)})
+            if book is None:
+                return
+            if self._persist_books(normalise_phrasebooks(books + [book])):
+                self._loaded_book_id = book["id"]
+                self._refresh_book_menu(select=book["name"])
+                self.notice.configure(text="Saved as \"{}\".".format(book["name"]))
+
+        def _update_selected_book(self):
+            value = self.book_var.get()
+            if value == PHRASEBOOK_UNSAVED:
+                self.notice.configure(
+                    text="Select a saved book to update, or use Save as… for a new one.",
+                )
+                return
+            if not self._entries:
+                self.notice.configure(text="Add at least one entry before updating a book.")
+                return
+            books = list(self.master.config_data.get("phrasebooks") or [])
+            index = next((i for i, b in enumerate(books) if b["name"] == value), None)
+            if index is None:
+                self.notice.configure(text="That book no longer exists.")
+                self._refresh_book_menu()
+                return
+            updated = dict(books[index])
+            updated["entries"] = list(self._entries)
+            books[index] = updated
+            if self._persist_books(normalise_phrasebooks(books)):
+                self._loaded_book_id = books[index]["id"]
+                self.notice.configure(text="Updated \"{}\".".format(value))
+
+        def _delete_selected_book(self):
+            value = self.book_var.get()
+            if value == PHRASEBOOK_UNSAVED:
+                return
+            books = [
+                b for b in self.master.config_data.get("phrasebooks") or []
+                if b["name"] != value
+            ]
+            if self._persist_books(books):
+                if self._loaded_book_id and not any(
+                    b["id"] == self._loaded_book_id for b in books
+                ):
+                    self._loaded_book_id = None
+                self._refresh_book_menu()
+                self.notice.configure(text="Deleted.")
+
+        def _load_selected_book(self):
+            value = self.book_var.get()
+            if value == PHRASEBOOK_UNSAVED:
+                self.notice.configure(text="Choose a saved book to load.")
+                return
+            book = self._find_book(value)
+            if book is None:
+                self.notice.configure(text="That book no longer exists.")
+                self._refresh_book_menu()
+                return
+            if self._entries and self._entries_signature(
+                self._entries
+            ) != self._entries_signature(book["entries"]):
+                if not messagebox.askyesno(
+                    "Load phrasebook",
+                    "Loading \"{}\" will replace the current working list. "
+                    "Continue?".format(book["name"]),
+                    parent=self,
+                ):
+                    return
+            self._entries[:] = book["entries"]  # slice assignment, not rebind (v1.43 Clear bug)
+            self._loaded_book_id = book["id"]
+            self._refresh_list()
+            self.notice.configure(text="Loaded \"{}\".".format(book["name"]))
 
         def _present(self):
             """Sync -topmost with an always-on-top parent before raising.
@@ -4519,7 +4769,7 @@ if GUI_AVAILABLE:
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
 
-            self.title(APP_TITLE)
+            self.title("{} \u2014 v{}".format(APP_TITLE, APP_VERSION))
             self._apply_window_icon()
             self.geometry("1180x760")
             self.minsize(1000, 600)
@@ -5801,6 +6051,7 @@ if GUI_AVAILABLE:
             self._phrasebook_entries.clear()
             if self._phrasebook_dialog is not None and self._phrasebook_dialog.winfo_exists():
                 self._phrasebook_dialog._refresh_list()
+                self._phrasebook_dialog._note_cleared()
             self._on_input_change()
             self._refresh_status(state="ready")
 

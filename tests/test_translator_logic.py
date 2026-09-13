@@ -2564,6 +2564,96 @@ class TestNormalisePhrasebookEntry(unittest.TestCase):
         self.assertEqual(entry["source"], source)
 
 
+class TestNormalisePhrasebooks(unittest.TestCase):
+    def _book(self, **overrides):
+        base = {"name": "ESO — Auridon", "entries": [{"source": "Auridon", "note": "Auridia"}]}
+        base.update(overrides)
+        return base
+
+    def test_rejects_non_dict(self):
+        self.assertIsNone(plume.normalise_phrasebook("not a dict"))
+
+    def test_rejects_blank_name(self):
+        self.assertIsNone(plume.normalise_phrasebook(self._book(name="   ")))
+
+    def test_rejects_name_matching_unsaved_placeholder(self):
+        self.assertIsNone(
+            plume.normalise_phrasebook(self._book(name=plume.PHRASEBOOK_UNSAVED))
+        )
+
+    def test_name_truncated_to_max(self):
+        clean = plume.normalise_phrasebook(self._book(name="x" * 60))
+        self.assertEqual(len(clean["name"]), plume.PHRASEBOOK_NAME_MAX)
+
+    def test_assigns_id_when_missing(self):
+        clean = plume.normalise_phrasebook(self._book())
+        self.assertTrue(clean["id"])
+
+    def test_preserves_given_id(self):
+        clean = plume.normalise_phrasebook(self._book(id="abc123"))
+        self.assertEqual(clean["id"], "abc123")
+
+    def test_entries_are_normalised(self):
+        clean = plume.normalise_phrasebook(self._book(entries=[
+            {"source": "  Auridon  ", "note": " Auridia "}, {"bad": "entry"},
+        ]))
+        self.assertEqual(clean["entries"], [{"source": "Auridon", "note": "Auridia"}])
+
+    def test_entries_deduplicated_by_source_casefold(self):
+        clean = plume.normalise_phrasebook(self._book(entries=[
+            {"source": "Auridon", "note": "a"}, {"source": "auridon", "note": "b"},
+        ]))
+        self.assertEqual(len(clean["entries"]), 1)
+
+    def test_entries_capped_at_max(self):
+        many = [{"source": "term{}".format(i), "note": ""} for i in range(40)]
+        clean = plume.normalise_phrasebook(self._book(entries=many))
+        self.assertEqual(len(clean["entries"]), plume.PHRASEBOOK_MAX_ENTRIES)
+
+    def test_missing_entries_defaults_to_empty_list(self):
+        clean = plume.normalise_phrasebook({"name": "Empty book"})
+        self.assertEqual(clean["entries"], [])
+
+    def test_list_drops_malformed_entries(self):
+        books = plume.normalise_phrasebooks([
+            self._book(id="1"), {"bad": "entry"}, self._book(id="2", name="Other"),
+        ])
+        self.assertEqual(len(books), 2)
+
+    def test_list_deduplicates_by_id(self):
+        books = plume.normalise_phrasebooks([
+            self._book(id="1"), self._book(id="1", name="Different name"),
+        ])
+        self.assertEqual(len(books), 1)
+
+    def test_list_caps_at_max(self):
+        many = [self._book(id=str(i), name="Book{}".format(i)) for i in range(20)]
+        books = plume.normalise_phrasebooks(many)
+        self.assertEqual(len(books), plume.MAX_PHRASEBOOKS)
+
+    def test_list_rejects_non_list(self):
+        self.assertEqual(plume.normalise_phrasebooks("not a list"), [])
+
+    def test_list_repairs_duplicate_display_name(self):
+        books = plume.normalise_phrasebooks([
+            self._book(id="1", name="Chat"), self._book(id="2", name="Chat"),
+        ])
+        self.assertEqual(len(books), 2)
+        names = sorted(b["name"] for b in books)
+        self.assertEqual(names, ["Chat", "Chat (2)"])
+
+    def test_list_repairs_name_colliding_with_placeholder(self):
+        books = plume.normalise_phrasebooks([
+            self._book(id="1", name=plume.PHRASEBOOK_UNSAVED),
+        ])
+        self.assertEqual(len(books), 0)  # name itself is rejected, not repaired
+
+    def test_round_trip_through_save_config_shape(self):
+        books = plume.normalise_phrasebooks([self._book(id="1")])
+        payload = json.loads(json.dumps(books))
+        self.assertEqual(plume.normalise_phrasebooks(payload), books)
+
+
 class TestUseAsMain(unittest.TestCase):
     def test_adopt_main_translation_favours_non_empty_candidate(self):
         self.assertEqual(
