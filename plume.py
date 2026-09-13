@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.54"
+APP_VERSION = "1.55"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -3678,6 +3678,11 @@ def compose_finishing_touch(emote, signoff, mmorpg_term=None) -> str:
     return " ".join(parts)
 
 
+def format_translation_case(text: str, lowercase: bool = False) -> str:
+    """Format output casing without altering the stored translation."""
+    return text.lower() if lowercase else text
+
+
 def adopt_main_translation(current_main, candidate):
     """Return the adopted working translation.
 
@@ -5308,6 +5313,9 @@ if GUI_AVAILABLE:
             self._previous_exchange = None  # v1.51: one Reply pair, in memory only
             self._clear_snapshot = None  # v1.53: one-level Undo Clear, in memory only
 
+            # A session preference retained by Clear and Undo Clear.
+            self.lowercase_var = ctk.BooleanVar(master=self, value=False)
+
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
 
@@ -5706,10 +5714,18 @@ if GUI_AVAILABLE:
             self.translate_btn.grid(row=0, column=2)
 
         def _build_right(self, parent):
-            right = ctk.CTkFrame(parent)
+            # A scrollable body (v1.55, notes_024 2.B follow-up), the same
+            # fix already proven for SettingsDialog's overflow (v1.10): at
+            # the documented 1000x600 minimum, this pane's stacked content
+            # (primary card, alternatives, the Lowercase checkbox, advisory)
+            # already exceeds the available height even with a short result
+            # -- pre-existing, not caused by any one row -- so nothing
+            # below "Add to glossary…/Keep as-is" was reachable at all.
+            # Scrolling the whole pane, rather than hand-trimming individual
+            # rows, fixes that without re-litigating every row's padding.
+            right = ctk.CTkScrollableFrame(parent)
             right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
             right.grid_columnconfigure(0, weight=1)
-            right.grid_rowconfigure(5, weight=1)
 
             ctk.CTkLabel(
                 right, text="Translation",
@@ -5920,18 +5936,53 @@ if GUI_AVAILABLE:
             )
             self.keep_as_is_btn.grid(row=0, column=1, padx=(6, 0))
 
-            # Five alternatives (scrollable). The heading is omitted: the numbered
-            # cards make the section self-evident and the space is better used.
-            self.alts_frame = ctk.CTkScrollableFrame(right)
-            self.alts_frame.grid(row=5, column=0, sticky="nsew", padx=12, pady=6)
+            # Five alternatives. The heading is omitted: the numbered cards
+            # make the section self-evident and the space is better used.
+            # A plain frame, not its own CTkScrollableFrame (v1.55): `right`
+            # itself now scrolls, and a scrollable-inside-scrollable nesting
+            # makes the mouse wheel target whichever one last had it, which
+            # is confusing rather than useful here.
+            self.alts_frame = ctk.CTkFrame(right, fg_color="transparent")
+            self.alts_frame.grid(row=5, column=0, sticky="ew", padx=12, pady=6)
             self.alts_frame.grid_columnconfigure(0, weight=1)
+
+            # Lowercase translations (v1.55, notes_024 2.B): a display/copy-only
+            # session preference, applied at the presentation boundary only —
+            # never to _current_main/_current_result. Ensure the option
+            # remains visible below the scrolling alternatives.
+            output_options = ctk.CTkFrame(right, fg_color="transparent")
+            output_options.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 8))
+            output_options.grid_columnconfigure(0, weight=1)
+            ctk.CTkCheckBox(
+                output_options, text="Lowercase translations",
+                variable=self.lowercase_var, command=self._on_lowercase_change,
+                width=220, height=24, checkbox_width=20, checkbox_height=20,
+                font=ctk.CTkFont(family="Segoe UI", size=13),
+                fg_color="#1F6AA5", hover_color="#144870", text_color="#F2F2F2",
+            ).grid(row=0, column=0, sticky="w")
+            lowercase_help = ctk.CTkLabel(
+                output_options,
+                text=("Display and chat copies only. Names and exact tokens "
+                      "will also be converted to lowercase."),
+                justify="left", anchor="w", wraplength=400,
+                font=ctk.CTkFont(family="Segoe UI", size=12),
+                text_color="#C7C7C7",
+            )
+            lowercase_help.grid(row=1, column=0, sticky="ew", pady=(3, 0))
+            output_options.bind(
+                "<Configure>",
+                lambda event: lowercase_help.configure(
+                    wraplength=max(160, event.width)
+                ),
+                add="+",
+            )
 
             # Advisory strip (hidden until needed)
             self.advisory = ctk.CTkLabel(
                 right, text="", text_color="#e0a000", justify="left", anchor="w",
                 wraplength=460,
             )
-            self.advisory.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 10))
+            self.advisory.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 10))
             self.advisory.grid_remove()
 
             self._current_main = ""
@@ -5982,6 +6033,23 @@ if GUI_AVAILABLE:
                 mmorpg_term_raw_value(self.mmorpg_var.get()),
             )
 
+        def _display_translation(self, text):
+            """Apply the live output preference to a raw translation."""
+            return format_translation_case(text, self.lowercase_var.get())
+
+        def _on_lowercase_change(self):
+            """Refresh text without resetting the accepted result or selection."""
+            self._refresh_primary_display()
+            variations = (self._current_result or {}).get("variations", [])
+            for index, (card, variation) in enumerate(
+                zip(self._variation_cards, variations), start=1
+            ):
+                card._translation_label.configure(
+                    text="{}. {}".format(
+                        index, self._display_translation(variation["translation"])
+                    )
+                )
+
         def _refresh_primary_display(self):
             """Show the main translation with the finishing touch composed in.
 
@@ -5992,6 +6060,8 @@ if GUI_AVAILABLE:
             if not self._current_main:
                 return
             composed = append_finishing_touch(self._current_main, self._current_touch())
+            # Metrics below now describe the same case-converted display string.
+            composed = self._display_translation(composed)
             self._set_primary_text(composed)
             language = FRENCH if self._result_is_french() else None
             self.result_metrics_label.configure(
@@ -6005,12 +6075,15 @@ if GUI_AVAILABLE:
             return (self._current_result or {}).get("target_language") == FRENCH
 
         def _maybe_french_typography(self, text: str) -> str:
-            """Copy-time-only French punctuation polish (v1.37, notes_015 2.D).
+            """Format copied translations with the appropriate casing and
+            optional punctuation (v1.37/v1.55, notes_015 2.D / notes_024 2.B).
 
-            Off by default; only applies when the working result's target
-            is confirmed French and the user opted in via Settings. Never
-            touches _current_main, the exported diff, or what Speak reads.
+            Off by default; French typography only applies when the working
+            result's target is confirmed French and the user opted in via
+            Settings. Never touches _current_main, the exported diff, or
+            what Speak reads.
             """
+            text = self._display_translation(text)
             if self.config_data.get("french_typography") and self._result_is_french():
                 return apply_french_typography(text)
             return text
@@ -6458,8 +6531,9 @@ if GUI_AVAILABLE:
             self._commit_presets(presets)
 
         def _copy_variation(self, text):
-            """Copy an alternative with the current finishing touch."""
-            self._copy(append_finishing_touch(text, self._current_touch()))
+            """Copy an alternative with the current output preferences."""
+            composed = append_finishing_touch(text, self._current_touch())
+            self._copy(self._maybe_french_typography(composed))
 
         def _on_toolbar_change(self, _value=None):
             # Mirror the live toolbar selections into the in-memory config so the
@@ -7656,11 +7730,19 @@ if GUI_AVAILABLE:
             card.grid(row=index, column=0, sticky="ew", pady=4, padx=4)
             card.grid_columnconfigure(0, weight=1)
 
-            ctk.CTkLabel(
-                card, text="{}. {}".format(index, variation["translation"]),
+            # Retain the label to prevent toggling case from recreating cards
+            # or callbacks (v1.55).
+            card._translation_label = ctk.CTkLabel(
+                card,
+                text="{}. {}".format(
+                    index, self._display_translation(variation["translation"])
+                ),
                 justify="left", anchor="w", wraplength=430,
                 font=ctk.CTkFont(size=14),
-            ).grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 0))
+            )
+            card._translation_label.grid(
+                row=0, column=0, sticky="ew", padx=10, pady=(6, 0)
+            )
 
             ctk.CTkLabel(
                 card, text="[{}]".format(variation["english_meaning_check"]),

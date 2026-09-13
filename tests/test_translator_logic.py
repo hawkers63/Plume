@@ -3178,6 +3178,37 @@ class TestFrenchTypography(unittest.TestCase):
         self.assertEqual(once, twice)
 
 
+class TestFormatTranslationCase(unittest.TestCase):
+    """v1.55, notes_024 2.B: a display/copy-only formatter — never touches
+    the stored translation itself, only what is shown or copied.
+    """
+
+    def test_disabled_returns_original_string_unchanged(self):
+        text = "Je viens d'Auridia !  xD\nSecond line."
+        self.assertEqual(plume.format_translation_case(text, False), text)
+
+    def test_enabled_lowercases_english_and_french_keeping_accents(self):
+        out = plume.format_translation_case("Je viens d'Auridia ! xD", True)
+        self.assertEqual(out, "je viens d'auridia ! xd")
+
+    def test_accented_characters_are_preserved(self):
+        out = plume.format_translation_case("À TRÈS BIENTÔT", True)
+        self.assertEqual(out, "à très bientôt")
+
+    def test_empty_text_stays_empty(self):
+        self.assertEqual(plume.format_translation_case("", True), "")
+        self.assertEqual(plume.format_translation_case("", False), "")
+
+    def test_sharp_s_is_not_expanded(self):
+        # str.lower() (not casefold()) must be used: ß must stay ß, never
+        # become "ss".
+        self.assertEqual(plume.format_translation_case("Weiß", True), "weiß")
+
+    def test_default_argument_is_disabled(self):
+        text = "Bonjour Tout Le Monde"
+        self.assertEqual(plume.format_translation_case(text), text)
+
+
 class TestFormatFiveAlternatives(unittest.TestCase):
     def test_numbers_five_translations(self):
         result = valid_result()

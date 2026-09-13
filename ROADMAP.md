@@ -2060,6 +2060,75 @@ schema impact beyond one constants tuple:
   minimum (wraps without clipping; Save/Cancel stay reachable in the
   fixed footer at both sizes).
 
+## v1.55 — Lowercase translations (notes_024 2.B)
+
+- A "Lowercase translations" checkbox under the alternatives applies
+  `str.lower()` (never `casefold()`, so `ß` stays `ß` rather than
+  expanding to `ss`) at the display/clipboard boundary only.
+  `format_translation_case()` (new pure function) is the single seam;
+  `_display_translation()` calls it with the live `self.lowercase_var`.
+  `_current_main`/`_current_result` are never touched, so Export,
+  Export diff, Favourite, History and "Use as input" all keep their
+  original casing exactly as before — only what is *shown* or *copied*
+  as a translation changes. One in-memory `ctk.BooleanVar`, default
+  off, reset on restart (no config/schema change — deliberately
+  session-only, per the note).
+- Wired through the existing seams rather than duplicating them: the
+  primary display (`_refresh_primary_display`) and each alternative's
+  label (`_build_variation_card`, refreshed in place by
+  `_on_lowercase_change` without rebuilding cards or losing a "Use
+  this" promotion) call `_display_translation()` directly;
+  `_maybe_french_typography()` (the existing copy-time seam already
+  used by Copy main/Copy five/Copy all/Copy as HTML) now also applies
+  it first, so every one of those routes picks up the preference for
+  free. `_copy_variation()` (individual alternative Copy) previously
+  bypassed that seam entirely — routed through it now, which also
+  makes it respect the pre-existing French-typography preference for
+  the first time, a small deliberate consistency fix alongside the
+  main feature. `build_copy_all_content()`'s existing `typography_fn`
+  parameter means Copy all lowercases the main translation and
+  alternatives only — source, situation, language line and meaning
+  checks keep their original case, matching the note's scope matrix.
+- 6 new headless tests (`TestFormatTranslationCase`) cover the pure
+  formatter: disabled is a no-op, enabled lowercases English/French
+  while keeping accents, `ß` is not expanded, empty stays empty, the
+  default argument is disabled. 484 → 490 tests. The bound-method
+  integration (the checkbox, the display/clipboard seams together) is
+  UI-lifecycle wiring with no headless surface, matching the v1.40/
+  v1.49/v1.50/v1.53 precedent — verified live instead: drove
+  `PlumeApp` directly from an isolated copy of `plume.py` with a
+  populated result containing accents, `ß` and mixed case, confirmed
+  `_current_main`/`_current_result` stay raw after toggling, every
+  clipboard route (Copy main, an individual alternative Copy, Copy
+  five, Copy all) lowercases only the translation text, unchecking
+  restores the original casing immediately, and toggling with an empty
+  result raises no exception.
+- **A real, pre-existing bug caught live, not caused by this note**:
+  at the documented 1000×600 minimum, the Translation pane's stacked
+  content already needed roughly 753px against ~456px actually
+  available — confirmed byte-identical against v1.54 (before this
+  checkbox existed) and reproduced with a short two-line result, so it
+  was not specific to long alternatives or to the new checkbox. The
+  alternatives list, the new checkbox and the advisory strip were all
+  silently rendering below the visible window edge, unreachable, with
+  no error and no scrollbar. Root cause: `right` (the whole Translation
+  pane) was a plain `CTkFrame` with only `alts_frame` independently
+  scrollable, so once the pane's fixed rows alone exceeded the
+  available height, everything below simply overflowed the window.
+  Fixed the same way `SettingsDialog` already solves this exact class
+  of problem (v1.10's own comment there describes the identical
+  symptom): `right` is now itself a `CTkScrollableFrame`, and
+  `alts_frame` is a plain transparent `CTkFrame` again (a scrollable
+  frame nested inside another one makes the mouse wheel behave
+  inconsistently depending on which one last had it, which is worse,
+  not better). Verified live at 1000×600 with a full five-alternative
+  result: the pane now shows a scrollbar, and scrolling reaches every
+  alternative, the checkbox and its help text, all fully functional
+  (toggling lowercase from the scrolled position updates cards 3–5
+  correctly). Re-verified the default 1180×760 size afterwards for any
+  regression — content renders identically, scrolling only appears
+  when content actually exceeds the pane.
+
 ---
 
 ### Notes on sequencing
