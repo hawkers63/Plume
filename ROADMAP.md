@@ -2480,6 +2480,50 @@ four separate clicks.
   the new checkbox sits directly under Restore, full text visible, no
   clipping.
 
+## v1.61 — Texting chip strip
+
+First of the two smaller notes_026 deltas. `stp`, `rdv` and `bcp` were
+already in `SLANG_CATALOGUE` as in-sentence terms, reachable only
+through the full French slang… dialog; `cad` (c'est-à-dire), `pcq`
+(parce que) and `pk` (pourquoi) were missing from the catalogue
+entirely.
+
+- **`cad`/`pcq`/`pk` added to `SLANG_CATALOGUE`**, right after the
+  existing `rdv` row, same seven-column shape, category Texting,
+  register Abbreviation. Confirmed no pre-existing rows under these
+  ids before adding (the note's own instruction).
+- **`TEXTING_SHORTCUTS = ("stp", "rdv", "cad", "bcp", "pcq", "pk")`** —
+  a curated subset of the wider catalogue, not a new vocabulary source:
+  these are in-sentence abbreviations, not copy-time suffixes (a suffix
+  of "rdv" or "cad" would read "On se voit demain rdv", which is
+  wrong), so they get their own one-tap row rather than joining the
+  Casual sign-off picker. `tkt`/`dsl`/`a+` are deliberately not
+  duplicated here — they already live on that picker, and a second copy
+  of the same term in two places is how catalogues drift.
+- **A compact "Texting" chip row** under the input box (a new grid row
+  in `_build_left`, between "Remember tones and profile" and the Paste/
+  Clear/Copy source/Speak source/Reply row — `buttons`/`thread_row`/
+  `translate_row` each shifted down one grid row to make space). Each
+  chip calls the existing `_insert_slang_source` (via a small
+  `_insert_texting_shortcut` wrapper that surfaces its English-
+  direction `ValueError` on the advisory strip, the same pattern
+  `SlangReferenceDialog._act` already uses) — no model traffic, no new
+  insertion mechanism.
+- 9 new headless tests: `cad`/`pcq`/`pk` present in the catalogue;
+  `TEXTING_SHORTCUTS` is a subset of the catalogue's raw terms, is
+  disjoint from the held-out harsher-register list (wesh, keuf, boloss,
+  cheum, sah, relou) and from the Casual sign-off suffixes
+  (tkt/dsl/a+), and each of its six terms still spaces correctly at a
+  word boundary via the existing `slang_insertion`. 517 → 522 tests.
+  The chip row itself is UI-lifecycle, verified live: screenshotted at
+  1000×600 and 1180×760 (all six chips fully visible, no clipping, row
+  order unaffected by the renumbering), and driven directly against a
+  constructed `PlumeApp` to confirm a chip click inserts at the real
+  caret with a boundary space, chains correctly across two consecutive
+  chips, is refused (and shown on the advisory) on a forced English
+  direction, and that every `TEXTING_SHORTCUTS` term has a real button
+  in the widget tree.
+
 ---
 
 ### Notes on sequencing

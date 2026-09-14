@@ -202,6 +202,13 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   conveying indifference rather than a flat "terrible", or `bonsoir`
   greeting or parting depending on context. Nothing here is sent to the
   model or changes the translation itself.
+- A **Texting** chip strip under the message box (v1.61): one tap each
+  for `stp`, `rdv`, `cad`, `bcp`, `pcq`, `pk` — the most common texting
+  shorthand — inserted at the caret the same way French slang… does,
+  without opening that dialog. These are in-sentence abbreviations, not
+  copy-time suffixes (a suffix of "rdv" would read "On se voit demain
+  rdv", which is wrong), so they're deliberately separate from the
+  Casual sign-off picker's `tkt`/`dsl`/`a+`.
 - A **Phrasebook** button beside French slang…: a second, free-form local
   reference — your own source → note pairs, added as you go, **Insert**ed
   into the message at the caret or **Delete**d. Capped at 30 entries (80

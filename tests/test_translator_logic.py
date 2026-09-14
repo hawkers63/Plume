@@ -2846,6 +2846,41 @@ class TestSlangCatalogue(unittest.TestCase):
         ):
             self.assertIn(ident, ids)
 
+    def test_cad_pcq_pk_added_in_v1_61(self):
+        ids = [record[0] for record in plume.SLANG_CATALOGUE]
+        for ident in ("cad", "pcq", "pk"):
+            self.assertIn(ident, ids)
+
+
+class TestTextingShortcuts(unittest.TestCase):
+    """v1.61, notes_026 2.E: the chip-strip curation guard."""
+
+    # Deliberately held out of any one-click append/insert control
+    # (see the SLANG_CATALOGUE / CASUAL_SIGNOFF_CATALOGUE module
+    # comments): harsher or culturally loaded one-word verdicts.
+    HELD_OUT_TERMS = ("wesh", "keuf", "boloss", "cheum", "sah", "relou")
+
+    def test_is_a_subset_of_the_slang_catalogue_raw_terms(self):
+        raw_terms = {record[1] for record in plume.SLANG_CATALOGUE}
+        for term in plume.TEXTING_SHORTCUTS:
+            self.assertIn(term, raw_terms)
+
+    def test_disjoint_from_the_held_out_suffix_list(self):
+        for term in self.HELD_OUT_TERMS:
+            self.assertNotIn(term, plume.TEXTING_SHORTCUTS)
+
+    def test_does_not_duplicate_the_casual_signoff_suffixes(self):
+        # tkt/dsl/a+ already live on the Casual sign-off picker as
+        # copy-time suffixes; a second copy here is how catalogues drift.
+        self.assertNotIn("tkt", plume.TEXTING_SHORTCUTS)
+        self.assertNotIn("dsl", plume.TEXTING_SHORTCUTS)
+        self.assertNotIn("a+", plume.TEXTING_SHORTCUTS)
+
+    def test_each_shortcut_still_spaces_at_a_word_boundary(self):
+        for term in plume.TEXTING_SHORTCUTS:
+            candidate, _caret = plume.slang_insertion("Salut", 5, term, 200)
+            self.assertEqual(candidate, "Salut " + term)
+
 
 class TestSlangSearchKey(unittest.TestCase):
     def test_folds_accents(self):

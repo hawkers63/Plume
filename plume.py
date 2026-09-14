@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.60"
+APP_VERSION = "1.61"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -304,6 +304,19 @@ CASUAL_SIGNOFF_CATALOGUE = (
 )
 CASUAL_SIGNOFFS = tuple(term for term, _gloss in CASUAL_SIGNOFF_CATALOGUE)
 
+# --- Texting chip strip (v1.61, notes_026 2.E) -------------------------
+# stp/rdv/bcp/cad/pcq/pk are in-sentence abbreviations, not copy-time
+# suffixes: a suffix of "rdv" or "cad" would produce something like "On se
+# voit demain rdv", which is wrong. These belong at the caret of the
+# source, the same as any other SLANG_CATALOGUE term — this tuple only
+# curates which six of that larger catalogue get their own one-tap chip
+# under the input box, rather than requiring the full French slang…
+# dialog for the most common texting shorthand. tkt/dsl/a+ are
+# deliberately NOT duplicated here: they already live on the Casual
+# sign-off picker as copy-time suffixes, and a second copy of the same
+# term in two places is how catalogues drift out of sync.
+TEXTING_SHORTCUTS = ("stp", "rdv", "cad", "bcp", "pcq", "pk")
+
 # --- MMORPG chat terms (v1.31) ----------------------------------------------
 # A third, separately curated append-tag picker, next to Emotes and Casual
 # sign-off, for online-gaming chat — sourced from a user-supplied MMORPG
@@ -427,6 +440,12 @@ SLANG_CATALOGUE = (
      "A farewell; it adds an intention to speak or meet again."),
     ("rdv", "rdv", "rendez-vous", "appointment / meeting", "Texting",
      "Abbreviation", "A noun to use within a suitable sentence."),
+    ("cad", "cad", "c'est-à-dire", "that is / i.e.", "Texting",
+     "Abbreviation", "In-sentence expansion of c'est-à-dire; not a sign-off."),
+    ("pcq", "pcq", "parce que", "because", "Texting",
+     "Abbreviation", "Use within a sentence; it introduces a reason."),
+    ("pk", "pk", "pourquoi", "why", "Texting",
+     "Abbreviation", "A question word; place it deliberately, not as a tag."),
     ("bcp", "bcp", "beaucoup", "a lot / much / many", "Texting",
      "Informal", "Use within a sentence; it affects quantity or degree."),
     ("dsl", "dsl", "désolé / désolée", "sorry", "Reactions", "Informal",
@@ -5951,8 +5970,25 @@ if GUI_AVAILABLE:
                 fg_color="gray30", command=self._remember_register_defaults,
             ).grid(row=0, column=0)
 
+            # Texting chip strip (v1.61, notes_026 2.E): one-tap insert-at-
+            # caret for the most common texting shorthand, so the full
+            # French slang… dialog isn't needed for these six. No model
+            # traffic — _insert_slang_source already refuses a forced
+            # English source direction; that refusal surfaces on the
+            # advisory strip the same way any other insertion error does.
+            chips = ctk.CTkFrame(left, fg_color="transparent")
+            chips.grid(row=8, column=0, sticky="w", padx=12, pady=(0, 2))
+            ctk.CTkLabel(
+                chips, text="Texting", text_color="gray60",
+            ).grid(row=0, column=0, padx=(0, 6))
+            for index, term in enumerate(TEXTING_SHORTCUTS, start=1):
+                ctk.CTkButton(
+                    chips, text=term, width=44, fg_color="gray30",
+                    command=lambda t=term: self._insert_texting_shortcut(t),
+                ).grid(row=0, column=index, padx=(0, 4))
+
             buttons = ctk.CTkFrame(left, fg_color="transparent")
-            buttons.grid(row=8, column=0, sticky="ew", padx=12, pady=(8, 4))
+            buttons.grid(row=9, column=0, sticky="ew", padx=12, pady=(8, 4))
             # v1.58 added Speak source to this row; widths trimmed from their
             # original 80/80/95 (each far wider than its own text needed) so
             # the five-button row still fits the documented 1000x600 floor
@@ -5984,7 +6020,7 @@ if GUI_AVAILABLE:
             # four-button budget above (v1.15 already moved Translate off
             # that row for exactly this reason).
             thread_row = ctk.CTkFrame(left, fg_color="transparent")
-            thread_row.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 4))
+            thread_row.grid(row=10, column=0, sticky="ew", padx=12, pady=(0, 4))
             thread_row.grid_columnconfigure(0, weight=1)
             self.thread_caption_label = ctk.CTkLabel(
                 thread_row,
@@ -6005,7 +6041,7 @@ if GUI_AVAILABLE:
             # above so a 1180px-wide window has room for both without any of
             # the six buttons being pushed past the visible pane.
             translate_row = ctk.CTkFrame(left, fg_color="transparent")
-            translate_row.grid(row=10, column=0, sticky="ew", padx=12, pady=(0, 12))
+            translate_row.grid(row=11, column=0, sticky="ew", padx=12, pady=(0, 12))
             translate_row.grid_columnconfigure(0, weight=1)
             # Open file… and Undo Clear share column 0 (which stretches via
             # weight=1) in their own left-anchored sub-frame, rather than
@@ -6559,6 +6595,19 @@ if GUI_AVAILABLE:
             source.insert("insert", candidate[offset:caret])
             self._on_input_change()
             source.focus_set()
+
+        def _insert_texting_shortcut(self, term):
+            """Chip-row wrapper (v1.61) around _insert_slang_source.
+
+            Surfaces the same English-direction refusal on the advisory
+            strip rather than letting it propagate as an unhandled
+            exception from a plain button command.
+            """
+            try:
+                self._insert_slang_source(term)
+            except ValueError as exc:
+                self.advisory.configure(text=str(exc))
+                self.advisory.grid()
 
         # --- Phrasebook (v1.43, notes_019) --------------------------------
 
