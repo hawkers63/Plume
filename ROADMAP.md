@@ -2188,6 +2188,68 @@ the top and to stay on until manually turned off.
   round trip — and the gap fix above already closes most of the visual
   distance that prompted the Settings suggestion in the first place.
 
+## v1.57 — Reply to this (incoming turn) + notes_025 M1/m1 fixes
+
+First of a batch grounded in notes_026 ("Next-turn conversation
+helpers"), which itself folds in notes_025's bug-hunt findings. Closes
+the other half of the standing brief's "Reply to This": v1.9's Reply
+already handled "my turn is over" (outgoing, English → French); this
+adds "now draft my answer to that" (incoming, French → English).
+
+- **`result_is_incoming_french(result)`** — a small pure predicate
+  (`source_language == "French" and target_language == "English"`)
+  keyed on the *accepted result*, not the toolbar, so a stale toolbar
+  direction can't mislabel the button.
+- **`_reply()` now branches on the working result.** Outgoing (an
+  English → French result, or no incoming-French result showing) is
+  unchanged: copy the composed translation, invert a fixed direction
+  (no-op on Auto-detect), clear and focus the input, remember the pair.
+  Incoming (French → English) does *not* copy — you are not sending
+  English — and pins direction to English → French even from
+  Auto-detect, so a short English draft ("Yes, around 7") can't be
+  auto-detected as French and bounce back. Both branches install the
+  same reply-thread `_previous_exchange` from the result snapshot
+  (v1.51) and leave Situation untouched (the v1.9 rejection of a
+  Situation auto-fill stands — see notes_026 §2.A for the restated
+  reasoning). "Use as input" remains a different loop and still does
+  not touch `_previous_exchange`.
+- **One button, two labels/captions**, never echoing source text:
+  `_refresh_reply_label()` sets `reply_btn` to "Reply to this"
+  (width 110) with a matching caption ("Reply to this pins English →
+  French and remembers this turn. Situation stays the scene, not the
+  last message.") when the working result is incoming French, and back
+  to "Reply" (width 80) with the original caption otherwise. Called
+  from `_render_result` and `_clear_results`, so Reopening a history
+  entry picks up the right label for free via `_render_result`.
+- **notes_025 M1** (Undo Clear stays armed after a later
+  Translate/Correct and can overwrite the newer result): `_translate`
+  and `_correct_then_translate` now disarm Undo Clear
+  (`_clear_snapshot = None`; `_set_undo_clear_enabled(False)`)
+  immediately after their existing busy-guard, before any other
+  validation — a new request supersedes a pre-existing Clear snapshot
+  regardless of whether this particular call goes on to start a
+  worker.
+- **notes_025 m1** (`_reopen_history_entry` didn't call
+  `_new_http_cancel()`, unlike `_clear`/`_on_close_destroy`): now it
+  does, immediately after bumping the request/speech ids, so an
+  in-flight retry/backoff wait stops promptly on Reopen instead of only
+  being dropped later by the stale-id check at delivery.
+- 4 new headless tests (`result_is_incoming_french`: FR→EN true, EN→FR
+  false, missing-keys dict false, non-dict false). 492 → 496 tests. The
+  button/caption relabelling, the direction-pin/no-copy behaviour, and
+  the M1/m1 fixes are UI-lifecycle wiring verified live only (scripted
+  `PlumeApp`, isolated temp config, no network), same precedent as
+  v1.40/v1.49/v1.50/v1.53/v1.55/v1.56: screenshotted at 1000×600 and
+  1180×760 for both the outgoing and incoming states (no clipping —
+  "Reply to this" and its two-line caption both fit above the
+  Open file…/Undo Clear/Correct English/Translate row at the
+  documented 1000×600 floor), and driven directly (`_render_result` /
+  `_reply()` / `_clear()` / `_reopen_history_entry()` against a
+  constructed `PlumeApp`, no `mainloop()`) to confirm the clipboard is
+  genuinely left untouched on the incoming path, direction is pinned,
+  Situation survives both paths, and Undo Clear/the HTTP cancel event
+  behave as M1/m1 describe.
+
 ---
 
 ### Notes on sequencing

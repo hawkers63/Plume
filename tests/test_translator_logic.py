@@ -194,6 +194,26 @@ class TestForcedDirection(unittest.TestCase):
         self.assertEqual(plume.swap_direction(plume.DIR_AUTO), plume.DIR_AUTO)
 
 
+class TestResultIsIncomingFrench(unittest.TestCase):
+    """v1.57, notes_026 2.A: distinguishes "draft my answer to that
+    French" (Reply to this) from "my turn is over" (Reply)."""
+
+    def test_french_to_english_is_incoming(self):
+        result = valid_result(source="French", target="English")
+        self.assertTrue(plume.result_is_incoming_french(result))
+
+    def test_english_to_french_is_not_incoming(self):
+        result = valid_result(source="English", target="French")
+        self.assertFalse(plume.result_is_incoming_french(result))
+
+    def test_missing_keys_are_not_incoming(self):
+        self.assertFalse(plume.result_is_incoming_french({}))
+
+    def test_non_dict_is_not_incoming(self):
+        self.assertFalse(plume.result_is_incoming_french(None))
+        self.assertFalse(plume.result_is_incoming_french("French"))
+
+
 class TestConfig(unittest.TestCase):
     def test_malformed_config_not_overwritten_by_automatic_save(self):
         with tempfile.TemporaryDirectory() as tmp:

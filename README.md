@@ -335,6 +335,12 @@ Keyboard and mouse highlights:
   reply like "Oui, vers 19h" resolves against what was just discussed —
   one pair, in memory only, never persisted, ended by Clear or "Use as
   input", and never able to override what the new source text says.
+- After translating an incoming French message, the same button becomes
+  **"Reply to this"**: it does not copy the English onto the clipboard
+  (you are not sending English), pins direction to English → French even
+  from Auto-detect (so a short English draft can't bounce back into
+  French), and still remembers the turn for "Thread on". Situation is
+  never touched either way.
 - Open **History** to revisit, favourite, copy, delete or reopen saved local
   translations when history is enabled.
 

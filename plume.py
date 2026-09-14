@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.56"
+APP_VERSION = "1.57"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -132,6 +132,20 @@ _FORCED_DIRECTION = {
     DIR_FR_EN: (FRENCH, ENGLISH),
     DIR_AUTO: None,
 }
+
+
+def result_is_incoming_french(result) -> bool:
+    """True when the working result is French rendered in English.
+
+    Used by Reply to distinguish "draft my answer to that" from "my turn
+    is over". A missing or malformed result is not incoming.
+    """
+    if not isinstance(result, dict):
+        return False
+    return (
+        result.get("source_language") == FRENCH
+        and result.get("target_language") == ENGLISH
+    )
 
 
 def swap_direction(direction) -> str:
@@ -5668,12 +5682,13 @@ if GUI_AVAILABLE:
             thread_row = ctk.CTkFrame(left, fg_color="transparent")
             thread_row.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 4))
             thread_row.grid_columnconfigure(0, weight=1)
-            ctk.CTkLabel(
+            self.thread_caption_label = ctk.CTkLabel(
                 thread_row,
                 text="Reply remembers this turn for the next translation. "
                      "Clear ends the thread.",
                 text_color="gray60", wraplength=380, justify="left", anchor="w",
-            ).grid(row=0, column=0, sticky="w")
+            )
+            self.thread_caption_label.grid(row=0, column=0, sticky="w")
             self.thread_label = ctk.CTkLabel(
                 thread_row, text="Thread on", text_color="gray60",
             )
@@ -6572,35 +6587,68 @@ if GUI_AVAILABLE:
             self._on_toolbar_change()
 
         def _reply(self):
-            """Copy the working translation, invert direction, clear the input.
+            """End the current turn, or start drafting a reply to incoming French.
 
-            One click for "my turn is over": the composed reply is on the
-            clipboard, direction is flipped ready for the incoming message
-            (a no-op on Auto-detect, matching swap_direction()), and the input
-            is empty and focused. The right-hand result stays visible so the
-            user can still see what they just sent. No network request is
-            made, and Situation is left untouched (notes_009/notes_010,
-            v1.9): it is a persistent scene descriptor, not a per-turn note.
+            Outgoing (an English -> French result, or no incoming-French
+            result showing): copy the composed translation, invert a
+            *fixed* direction (a no-op on Auto-detect, matching
+            swap_direction()), and clear/focus the input. Situation is
+            left untouched (notes_009/notes_010, v1.9): it is a
+            persistent scene descriptor, not a per-turn note.
 
-            Also installs the reply-thread previous exchange (v1.51,
-            notes_023 2.B): Reply already means "my turn is over", so it is
-            the natural gesture to also remember that turn as background
-            context for the next translation. "Use as input" deliberately
-            does not do this — it is a different loop (the translation
-            becomes the new source) and must not silently attach the old
-            source as context.
+            Incoming (a French -> English result, v1.57 notes_026 2.A):
+            you have just understood their French and are about to draft
+            an English reply that Plume must translate back to French —
+            copying the English onto the clipboard would be wrong (you
+            are not sending English), and swapping a *fixed* direction on
+            Auto-detect would leave Auto-detect, so a short English draft
+            could bounce back into French. Instead this pins direction to
+            English -> French even from Auto-detect and does not copy.
+
+            Both branches install the reply-thread previous exchange
+            (v1.51, notes_023 2.B) from the result snapshot, never a
+            finishing touch — Reply already means "my turn is over" (or
+            "now it's my turn"), so it is the natural gesture to also
+            remember that turn as background context for the next
+            translation. "Use as input" deliberately does not do this —
+            it is a different loop (the translation becomes the new
+            source) and must not silently attach the old source as
+            context.
             """
+            incoming = result_is_incoming_french(self._current_result)
             if self._current_main:
-                self._copy_main()
+                if not incoming:
+                    self._copy_main()
                 self._previous_exchange = normalise_previous_exchange({
                     "source": self._result_source_text,
                     "translation": self._current_main,
                 })
                 self._refresh_thread_label()
-            self._swap_direction()
+            if incoming:
+                self.direction_var.set(DIR_EN_FR)
+                self._on_toolbar_change()
+            else:
+                self._swap_direction()
             self.input_box.delete("1.0", "end")
             self._on_input_change()
             self.input_box.focus_set()
+
+        def _refresh_reply_label(self):
+            """One button, two labels/captions. Never puts source text on either."""
+            incoming = result_is_incoming_french(self._current_result)
+            if incoming:
+                self.reply_btn.configure(text="Reply to this", width=110)
+                self.thread_caption_label.configure(
+                    text="Reply to this pins English → French and remembers "
+                         "this turn. Situation stays the scene, not the last "
+                         "message."
+                )
+            else:
+                self.reply_btn.configure(text="Reply", width=80)
+                self.thread_caption_label.configure(
+                    text="Reply remembers this turn for the next translation. "
+                         "Clear ends the thread."
+                )
 
         def _refresh_thread_label(self):
             """Show/hide the "Thread on" caption; never echoes source text."""
@@ -7047,6 +7095,7 @@ if GUI_AVAILABLE:
             self._current_result = None
             self._result_source_text = ""
             self._result_situation = ""
+            self._refresh_reply_label()
             for card in self._variation_cards:
                 card.destroy()
             self._variation_cards = []
@@ -7124,12 +7173,17 @@ if GUI_AVAILABLE:
             Reopen is a user-visible replacement of the working result, the
             same class of action as Clear: an in-flight translation or
             speech worker must not be allowed to land on top of it. Bump
-            both request ids and stop any playback before touching widgets,
-            without calling _clear()/_clear_results() itself, which would
-            wipe the input and cards this method is about to fill.
+            both request ids, invalidate the shared HTTP cancel event (so a
+            retry/backoff wait in a still-running worker stops promptly
+            instead of only being dropped later by the stale-id check at
+            delivery, notes_025 m1), and stop any playback before touching
+            widgets — without calling _clear()/_clear_results() itself,
+            which would wipe the input and cards this method is about to
+            fill.
             """
             self._request_id += 1
             self._speech_request_id += 1
+            self._new_http_cancel()
             self._stop_speech()
             self.translate_btn.configure(state="normal", text="Translate")
             self.correct_btn.configure(state="normal", text="Correct English")
@@ -7460,6 +7514,12 @@ if GUI_AVAILABLE:
             """
             if str(self.translate_btn.cget("state")) == "disabled":
                 return
+
+            # A new request supersedes "Undo Clear" (notes_025 M1): see
+            # _translate's identical guard for the full rationale.
+            self._clear_snapshot = None
+            self._set_undo_clear_enabled(False)
+
             ok, message = self._correction_is_allowed()
             if not ok:
                 self.advisory.configure(text=message)
@@ -7596,6 +7656,12 @@ if GUI_AVAILABLE:
             # otherwise still reach this method and start a duplicate worker.
             if str(self.translate_btn.cget("state")) == "disabled":
                 return
+
+            # A new request supersedes "Undo Clear" (notes_025 M1): the
+            # snapshot is from before this work and must not be allowed to
+            # wipe the result this call is about to accept.
+            self._clear_snapshot = None
+            self._set_undo_clear_enabled(False)
 
             text = self._input_text()
             situation = self._situation_text()
@@ -7807,6 +7873,7 @@ if GUI_AVAILABLE:
             self.keep_as_is_btn.configure(state="normal")
             self._reset_favourite_button(enabled=True)
             self.language_label.configure(text=format_language_label(result))
+            self._refresh_reply_label()
 
             for card in self._variation_cards:
                 card.destroy()
