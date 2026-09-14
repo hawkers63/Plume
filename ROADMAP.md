@@ -2524,6 +2524,48 @@ entirely.
   direction, and that every `TEXTING_SHORTCUTS` term has a real button
   in the widget tree.
 
+## v1.62 — History "Export visible"
+
+Second and last of the notes_026 batch. `export_history_to_tsv`
+already matches the standing brief's Anki shape (Front: source +
+situation; Back: main + five alternatives + meaning checks, `<br>`-
+joined) — this version only widens *which entries* get exported, not
+the export format itself.
+
+- **"Export visible"** button in the History actions row, beside the
+  existing "Export favourites". Exports `_visible_entries()` — whatever
+  the current search box and favourites-only filter are showing —
+  instead of always filtering to `favourite is True`.
+- **`_write_history_export(entries, title)`** factors the shared save-
+  dialogue + format-dispatch + write + success/error messaging out of
+  `_export_favourites`, so both buttons now share one I/O path rather
+  than duplicating it. The one deliberate behaviour change: the success
+  message generalised from "Exported N favourite(s) to path" to
+  "Exported N entry/entries to path", since "favourite(s)" no longer
+  describes what "Export visible" exports.
+- An empty visible set shows its own "No matching entries to export."
+  advisory rather than writing a blank file — `_export_favourites` kept
+  its own distinct empty-state message ("You have no favourited
+  translations to export yet."), since the two buttons can be empty for
+  different reasons.
+- The two-column Anki TSV contract (Front/Back, no tags column) is
+  unchanged — deliberately: a third column can break a two-field Basic
+  note type on import, and notes_026 explicitly left that out of scope
+  pending a future request.
+- No new headless tests: `export_history_to_tsv`/
+  `export_history_to_markdown` and `filter_history_entries`
+  (`_visible_entries`'s underlying function) are already covered, and
+  this version only wires two already-tested pieces together with no
+  new format logic. Verified live instead, driving a constructed
+  `HistoryDialog` directly (mocking `filedialog`/`messagebox`, no real
+  file browser): confirmed "Export favourites" is byte-for-byte
+  unaffected by the refactor (still only the starred entries), "Export
+  visible" with a search filter active exports only the matching entry
+  and nothing else, and an empty filter shows the info dialog and never
+  opens a save dialog. Screenshotted History at 1000×600 — the three-
+  button actions row (Clear history / Export favourites / Export
+  visible) renders fully, no clipping.
+
 ---
 
 ### Notes on sequencing

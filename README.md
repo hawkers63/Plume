@@ -237,7 +237,9 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   **☆ Favourite** on the main panel — per-entry **Copy** / **Reopen** /
   **Delete**, a **search box** (source text, translation and situation),
   "clear history" preserving favourited entries, and **Export
-  favourites** to an Anki TSV deck or Markdown study sheet.
+  favourites** to an Anki TSV deck or Markdown study sheet. **Export
+  visible** (v1.62) exports whatever the current search/favourites
+  filter is showing instead, using the same two formats.
 - Optional ElevenLabs **Speak** buttons for pronunciation help, with a
   **Stop** button and a speech-rate menu — **Normal / 0.8× / 0.75×**,
   persisted across restarts — instead of a plain Slow toggle (a slower,

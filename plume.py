@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.61"
+APP_VERSION = "1.62"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -4589,6 +4589,10 @@ if GUI_AVAILABLE:
                 actions, text="Export favourites", width=160,
                 command=self._export_favourites, fg_color="gray30",
             ).grid(row=0, column=1)
+            ctk.CTkButton(
+                actions, text="Export visible", width=140,
+                command=self._export_visible, fg_color="gray30",
+            ).grid(row=0, column=2, padx=(8, 0))
 
             self.list_frame = ctk.CTkScrollableFrame(self)
             self.list_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
@@ -4727,8 +4731,32 @@ if GUI_AVAILABLE:
                     "You have no favourited translations to export yet.",
                 )
                 return
+            self._write_history_export(favourites, title="Export favourites")
+
+        def _export_visible(self):
+            """Export whatever the current search/favourites filter shows
+            (v1.62, notes_026 2.F), not only starred entries — "Export
+            favourites" is unchanged and stays beside it for that narrower
+            case.
+            """
+            self._reload_entries()
+            visible = self._visible_entries()
+            if not visible:
+                messagebox.showinfo(
+                    "Export visible", "No matching entries to export.",
+                )
+                return
+            self._write_history_export(visible, title="Export visible")
+
+        def _write_history_export(self, entries, title):
+            """Shared save-dialogue + write path for both export buttons
+            (v1.62): the chosen file extension selects Anki TSV or
+            Markdown, exactly as _export_favourites always has. *entries*
+            is whatever the caller has already gathered and confirmed
+            non-empty; *title* labels the dialogue and its messages.
+            """
             path = filedialog.asksaveasfilename(
-                title="Export favourites",
+                title=title,
                 defaultextension=".tsv",
                 filetypes=[
                     ("Anki TSV deck", "*.tsv"),
@@ -4738,20 +4766,20 @@ if GUI_AVAILABLE:
             if not path:
                 return
             if path.lower().endswith(".md"):
-                content = export_history_to_markdown(favourites)
+                content = export_history_to_markdown(entries)
             else:
-                content = export_history_to_tsv(favourites)
+                content = export_history_to_tsv(entries)
             try:
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write(content)
             except OSError:
-                messagebox.showerror(
-                    "Export favourites", "Could not write the export file."
-                )
+                messagebox.showerror(title, "Could not write the export file.")
                 return
             messagebox.showinfo(
-                "Export favourites",
-                "Exported {} favourite(s) to {}".format(len(favourites), path),
+                title,
+                "Exported {} entr{} to {}".format(
+                    len(entries), "y" if len(entries) == 1 else "ies", path
+                ),
             )
 
         def _persist(self):
