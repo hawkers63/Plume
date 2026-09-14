@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.57"
+APP_VERSION = "1.58"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -737,11 +737,60 @@ ELEVENLABS_OUTPUT_FORMAT = "pcm_16000"
 ELEVENLABS_SAMPLE_RATE = 16000
 ELEVENLABS_TIMEOUT = 30
 
-# Slow pronunciation mode (notes_010 Feature 2): a playback-rate trick, not
-# true time-stretching, so it drops pitch the way a slowed record does. No
-# extra ElevenLabs call: the already-synthesised PCM is simply wrapped with a
-# lower WAV frame rate before playback.
-SLOW_SPEECH_RATE_FACTOR = 0.75
+# Speech playback rate (notes_010 Feature 2, widened v1.58 notes_026 2.B): a
+# playback-rate trick, not true time-stretching, so it drops pitch the way a
+# slowed record does. No extra ElevenLabs call: the already-synthesised PCM
+# is simply wrapped with a lower WAV frame rate before playback.
+SPEECH_RATE_NORMAL = 1.0
+SPEECH_RATE_POINT_EIGHT = 0.8
+SPEECH_RATE_POINT_SEVEN_FIVE = 0.75
+SPEECH_RATES = (
+    SPEECH_RATE_NORMAL,
+    SPEECH_RATE_POINT_EIGHT,
+    SPEECH_RATE_POINT_SEVEN_FIVE,
+)
+SPEECH_RATE_LABELS = {
+    SPEECH_RATE_NORMAL: "Normal",
+    SPEECH_RATE_POINT_EIGHT: "0.8×",
+    SPEECH_RATE_POINT_SEVEN_FIVE: "0.75×",
+}
+# Kept as an alias so anything that still reads SLOW_SPEECH_RATE_FACTOR
+# (including the existing test_slow_speech_rate_scales_frame_rate test)
+# continues to mean "the slowest offered rate".
+SLOW_SPEECH_RATE_FACTOR = SPEECH_RATE_POINT_SEVEN_FIVE
+
+
+def normalise_speech_rate(value) -> float:
+    """Return one of SPEECH_RATES; anything else becomes Normal.
+
+    Exact membership, not a clamp: a hand-edited "0.8000001" in the config
+    file must not silently become a third, unlabelled speed.
+    """
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return SPEECH_RATE_NORMAL
+    for allowed in SPEECH_RATES:
+        if rate == allowed:
+            return allowed
+    return SPEECH_RATE_NORMAL
+
+
+def speech_sample_rate(factor=SPEECH_RATE_NORMAL) -> int:
+    """WAV frame rate for playback at *factor* of real time."""
+    return int(ELEVENLABS_SAMPLE_RATE * normalise_speech_rate(factor))
+
+
+def speech_rate_label(factor) -> str:
+    return SPEECH_RATE_LABELS[normalise_speech_rate(factor)]
+
+
+def speech_rate_from_label(label) -> float:
+    for rate, text in SPEECH_RATE_LABELS.items():
+        if text == label:
+            return rate
+    return SPEECH_RATE_NORMAL
+
 
 APPEARANCE_MODE = "dark"
 COLOR_THEME = "blue"
@@ -817,6 +866,7 @@ DEFAULT_CONFIG = {
     "french_typography": False,
     "fallback_to_ollama": False,
     "lowercase_output": False,
+    "speech_rate": SPEECH_RATE_NORMAL,
 }
 
 
@@ -939,6 +989,7 @@ def load_config():
     config["french_typography"] = bool(config.get("french_typography"))
     config["fallback_to_ollama"] = bool(config.get("fallback_to_ollama"))
     config["lowercase_output"] = bool(config.get("lowercase_output"))
+    config["speech_rate"] = normalise_speech_rate(config.get("speech_rate"))
 
     return config, None
 
@@ -4180,6 +4231,10 @@ if GUI_AVAILABLE:
                 self._config["backend"] = master.backend_var.get()
             if hasattr(master, "lowercase_var"):
                 self._config["lowercase_output"] = bool(master.lowercase_var.get())
+            if hasattr(master, "speech_rate_var"):
+                self._config["speech_rate"] = speech_rate_from_label(
+                    master.speech_rate_var.get()
+                )
             if hasattr(master, "_current_tones"):
                 self._config["default_tones"] = master._current_tones()
             if hasattr(master, "_current_writing_profile"):
@@ -5337,6 +5392,13 @@ if GUI_AVAILABLE:
                 master=self, value=bool(self.config_data.get("lowercase_output"))
             )
 
+            # Speech playback rate (v1.58, notes_026 2.B), persisted across
+            # restarts the same immediate-write way as lowercase_output.
+            self.speech_rate_var = ctk.StringVar(
+                master=self,
+                value=speech_rate_label(self.config_data.get("speech_rate")),
+            )
+
             ctk.set_appearance_mode(APPEARANCE_MODE)
             ctk.set_default_color_theme(COLOR_THEME)
 
@@ -5660,19 +5722,30 @@ if GUI_AVAILABLE:
 
             buttons = ctk.CTkFrame(left, fg_color="transparent")
             buttons.grid(row=8, column=0, sticky="ew", padx=12, pady=(8, 4))
-            ctk.CTkButton(buttons, text="Paste", width=80, command=self._paste,
+            # v1.58 added Speak source to this row; widths trimmed from their
+            # original 80/80/95 (each far wider than its own text needed) so
+            # the five-button row still fits the documented 1000x600 floor
+            # once "Reply to this" (v1.57) is showing — confirmed by
+            # winfo_reqwidth() against the pane's actual width, the same
+            # technique v1.53 used for this identical class of overflow.
+            ctk.CTkButton(buttons, text="Paste", width=64, command=self._paste,
                           fg_color="gray30").grid(row=0, column=0, padx=(0, 6))
-            ctk.CTkButton(buttons, text="Clear", width=80, command=self._clear,
+            ctk.CTkButton(buttons, text="Clear", width=64, command=self._clear,
                           fg_color="gray30").grid(row=0, column=1, padx=(0, 6))
             ctk.CTkButton(
-                buttons, text="Copy source", width=95, command=self._copy_source,
+                buttons, text="Copy source", width=88, command=self._copy_source,
                 fg_color="gray30",
             ).grid(row=0, column=2, padx=(0, 6))
+            self.speak_source_btn = ctk.CTkButton(
+                buttons, text="Speak source", width=92, command=self._speak_source,
+                fg_color="gray30",
+            )
+            self.speak_source_btn.grid(row=0, column=3, padx=(0, 6))
             self.reply_btn = ctk.CTkButton(
                 buttons, text="Reply", width=80, command=self._reply,
                 fg_color="gray30",
             )
-            self.reply_btn.grid(row=0, column=3, padx=(0, 6))
+            self.reply_btn.grid(row=0, column=4, padx=(0, 6))
 
             # Reply-thread previous exchange (v1.51, notes_023 2.B): a plain
             # caption rather than a toolbar checkbox, since Reply is itself
@@ -5794,10 +5867,12 @@ if GUI_AVAILABLE:
                 variable=self.finishing_touch_var, width=110,
                 command=self._on_finishing_touch_change,
             ).grid(row=0, column=1, sticky="w")
-            self.slow_speech_var = ctk.BooleanVar(value=False)
-            ctk.CTkCheckBox(
-                touch_row, text="Slow", variable=self.slow_speech_var, width=70,
-            ).grid(row=0, column=2, padx=(8, 0))
+            self.speech_rate_menu = ctk.CTkOptionMenu(
+                touch_row, values=[speech_rate_label(r) for r in SPEECH_RATES],
+                variable=self.speech_rate_var, width=90,
+                command=self._on_speech_rate_change,
+            )
+            self.speech_rate_menu.grid(row=0, column=2, padx=(8, 0))
 
             # Casual sign-off / slang picker (v1.14, notes_004 revisited). A
             # separate control from the finishing-touch picker above, not a
@@ -6105,6 +6180,33 @@ if GUI_AVAILABLE:
 
         def _on_finishing_touch_change(self, _value=None):
             self._refresh_primary_display()
+
+        def _on_speech_rate_change(self, _choice=None):
+            """Persist the playback rate immediately (v1.58), same
+            best-effort pattern as _on_lowercase_change. A mid-playback
+            change does not affect audio already in flight — _speak reads
+            this once per click, not continuously.
+            """
+            self.config_data["speech_rate"] = speech_rate_from_label(
+                self.speech_rate_var.get()
+            )
+            try:
+                save_config(self.config_data)
+            except ConfigError:
+                pass  # best-effort; the preference still applies this session
+
+        def _speak_source(self):
+            """Pronounce the source, not the translation (v1.58).
+
+            Hearing the *other* person's French is the point: after
+            translating incoming French, this reads their original text
+            aloud rather than the English rendering the main Speak button
+            reads. Falls back to the live input when no result is showing
+            yet, so the button is also useful before translating. Raw text
+            only, never a finishing touch — matching Speak.
+            """
+            text = (self._result_source_text or self._input_text()).strip()
+            self._speak(text)
 
         def _result_is_french(self) -> bool:
             return (self._current_result or {}).get("target_language") == FRENCH
@@ -6637,7 +6739,7 @@ if GUI_AVAILABLE:
             """One button, two labels/captions. Never puts source text on either."""
             incoming = result_is_incoming_french(self._current_result)
             if incoming:
-                self.reply_btn.configure(text="Reply to this", width=110)
+                self.reply_btn.configure(text="Reply to this", width=95)
                 self.thread_caption_label.configure(
                     text="Reply to this pins English → French and remembers "
                          "this turn. Situation stays the scene, not the last "
@@ -7219,7 +7321,7 @@ if GUI_AVAILABLE:
             """Synthesise and play *text* aloud via ElevenLabs.
 
             Off the UI thread, mirroring _translate's worker pattern. Always
-            speaks the raw translation, never a finishing touch, since an
+            speaks the raw text passed in, never a finishing touch, since an
             emote is not meant to be pronounced. A missing key or network
             failure surfaces the same short, safe advisory used elsewhere;
             the spoken text itself is never included in an error message.
@@ -7228,7 +7330,9 @@ if GUI_AVAILABLE:
             if not text:
                 return
             snapshot = dict(self.config_data)
-            slow = bool(self.slow_speech_var.get())
+            # Read once per click (v1.58), not continuously: a rate change
+            # mid-playback must not affect audio already in flight.
+            rate_factor = speech_rate_from_label(self.speech_rate_var.get())
             if not snapshot.get("elevenlabs_api_key"):
                 self.advisory.configure(
                     text="No ElevenLabs API key is set. Add one in Settings to "
@@ -7262,10 +7366,7 @@ if GUI_AVAILABLE:
             def worker():
                 try:
                     pcm = call_elevenlabs_tts(snapshot, text)
-                    rate = (
-                        int(ELEVENLABS_SAMPLE_RATE * SLOW_SPEECH_RATE_FACTOR)
-                        if slow else ELEVENLABS_SAMPLE_RATE
-                    )
+                    rate = speech_sample_rate(rate_factor)
                     payload = ("ok", pcm_to_wav_bytes(pcm, sample_rate=rate))
                 except BackendError as exc:
                     payload = ("error", str(exc))

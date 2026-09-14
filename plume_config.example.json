@@ -30,5 +30,6 @@
   "default_writing_profile": {},
   "french_typography": false,
   "fallback_to_ollama": false,
-  "lowercase_output": false
+  "lowercase_output": false,
+  "speech_rate": 1.0
 }

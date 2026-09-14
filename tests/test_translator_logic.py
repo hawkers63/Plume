@@ -993,6 +993,18 @@ class TestConfigCoercion(unittest.TestCase):
         config, _ = self._load_with({})
         self.assertIs(config["lowercase_output"], False)
 
+    def test_speech_rate_normalised_on_load(self):
+        config, _ = self._load_with({"speech_rate": "0.8"})
+        self.assertEqual(config["speech_rate"], 0.8)
+
+    def test_speech_rate_defaults_normal(self):
+        config, _ = self._load_with({})
+        self.assertEqual(config["speech_rate"], plume.SPEECH_RATE_NORMAL)
+
+    def test_speech_rate_hand_edited_junk_falls_back_to_normal(self):
+        config, _ = self._load_with({"speech_rate": "false"})
+        self.assertEqual(config["speech_rate"], plume.SPEECH_RATE_NORMAL)
+
     def test_coerce_positive_int(self):
         self.assertEqual(plume.coerce_positive_int("5000", 2000), 5000)
         self.assertEqual(plume.coerce_positive_int("banana", 2000), 2000)
@@ -2225,7 +2237,8 @@ class TestPcmToWav(unittest.TestCase):
 
     def test_slow_speech_rate_scales_frame_rate(self):
         # Pins the v1.12 "Slow" mechanism: no extra synthesis call, just a
-        # lower WAV frame rate on the same PCM data.
+        # lower WAV frame rate on the same PCM data. SLOW_SPEECH_RATE_FACTOR
+        # is now an alias for the slowest v1.58 SPEECH_RATES entry.
         pcm = b"\x00\x01\x02\x03" * 50
         slow_rate = int(plume.ELEVENLABS_SAMPLE_RATE * plume.SLOW_SPEECH_RATE_FACTOR)
         wav_bytes = plume.pcm_to_wav_bytes(pcm, sample_rate=slow_rate)
@@ -2233,6 +2246,44 @@ class TestPcmToWav(unittest.TestCase):
             self.assertEqual(wav_file.getframerate(), slow_rate)
             self.assertLess(wav_file.getframerate(), plume.ELEVENLABS_SAMPLE_RATE)
             self.assertEqual(wav_file.readframes(wav_file.getnframes()), pcm)
+
+
+class TestSpeechRate(unittest.TestCase):
+    """v1.58, notes_026 2.B: Normal/0.8x/0.75x replaces the Slow checkbox."""
+
+    def test_normalise_accepts_exact_members(self):
+        self.assertEqual(plume.normalise_speech_rate(1.0), 1.0)
+        self.assertEqual(plume.normalise_speech_rate(0.8), 0.8)
+        self.assertEqual(plume.normalise_speech_rate(0.75), 0.75)
+
+    def test_normalise_accepts_numeric_strings(self):
+        self.assertEqual(plume.normalise_speech_rate("0.8"), 0.8)
+
+    def test_normalise_falls_back_to_normal_for_unknown_values(self):
+        for value in (0, 2, None, "false", 0.8000001, "not a number"):
+            self.assertEqual(
+                plume.normalise_speech_rate(value), plume.SPEECH_RATE_NORMAL,
+                msg="value was {!r}".format(value),
+            )
+
+    def test_speech_sample_rate_scales_from_elevenlabs_default(self):
+        self.assertEqual(
+            plume.speech_sample_rate(0.8),
+            int(plume.ELEVENLABS_SAMPLE_RATE * 0.8),
+        )
+        self.assertEqual(
+            plume.speech_sample_rate(0.75),
+            int(plume.ELEVENLABS_SAMPLE_RATE * 0.75),
+        )
+        self.assertEqual(plume.speech_sample_rate(), plume.ELEVENLABS_SAMPLE_RATE)
+
+    def test_label_and_back_round_trip(self):
+        for rate in plume.SPEECH_RATES:
+            label = plume.speech_rate_label(rate)
+            self.assertEqual(plume.speech_rate_from_label(label), rate)
+
+    def test_unknown_label_falls_back_to_normal(self):
+        self.assertEqual(plume.speech_rate_from_label("gibberish"), plume.SPEECH_RATE_NORMAL)
 
 
 class TestPrivacyOfDiagnostics(unittest.TestCase):

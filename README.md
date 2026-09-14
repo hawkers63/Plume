@@ -52,7 +52,7 @@ The hard rule underneath every release:
 | **French slang… & Phrasebook** | Local reference insert / draft; phrasebook, optionally saved as a named book |
 | **Situations, tones, presets** | Built-in and saved situations; register tones; conversation presets; writing profile |
 | **History & export** | Optional local favourites, search, Anki/Markdown export, study sheet / diff |
-| **Speak / Correct English** | Optional ElevenLabs Speak (Stop / Slow); Correct English then translate |
+| **Speak / Correct English** | Optional ElevenLabs Speak + Speak source (Stop / Normal·0.8×·0.75×); Correct English then translate |
 | **Backends** | Claude (cloud) or Ollama (local); optional Claude→Ollama fallback |
 | **One-click launch** | `Plume.bat`, or `python plume.py` / `py -3 plume.py` |
 | **Optional exe** | `pyinstaller plume.spec` (Windows app icon: `icon/icon-96.ico`) |
@@ -232,9 +232,13 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   "clear history" preserving favourited entries, and **Export
   favourites** to an Anki TSV deck or Markdown study sheet.
 - Optional ElevenLabs **Speak** buttons for pronunciation help, with a
-  **Stop** button and a **Slow** playback toggle (a slower, lower-pitched
-  playback rate — not studio-quality time-stretching, but a genuine aid
-  for catching liaisons and elisions).
+  **Stop** button and a speech-rate menu — **Normal / 0.8× / 0.75×**,
+  persisted across restarts — instead of a plain Slow toggle (a slower,
+  lower-pitched playback rate — not studio-quality time-stretching, but
+  a genuine aid for catching liaisons and elisions). **Speak source**
+  sits beside **Copy source** so you can hear the *other* person's
+  original French at your chosen rate without copying it into the input
+  or swapping direction.
 - **Correct English** (Ctrl+Shift+Enter) fixes spelling, grammar and
   necessary punctuation in a quickly-typed English draft — never
   paraphrasing, translating or changing register — then automatically

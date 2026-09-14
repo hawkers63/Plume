@@ -2250,6 +2250,72 @@ adds "now draft my answer to that" (incoming, French → English).
   Situation survives both paths, and Undo Clear/the HTTP cancel event
   behave as M1/m1 describe.
 
+## v1.58 — Speech rate menu + Speak source
+
+Second of the notes_026 batch. The Slow checkbox (v1.12) could only ever
+offer one fixed 0.75× rate; the standing brief asked for 0.75× *or*
+0.8×, which a boolean cannot express. Also closes the other half of
+"hear that French slowly": Speak previously only ever read the
+translation aloud, with no one-click way to pronounce the *incoming*
+French itself.
+
+- **`SPEECH_RATES` (1.0 / 0.8 / 0.75) replace the boolean Slow
+  checkbox** on the same `touch_row`, as a `CTkOptionMenu` showing
+  "Normal" / "0.8×" / "0.75×". `normalise_speech_rate` does exact
+  membership (not a clamp), so a hand-edited "0.8000001" in the config
+  file falls back to Normal rather than silently becoming a third,
+  unlabelled speed. `speech_sample_rate(factor)` is the single seam:
+  `int(ELEVENLABS_SAMPLE_RATE * normalise_speech_rate(factor))`.
+  `SLOW_SPEECH_RATE_FACTOR` stays as an alias for the slowest rate so
+  the existing `test_slow_speech_rate_scales_frame_rate` test needed no
+  change. `_speak` reads the menu once per click, so a rate change
+  mid-playback never affects audio already in flight — the same
+  snapshot discipline `_translate` already uses for its own config.
+- **`speech_rate` persists across restarts**, seeded in
+  `PlumeApp.__init__` and written back immediately on change
+  (`_on_speech_rate_change`), the identical best-effort immediate-save
+  pattern v1.56 established for `lowercase_output`. `SettingsDialog._save`
+  remirrors the live menu into its snapshot first, so an open Settings
+  window can't revert a rate change made from the main window while it
+  was open — the same dual-editor race v1.56 already closed for
+  `lowercase_output`.
+- **Speak source**, a new button beside Copy source, speaks the result's
+  source-text snapshot (or the live input, before a result exists) —
+  raw text, never a finishing touch, through the same `_speak()`
+  worker, privacy notice and stale `_speech_request_id` guard as Speak.
+  This is the pronunciation-companion half of the standing brief: after
+  translating incoming French you can hear *their* French at 0.8×
+  without copying it into the input or swapping direction. No extra
+  ElevenLabs call unless the button is actually clicked.
+- **A real clipping bug caught before it shipped, not after**: adding
+  Speak source to the Paste/Clear/Copy source/Reply row pushed its
+  required width to 495px against the pane's ~458px available at the
+  documented 1000×600 floor — "Reply to this" (v1.57) was cut off
+  mid-word. Found with the same `winfo_reqwidth()` technique v1.53 used
+  for this identical class of overflow, confirming it as a real,
+  measured 37px gap rather than eyeballing a screenshot. Fixed by
+  trimming five button widths (Paste/Clear 80→64, Copy source 95→88,
+  Speak source 100→92, "Reply to this" 110→95) rather than wrapping to
+  a third row — each new width still comfortably exceeds that button's
+  actual rendered text width (measured with `tkinter.font.Font.measure`
+  against the button's own font), so no label is truncated.
+- 6 new headless tests (`normalise_speech_rate` exact-membership and
+  fallback, `speech_sample_rate` scaling, label/`speech_rate_from_label`
+  round-trip) plus 3 config-coercion tests (`speech_rate` normalised on
+  load, defaults to Normal, hand-edited junk falls back). 496 → 505
+  tests. The menu/button wiring, the immediate persistence, the
+  Settings dual-editor guard and the width fix are UI-lifecycle
+  verified live only, same precedent as v1.53/v1.56/v1.57: screenshotted
+  at 1000×600 and 1180×760 for outgoing/incoming/cleared states (no
+  clipping after the width fix), measured with `winfo_reqwidth()` before
+  and after trimming, and driven directly against a constructed
+  `PlumeApp` (mocking `call_elevenlabs_tts`/`pcm_to_wav_bytes` to avoid
+  a real network call) to confirm each rate menu choice produces the
+  right WAV frame rate, Speak source reads the source snapshot (not the
+  translation) and falls back to the live input pre-translation,
+  `speech_rate` reaches disk immediately, and a stale Settings snapshot
+  cannot revert a live rate change.
+
 ---
 
 ### Notes on sequencing
