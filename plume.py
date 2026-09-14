@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.58"
+APP_VERSION = "1.59"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -2802,7 +2802,7 @@ _TRANSIENT_RESPONSE_ERRORS = (TimeoutError, OSError, http.client.IncompleteRead)
 
 def _http_post_json(url, payload, headers, timeout, service_name="backend",
                      max_attempts=HTTP_MAX_ATTEMPTS, retryable_codes=None,
-                     max_retry_wait=30.0, cancel_event=None):
+                     max_retry_wait=30.0, cancel_event=None, on_retry=None):
     """POST *payload* as JSON and return the decoded JSON response.
 
     Retries transient failures (by default 429/502/503/504, dropped
@@ -2830,6 +2830,13 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
     without closing the socket, so a request already inside urlopen() may
     still finish; it simply will not be retried or returned once it does.
     That is the honest contract.
+
+    *on_retry* (v1.59, notes_026 2.C/3.C), if given, is called as
+    on_retry(next_attempt_number, attempts) on the worker thread just
+    before each backoff wait — never on the final, non-retried failure.
+    It exists purely to let the caller surface retry progress (a silent
+    status bar otherwise makes a 429 look like a hang); any exception it
+    raises is swallowed so a status-bar failure can never abort a retry.
     """
     codes = HTTP_RETRYABLE_CODES if retryable_codes is None else retryable_codes
     data = json.dumps(payload).encode("utf-8")
@@ -2839,6 +2846,13 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
 
     def cancelled() -> bool:
         return cancel_event is not None and cancel_event.is_set()
+
+    def _notify_retry(attempt):
+        if on_retry is not None:
+            try:
+                on_retry(attempt + 2, attempts)
+            except Exception:
+                pass
 
     def wait_or_give_up(attempt, retry_after=None):
         """Sleep for the next backoff delay, or raise if it blows the budget."""
@@ -2890,6 +2904,7 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
             except Exception:
                 pass
             if exc.code in codes and attempt < attempts - 1:
+                _notify_retry(attempt)
                 wait_or_give_up(attempt, retry_after)
                 continue
             raise BackendError(_friendly_http_message(exc.code, service_name))
@@ -2913,6 +2928,7 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
                 "connection and try again."
             )
             if attempt < attempts - 1:
+                _notify_retry(attempt)
                 wait_or_give_up(attempt)
                 continue
             raise BackendError(last_network_message)
@@ -2921,6 +2937,7 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
                 "The translation backend did not respond in time. Please try again."
             )
             if attempt < attempts - 1:
+                _notify_retry(attempt)
                 wait_or_give_up(attempt)
                 continue
             raise BackendError(last_network_message)
@@ -2991,6 +3008,7 @@ def call_anthropic(config_snapshot, system_prompt, user_text):
         # to apply to every backend this app talks to.
         retryable_codes=HTTP_RETRYABLE_CODES | {529},
         cancel_event=config_snapshot.get("_cancel_event"),
+        on_retry=config_snapshot.get("_on_retry"),
     )
     return _anthropic_text_from_response(data)
 
@@ -3032,6 +3050,7 @@ def call_ollama(config_snapshot, system_prompt, user_text):
         data = _http_post_json(
             url, payload, headers, OLLAMA_TIMEOUT, service_name="Ollama",
             cancel_event=config_snapshot.get("_cancel_event"),
+            on_retry=config_snapshot.get("_on_retry"),
         )
     except BackendError as exc:
         # Give a more specific hint for the common "Ollama not running" case.
@@ -3194,6 +3213,16 @@ def call_elevenlabs_tts(config_snapshot, text: str) -> bytes:
 
     Raises BackendError on any failure. The message never contains the
     spoken text, matching the existing backend-error privacy guarantee.
+
+    Retries 429/502/503/504 with the same bounded exponential backoff as
+    _http_post_json (v1.59, notes_026 2.C/3.D) — previously a single
+    urlopen with no retry at all, so a 429 was a user-facing error on the
+    first attempt. Not routed through _http_post_json itself: that helper
+    JSON-decodes the response body, and this one returns raw PCM bytes.
+    *config_snapshot* may carry "_cancel_event" (Speak does not currently
+    share Translate's cancel event, so this is normally None — retrying
+    still stays bounded by the response's own timeout) and "_on_retry",
+    the same worker-thread status callback _translate installs.
     """
     api_key = (config_snapshot.get("elevenlabs_api_key") or "").strip()
     if not api_key:
@@ -3208,24 +3237,94 @@ def call_elevenlabs_tts(config_snapshot, text: str) -> bytes:
         "content-type": "application/json",
         "accept": "audio/*",
     }
-    request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=ELEVENLABS_TIMEOUT) as response:
-            return response.read()
-    except urllib.error.HTTPError as exc:
-        detail = ""
+    cancel_event = (
+        config_snapshot.get("_cancel_event") if isinstance(config_snapshot, dict) else None
+    )
+    on_retry = (
+        config_snapshot.get("_on_retry") if isinstance(config_snapshot, dict) else None
+    )
+    attempts = HTTP_MAX_ATTEMPTS
+    max_retry_wait = 30.0
+    waited = 0.0
+    last_message = None
+
+    def cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    def wait_or_give_up(attempt, retry_after=None):
+        nonlocal waited
+        if cancelled():
+            raise BackendError("The request was cancelled.")
+        if on_retry is not None:
+            try:
+                on_retry(attempt + 2, attempts)
+            except Exception:
+                pass
+        delay = _backoff_delay(attempt, retry_after)
+        if delay > max_retry_wait - waited:
+            raise BackendError(
+                "ElevenLabs needs a longer pause than this app allows. "
+                "Please retry later."
+            )
+        if cancel_event is None:
+            time.sleep(delay)
+        elif cancel_event.wait(delay):
+            raise BackendError("The request was cancelled.")
+        waited += delay
+
+    for attempt in range(attempts):
+        if cancelled():
+            raise BackendError("The request was cancelled.")
+        request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
         try:
-            detail = exc.read().decode("utf-8", "replace")
-        except Exception:
-            detail = ""
-        raise BackendError(_elevenlabs_friendly_message(exc.code, detail))
-    except urllib.error.URLError as exc:
-        raise BackendError(
-            "Could not reach ElevenLabs. Please check your connection and try "
-            "again. ({})".format(_reason_text(exc))
-        )
-    except (TimeoutError, OSError):
-        raise BackendError("ElevenLabs did not respond in time. Please try again.")
+            with urllib.request.urlopen(request, timeout=ELEVENLABS_TIMEOUT) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            retry_after = None
+            try:
+                retry_after = exc.headers.get("Retry-After")
+            except Exception:
+                retry_after = None
+            # Release the connection without draining a potentially unbounded
+            # error body into memory (v1.38, notes_014 G) — retrying must not
+            # wait for that either.
+            try:
+                exc.close()
+            except Exception:
+                pass
+            if exc.code in HTTP_RETRYABLE_CODES and attempt < attempts - 1:
+                wait_or_give_up(attempt, retry_after)
+                continue
+            raise BackendError(_elevenlabs_friendly_message(exc.code, ""))
+        except ssl.SSLError:
+            raise BackendError(
+                "The secure connection could not be verified."
+            ) from None
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ssl.SSLError):
+                raise BackendError(
+                    "The secure connection could not be verified."
+                ) from None
+            # Generic message only, matching the translation path (v1.38):
+            # the raw exception reason is a low-level network diagnostic,
+            # not something worth surfacing.
+            last_message = (
+                "Could not reach ElevenLabs. Please check your connection "
+                "and try again."
+            )
+            if attempt < attempts - 1:
+                wait_or_give_up(attempt)
+                continue
+            raise BackendError(last_message)
+        except (TimeoutError, OSError):
+            last_message = "ElevenLabs did not respond in time. Please try again."
+            if attempt < attempts - 1:
+                wait_or_give_up(attempt)
+                continue
+            raise BackendError(last_message)
+    raise BackendError(  # pragma: no cover - defensive; every branch above raises or continues
+        last_message or "ElevenLabs did not respond in time. Please try again."
+    )
 
 
 def pcm_to_wav_bytes(pcm_data: bytes, sample_rate: int = ELEVENLABS_SAMPLE_RATE,
@@ -6773,6 +6872,27 @@ if GUI_AVAILABLE:
                 text=format_status(self.config_data, len(self._input_text()), state)
             )
 
+        def _schedule_status(self, state: str) -> None:
+            """Worker-thread-safe status update (v1.59, notes_026 2.C).
+
+            *state* must never contain the submitted phrase — unlike
+            _refresh_status, format_status is not given the chance to
+            strip it here, since this bypasses the usual char-count path
+            entirely with a fixed, pre-built string. Only ever called with
+            a template of the retry-progress shape ("Retrying (2 of 4)…"),
+            never with anything built from user text or an exception.
+            """
+            def _apply():
+                try:
+                    if self.winfo_exists():
+                        self._refresh_status(state=state)
+                except tk.TclError:  # pragma: no cover - window closed
+                    pass
+            try:
+                self.after(0, _apply)
+            except Exception:
+                pass
+
         def _paste(self):
             try:
                 clip = self.clipboard_get()
@@ -7357,6 +7477,15 @@ if GUI_AVAILABLE:
                     # safe and matches the equivalent Claude privacy flow.
                     pass
 
+            # v1.59, notes_026 2.C: Speak does not share Translate's cancel
+            # event (notes_015 already deferred that), so this is retry
+            # progress only, not cancellation.
+            snapshot["_on_retry"] = (
+                lambda n, m: self._schedule_status(
+                    "Retrying speech ({} of {})…".format(n, m)
+                )
+            )
+
             # Bumped only once Speak is actually going ahead (M2): a missing
             # key or a declined privacy notice must not invalidate a
             # previous, still-in-flight TTS request via this same counter.
@@ -7641,6 +7770,12 @@ if GUI_AVAILABLE:
             snapshot["default_french_formality"] = self.formality_var.get()
             snapshot["default_french_speaker_gender"] = self.speaker_gender_var.get()
             snapshot["default_french_recipient_gender"] = self.recipient_gender_var.get()
+            # v1.59, notes_026 2.C: see _translate's identical addition.
+            snapshot["_on_retry"] = (
+                lambda n, m: self._schedule_status(
+                    "Retrying ({} of {})…".format(n, m)
+                )
+            )
 
             if snapshot.get("backend") == "anthropic" and not snapshot.get("privacy_ack"):
                 proceed = messagebox.askokcancel(
@@ -7784,6 +7919,14 @@ if GUI_AVAILABLE:
             snapshot["tones"] = self._current_tones()
             snapshot["writing"] = self._current_writing_profile()
             snapshot["_previous_exchange"] = self._previous_exchange
+            # v1.59, notes_026 2.C: a silent status bar during retries makes
+            # a 429 look like a hang. Worker-thread-safe; never carries the
+            # submitted phrase.
+            snapshot["_on_retry"] = (
+                lambda n, m: self._schedule_status(
+                    "Retrying ({} of {})…".format(n, m)
+                )
+            )
 
             if snapshot.get("backend") == "anthropic" and not snapshot.get("privacy_ack"):
                 proceed = messagebox.askokcancel(

@@ -1714,6 +1714,64 @@ class TestHttpBackoff(unittest.TestCase):
         self.assertGreater(delay, 0.0)
         self.assertLessEqual(delay, plume.HTTP_BACKOFF_BASE)
 
+    def test_on_retry_called_before_each_wait_not_on_final_failure(self):
+        # v1.59, notes_026 2.C: a silent status bar during retries makes a
+        # 429 look like a hang. on_retry(next_attempt, attempts) must fire
+        # before every retried wait, and never on the last, non-retried one.
+        calls = []
+
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError("https://x", 503, "busy", {}, io.BytesIO(b""))
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError):
+                plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5,
+                    max_attempts=4, on_retry=lambda n, m: calls.append((n, m)),
+                )
+        # 4 attempts total -> 3 retried waits, notified before tries 2, 3, 4.
+        self.assertEqual(calls, [(2, 4), (3, 4), (4, 4)])
+
+    def test_on_retry_exception_does_not_abort_retry(self):
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise urllib.error.HTTPError("https://x", 503, "busy", {}, io.BytesIO(b""))
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda *a, **k: b'{"ok": true}',
+            )
+
+        def broken_on_retry(n, m):
+            raise RuntimeError("status bar exploded")
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            data = plume._http_post_json(
+                "https://x", {}, {"content-type": "application/json"}, 5,
+                on_retry=broken_on_retry,
+            )
+        self.assertEqual(data, {"ok": True})
+
+    def test_on_retry_not_called_when_nothing_needs_retrying(self):
+        calls = []
+
+        def fake_urlopen(request, timeout=None):
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda *a, **k: b'{"ok": true}',
+            )
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            plume._http_post_json(
+                "https://x", {}, {"content-type": "application/json"}, 5,
+                on_retry=lambda n, m: calls.append((n, m)),
+            )
+        self.assertEqual(calls, [])
+
     def test_backoff_delay_exponential_never_exceeds_cap(self):
         # v1.27: jitter is applied inside the cap, not added on top of it.
         for attempt in range(12):
@@ -2220,6 +2278,79 @@ class TestElevenLabsTTS(unittest.TestCase):
             )
         return _raise
 
+    def test_retries_429_then_succeeds(self):
+        # v1.59, notes_026 2.C/3.D: previously a single urlopen with no
+        # retry at all, so a 429 was a user-facing error on the first try.
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise urllib.error.HTTPError(
+                    "https://api.elevenlabs.io/v1/text-to-speech/x", 429, "busy",
+                    {}, io.BytesIO(b""),
+                )
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda *a, **k: b"\x01\x02\x03\x04",
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            audio = plume.call_elevenlabs_tts({"elevenlabs_api_key": "sk_test"}, "Bonjour")
+        self.assertEqual(audio, b"\x01\x02\x03\x04")
+        self.assertEqual(calls["n"], 3)
+
+    def test_exhausts_retries_on_429_and_raises(self):
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            raise urllib.error.HTTPError(
+                "https://api.elevenlabs.io/v1/text-to-speech/x", 429, "busy",
+                {}, io.BytesIO(b""),
+            )
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError):
+                plume.call_elevenlabs_tts({"elevenlabs_api_key": "sk_test"}, "Bonjour")
+        self.assertEqual(calls["n"], plume.HTTP_MAX_ATTEMPTS)
+
+    def test_on_retry_called_during_elevenlabs_retries(self):
+        calls = []
+
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(
+                "https://api.elevenlabs.io/v1/text-to-speech/x", 503, "busy",
+                {}, io.BytesIO(b""),
+            )
+
+        snapshot = {
+            "elevenlabs_api_key": "sk_test",
+            "_on_retry": lambda n, m: calls.append((n, m)),
+        }
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError):
+                plume.call_elevenlabs_tts(snapshot, "Bonjour")
+        self.assertEqual(len(calls), plume.HTTP_MAX_ATTEMPTS - 1)
+
+    def test_url_error_message_never_leaks_raw_reason(self):
+        # v1.38 already dropped the raw exception reason on the translation
+        # path; v1.59 brings Speak into line rather than interpolating it.
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.URLError("super secret internal diagnostic")
+
+        with mock.patch.object(plume, "time"), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            try:
+                plume.call_elevenlabs_tts({"elevenlabs_api_key": "k"}, "hi")
+            except plume.BackendError as exc:
+                self.assertNotIn("super secret internal diagnostic", str(exc))
+            else:
+                self.fail("expected BackendError")
+
 
 class TestPcmToWav(unittest.TestCase):
     def test_round_trip_preserves_pcm_and_format(self):
@@ -2311,6 +2442,16 @@ class TestPrivacyOfDiagnostics(unittest.TestCase):
         self.assertTrue(masked.startswith("sk-a"))
         self.assertIn("\u2022", masked)
         self.assertNotIn("abcdefghij", masked)
+
+    def test_retry_status_line_excludes_source(self):
+        # v1.59: the status bar now shows retry progress mid-request; it
+        # must stay just as free of the submitted phrase as "ready" is.
+        line = plume.format_status(
+            dict(plume.DEFAULT_CONFIG), len(self.SECRET),
+            state="Retrying (2 of 4)\u2026",
+        )
+        self.assertNotIn(self.SECRET, line)
+        self.assertIn("Retrying (2 of 4)\u2026", line)
 
 
 class TestSourceSize(unittest.TestCase):

@@ -363,9 +363,11 @@ enter it, otherwise from the `ANTHROPIC_API_KEY` environment variable.
 Transient failures (rate limiting, a temporary 502/503/504, or a dropped
 connection) are retried automatically with a short exponential backoff
 before Plume shows an error — no action needed, and nothing is retried
-for a rejected key, a missing model, or a certificate/TLS failure.
-Clear, closing the window, or starting a new translation stops an
-abandoned request from retrying or being delivered late.
+for a rejected key, a missing model, or a certificate/TLS failure. The
+status bar shows retry progress ("Retrying (2 of 4)…") so a 429 doesn't
+look like a hang; ElevenLabs Speak retries the same way. Clear, closing
+the window, or starting a new translation stops an abandoned request
+from retrying or being delivered late.
 
 Optional: **"If Claude is unavailable, retry once with local Ollama"**
 (Settings, off by default) tries Ollama a single time after Claude

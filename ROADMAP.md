@@ -2316,6 +2316,62 @@ French itself.
   `speech_rate` reaches disk immediately, and a stale Settings snapshot
   cannot revert a live rate change.
 
+## v1.59 — Retry visibility + ElevenLabs retry
+
+Third of the notes_026 batch. `_http_post_json` already retried
+429/502/503/504 (Claude also 529) with capped exponential backoff, but
+the UI never heard about it: the status bar was set once at dispatch
+and stayed there until delivery, so a 20-second run of retries looked
+exactly like a hang. ElevenLabs Speak had no retry loop at all — a 429
+was a user-facing error on the very first attempt.
+
+- **`_http_post_json` grows an optional `on_retry` callback**, called as
+  `on_retry(next_attempt_number, attempts)` immediately before each
+  backoff wait — never on the final, non-retried failure. Any exception
+  it raises is swallowed, so a status-bar failure can never abort a
+  retry. `call_anthropic`/`call_ollama` pass
+  `on_retry=config_snapshot.get("_on_retry")` straight through.
+- **`_schedule_status(state)`** is the worker-thread-safe status update
+  Translate/Correct/Speak's `_on_retry` callbacks use: `self.after(0,
+  ...)` plus a `winfo_exists()` guard, the exact hop `_deliver_safe`
+  already uses for delivering results. `_translate`,
+  `_correct_then_translate` and `_speak` each install
+  `snapshot["_on_retry"]` with a fixed template
+  ("Retrying (2 of 4)…" / "Retrying speech (2 of 4)…") — never the
+  submitted phrase, an exception message, or anything else dynamic.
+- **ElevenLabs now retries** the same 429/502/503/504 set with the same
+  bounded exponential backoff as the translation path — not routed
+  through `_http_post_json` itself (that helper JSON-decodes the body;
+  this one returns raw PCM), so `call_elevenlabs_tts` grew its own
+  small retry loop mirroring `_http_post_json`'s shape, honouring
+  Retry-After and closing a failed response without draining its body
+  (v1.38). Speak does not share Translate's cancel event (notes_015
+  already deferred that) — this version retries without cancellation,
+  still guarded by the existing stale `_speech_request_id` check at
+  delivery. Also dropped the raw exception reason from ElevenLabs'
+  URLError message, which v1.38 had already dropped from the
+  translation path — Speak was the one place that still leaked it.
+- 8 new headless tests: `on_retry` fires before every retried wait and
+  never on the final failure (`_http_post_json`), an exception inside
+  `on_retry` doesn't abort the retry, `on_retry` is never called when
+  nothing needs retrying; `call_elevenlabs_tts` retries 429 then
+  succeeds, exhausts retries and raises, calls `on_retry` the right
+  number of times, and no longer leaks a raw URLError reason; a status
+  line carrying "Retrying (2 of 4)…" still excludes the submitted
+  phrase (extends the existing privacy suite). 505 → 513 tests. The
+  worker-thread status hop is UI-lifecycle wiring verified live only,
+  same precedent as v1.53/v1.56/v1.57/v1.58: driven against a
+  constructed `PlumeApp` under a real (briefly self-quitting)
+  `mainloop()` — plain `update()` polling proved unreliable for a
+  cross-thread `after(0, ...)` callback specifically, a harness-only
+  limitation (production always has `mainloop()` running continuously)
+  — confirming `_schedule_status` updates the status bar from a genuine
+  background thread, and that `_translate`/`_correct_then_translate`/
+  `_speak` each install a working, correctly-worded `_on_retry` that
+  reaches the status bar through the real worker thread. Screenshotted
+  live showing "Retrying (2 of 4)…" on the status bar with no other
+  layout change (no new widgets this version).
+
 ---
 
 ### Notes on sequencing
