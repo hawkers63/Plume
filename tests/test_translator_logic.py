@@ -214,6 +214,19 @@ class TestResultIsIncomingFrench(unittest.TestCase):
         self.assertFalse(plume.result_is_incoming_french("French"))
 
 
+class TestHotkeyHint(unittest.TestCase):
+    """v1.60, notes_026 3.J: the one pure helper in the IsolatedHotkey
+    refactor, used to build an "already in use" error message."""
+
+    def test_letter_vk_codes_produce_ctrl_shift_label(self):
+        self.assertEqual(plume._hotkey_hint(plume.RESTORE_HOTKEY_VK), "Ctrl+Shift+P")
+        self.assertEqual(plume._hotkey_hint(plume.QUICK_HOTKEY_VK), "Ctrl+Shift+T")
+
+    def test_non_letter_vk_falls_back_to_generic_wording(self):
+        self.assertEqual(plume._hotkey_hint(0x00), "the configured chord")
+        self.assertEqual(plume._hotkey_hint(0xFF), "the configured chord")
+
+
 class TestConfig(unittest.TestCase):
     def test_malformed_config_not_overwritten_by_automatic_save(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1004,6 +1017,14 @@ class TestConfigCoercion(unittest.TestCase):
     def test_speech_rate_hand_edited_junk_falls_back_to_normal(self):
         config, _ = self._load_with({"speech_rate": "false"})
         self.assertEqual(config["speech_rate"], plume.SPEECH_RATE_NORMAL)
+
+    def test_quick_translate_hotkey_coerced_to_bool(self):
+        config, _ = self._load_with({"quick_translate_hotkey": "yes"})
+        self.assertIs(config["quick_translate_hotkey"], True)
+
+    def test_quick_translate_hotkey_defaults_false(self):
+        config, _ = self._load_with({})
+        self.assertIs(config["quick_translate_hotkey"], False)
 
     def test_coerce_positive_int(self):
         self.assertEqual(plume.coerce_positive_int("5000", 2000), 5000)

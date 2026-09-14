@@ -31,5 +31,6 @@
   "french_typography": false,
   "fallback_to_ollama": false,
   "lowercase_output": false,
-  "speech_rate": 1.0
+  "speech_rate": 1.0,
+  "quick_translate_hotkey": false
 }

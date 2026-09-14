@@ -2372,6 +2372,114 @@ was a user-facing error on the very first attempt.
   live showing "Retrying (2 of 4)…" on the status bar with no other
   layout change (no new widgets this version).
 
+## v1.60 — Quick translate
+
+Last of the notes_026 batch's four main versions, closing the standing
+brief's "clipboard in, French out": v1.39's tray paste and v1.50's
+restore hotkey both deliberately refuse to translate, so getting a
+Discord message in, translated, and back on the clipboard was still
+four separate clicks.
+
+- **`IsolatedHotkey`**: v1.50's `RestoreHotkey` (a message-only HWND on
+  its own daemon thread, understanding only WM_HOTKEY/WM_DESTROY, never
+  touching Tk directly — the design that replaced v1.18's WndProc
+  subclass after that crashed the interpreter on a real cross-process
+  message) is now a small base class parameterised by
+  `(vk, mods, hotkey_id, window_class)`. `RestoreHotkey` is a thin
+  subclass unchanged in behaviour; `QuickTranslateHotkey` is a second
+  instance — Ctrl+Shift+T, its own hotkey id, its own window class
+  `PlumeQuickTranslateHotkey` (`RegisterClassW` is keyed on the class
+  name, so the two instances cannot collide).
+- **A real, previously-shipped crash bug found and fixed**: a throwaway,
+  Plume-free harness (registers both hotkeys, posts real WM_HOTKEY
+  messages to each, per this note's own testing discipline — never
+  attach either to the Tk toplevel to "just try it") crashed the
+  interpreter with `STATUS_ILLEGAL_INSTRUCTION` the moment a hotkey was
+  stopped and started a second time in the same process. Root cause:
+  `RegisterClassW` returning `ERROR_CLASS_ALREADY_EXISTS` on a second
+  `start()` was treated as "fine, reuse it" — but the reused
+  registration's `lpfnWndProc` still pointed at the *first* run's
+  `self._wndproc_ref` trampoline, which that run's own `start()` had
+  already replaced with a new one, letting ctypes garbage-collect the
+  old native trampoline. The next `CreateWindowExW` (or any message
+  routed through the reused class) then called into freed trampoline
+  memory. This bug already shipped in v1.50 — it just needed two
+  `_sync_restore_hotkey()` calls in one session (Settings: turn the
+  restore-hotkey checkbox off, save, on, save) to hit it, which nothing
+  had exercised before this version's own harness did. Fixed with
+  `UnregisterClassW` on every exit path of `_run()` (a `try/finally`,
+  not just the clean message-loop exit), and the `ERROR_CLASS_ALREADY_EXISTS`
+  branch now force-unregisters and retries fresh rather than ever
+  trusting a "reuse". Stress-tested 10 stop/start cycles of both
+  hotkeys interleaved, posting WM_HOTKEY each cycle, with no crash.
+- **Two layers, one method** (`_quick_translate_from_clipboard`):
+  window-level `<Control-Shift-t>`, bound on the toplevel like Undo
+  Clear, always on — Plume is already focused, no Settings needed.
+  System-wide Ctrl+Shift+T is opt-in (Settings, off by default,
+  directly under the restore-hotkey checkbox), using
+  `QuickTranslateHotkey`. The existing `_poll_restore_hotkey` loop
+  polls both hotkeys' Events now; the system-wide one is skipped
+  when Plume is already focused and mapped, since the window-level Tk
+  binding will already have fired for that same keypress and
+  `RegisterHotKey`'s chord fires regardless of focus — acting on both
+  would run the pipeline twice. A 400ms debounce on
+  `self._quick_last_ts` covers the same class of double-fire.
+- **Pipeline**: show the window, read the clipboard (empty → stop), a
+  file path offers the existing "Open this file?" confirmation instead
+  of translating the path text, oversized text gets the existing
+  generic advisory, otherwise the input box is *replaced* (not
+  inserted-at-caret — Quick translate means "this is the new message"),
+  `_auto_copy_on_deliver` is set, and `_run_selected_mode()` dispatches
+  exactly like Ctrl+Enter, respecting the current Mode/direction. An
+  already-running translation refuses a second worker with a status
+  message rather than queueing one.
+- **Auto-copy only on an accepted delivery that still matches**:
+  `_deliver`'s success path copies the main translation and shows
+  "Copied." only when `_auto_copy_on_deliver` is set *and* the input
+  still equals what was submitted — exactly the existing "Generated for
+  an earlier message" staleness check `_deliver` already had, reused
+  rather than duplicated. `_auto_copy_on_deliver` resets to `False`
+  after every delivery (success or error).
+- **Six leak paths found and closed while wiring the flag through
+  Correct-then-translate mode** (Quick translate respects whatever Mode
+  is selected, including "Correct English then translate"): a
+  correction refused by `_correction_is_allowed()` (e.g. Auto-detect
+  sees French, not English), a correction's own oversized-input
+  refusal, a declined privacy notice in either `_translate` or
+  `_correct_then_translate`, and `_deliver_correction`'s error/stale-
+  input paths all short-circuit *before* the chained `_translate()`
+  call that would otherwise have cleared the flag on delivery — each
+  now clears `_auto_copy_on_deliver` itself, or a stale `True` would
+  silently auto-copy some later, unrelated manual Translate's result.
+  Proved this mattered (not just plausible) by reproducing the leak
+  scenario live before the fix and confirming a subsequent unrelated
+  manual Translate did *not* touch the clipboard after it. Deliberately
+  did **not** add a matching clear at the top of `_translate`/
+  `_correct_then_translate`'s own busy-guards — Quick translate sets the
+  flag and calls straight into one of them in the same synchronous call
+  chain, so clearing it there would have erased the very intent it was
+  just given (an early draft of this version did exactly that and was
+  caught by the live delivery test, not read-through).
+- Config: `quick_translate_hotkey: false` in `DEFAULT_CONFIG` and the
+  example file, bool-coerced on load, persisted from Settings the same
+  way `restore_hotkey` is (`and _restore_hotkey_available()` so a
+  hand-edited `true` on Linux/macOS can't silently claim to be on).
+- 4 new headless tests (`_hotkey_hint` letter-VK labels and the generic
+  fallback; `quick_translate_hotkey` config coercion and default). 513 →
+  517 tests. Everything else here is native/UI-lifecycle, verified live
+  only, same precedent as v1.50/v1.53/v1.57/v1.58/v1.59: the throwaway
+  hotkey harness and its 10-cycle stress test (see above), driving
+  `PlumeApp` directly under a real briefly-self-quitting `mainloop()`
+  (mocking `translate`/`correct_english`, never a real network call) to
+  confirm the happy path, the 400ms debounce, the already-busy refusal,
+  the file-path-offers-open-not-translate path, the input-changed-
+  before-delivery skip, all six leak paths, and the Settings checkbox
+  round trip through `SettingsDialog._save` → `_apply_settings` →
+  `_sync_quick_hotkey` (including the exact stop/start/stop/start cycle
+  that used to crash, now clean). Screenshotted Settings at 1000×600:
+  the new checkbox sits directly under Restore, full text visible, no
+  clipping.
+
 ---
 
 ### Notes on sequencing

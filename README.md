@@ -262,6 +262,16 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   window once did (see ROADMAP v1.18/v1.50). If the chord is already
   claimed by another application, the checkbox turns itself back off
   with a one-line explanation rather than silently doing nothing.
+- **Quick translate** (v1.60): **Ctrl+Shift+T** always works while Plume
+  is focused — no Settings needed. An opt-in system-wide chord (same
+  checkbox area, off by default) works from anywhere: it pastes the
+  clipboard as the new source, runs the current Mode's translation, and
+  copies the accepted result — one chord instead of switch-paste-
+  translate-copy. Skips a file path (offers to open it, like Paste,
+  rather than translating the path text) and never auto-copies a result
+  for a message you've since typed past. Uses its own isolated
+  message-only window, the identical safe mechanism the restore hotkey
+  already used, extended to support a second independent chord.
 - **Conversation presets:** save the toolbar's direction, French form,
   Me/You gender agreement, situation and tones as a named preset (a
   "Presets…" menu plus Save/Delete beside the toolbar's You control) —

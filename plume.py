@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.59"
+APP_VERSION = "1.60"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -867,6 +867,7 @@ DEFAULT_CONFIG = {
     "fallback_to_ollama": False,
     "lowercase_output": False,
     "speech_rate": SPEECH_RATE_NORMAL,
+    "quick_translate_hotkey": False,
 }
 
 
@@ -990,6 +991,7 @@ def load_config():
     config["fallback_to_ollama"] = bool(config.get("fallback_to_ollama"))
     config["lowercase_output"] = bool(config.get("lowercase_output"))
     config["speech_rate"] = normalise_speech_rate(config.get("speech_rate"))
+    config["quick_translate_hotkey"] = bool(config.get("quick_translate_hotkey"))
 
     return config, None
 
@@ -1088,32 +1090,50 @@ def launch_at_sign_in_is_set() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Global restore hotkey (v1.50, notes_022 2.E / notes_023 2.A). Windows-only.
+# Global hotkeys (v1.50 restore hotkey, notes_022 2.E / notes_023 2.A;
+# widened v1.60 to a second, independent chord for Quick translate,
+# notes_026 2.D/3.J). Windows-only.
 #
 # v1.18 subclassed the Tk toplevel's own WndProc for WM_DROPFILES and crashed
 # the interpreter the moment a message arrived asynchronously from outside
 # the process — a same-process/self-triggered test passed while the real
 # cross-process path did not. WM_HOTKEY on the same WndProc would be the same
-# class of risk, so this never touches Tk's window. Instead it is a message-
-# only HWND (HWND_MESSAGE) on its own daemon thread with its own WndProc that
-# understands only WM_HOTKEY and WM_DESTROY; on WM_HOTKEY it sets a
-# threading.Event and never calls into Tk. The Tk thread polls that event
-# with after(200, ...) and calls the existing _show_window() itself. A
-# throwaway, Plume-free harness using this exact class was required to
-# survive one externally triggered WM_HOTKEY before this was wired in.
+# class of risk, so this never touches Tk's window. Instead each hotkey is
+# its own message-only HWND (HWND_MESSAGE) on its own daemon thread with its
+# own WndProc that understands only WM_HOTKEY and WM_DESTROY; on WM_HOTKEY it
+# sets a threading.Event and never calls into Tk. The Tk thread polls that
+# event with after(200, ...) and acts on it itself. A throwaway, Plume-free
+# harness using this exact class was required to survive one externally
+# triggered WM_HOTKEY before v1.50 first wired this in; v1.60's second
+# instance reuses the identical, already-proven mechanism rather than a new
+# native class, with its own window class name (RegisterClassW is keyed on
+# the class name, so a second instance cannot collide with the first) and
+# its own hotkey id (so WM_HOTKEY's wParam still tells the two apart if they
+# were ever on the same HWND, though in practice each gets its own).
 # ---------------------------------------------------------------------------
 
 RESTORE_HOTKEY_VK = 0x50  # 'P'
 RESTORE_HOTKEY_MODS = 0x0002 | 0x0004 | 0x4000  # MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT
 RESTORE_HOTKEY_ID = 1
-_RESTORE_WM_HOTKEY = 0x0312
-_RESTORE_WM_DESTROY = 0x0002
-_RESTORE_HWND_MESSAGE = -3
 _RESTORE_HOTKEY_CLASS = "PlumeRestoreHotkey"
+
+QUICK_HOTKEY_VK = 0x54  # 'T'
+QUICK_HOTKEY_MODS = RESTORE_HOTKEY_MODS
+QUICK_HOTKEY_ID = 2
+_QUICK_HOTKEY_CLASS = "PlumeQuickTranslateHotkey"
+
+_HOTKEY_WM_HOTKEY = 0x0312
+_HOTKEY_WM_DESTROY = 0x0002
+_HOTKEY_HWND_MESSAGE = -3
 
 
 def _restore_hotkey_available() -> bool:
-    """True only on Windows with a working user32/kernel32 ctypes bind."""
+    """True only on Windows with a working user32/kernel32 ctypes bind.
+
+    The name predates v1.60's second hotkey; the same Windows/ctypes
+    availability check applies to Quick translate's system-wide chord too,
+    so callers for either use this one function rather than duplicating it.
+    """
     if sys.platform != "win32":
         return False
     try:
@@ -1124,16 +1144,30 @@ def _restore_hotkey_available() -> bool:
     return True
 
 
-class RestoreHotkey:
+def _hotkey_hint(vk: int) -> str:
+    """Best-effort "Ctrl+Shift+<letter>" label for an error message."""
+    if 0x41 <= vk <= 0x5A:  # 'A'-'Z'
+        return "Ctrl+Shift+{}".format(chr(vk))
+    return "the configured chord"
+
+
+class IsolatedHotkey:
     """A message-only HWND on its own thread. Never talks to Tk directly.
 
     The Tk thread is expected to poll ``self.fired`` (e.g. via
-    ``after(200, ...)``) and call ``PlumeApp._show_window`` itself.
-    Construction does not register the hotkey; call start() once the
-    Settings checkbox is on, and stop() to unregister and tear down.
+    ``after(200, ...)``) and react itself. Construction does not register
+    the hotkey; call start() once wanted, and stop() to unregister and tear
+    down. *vk*/*mods*/*hotkey_id*/*window_class* let two independent chords
+    (the v1.50 restore hotkey and the v1.60 Quick translate hotkey) share
+    this one mechanism without colliding: RegisterClassW is keyed on
+    *window_class*, so each instance registers its own window class.
     """
 
-    def __init__(self):
+    def __init__(self, vk: int, mods: int, hotkey_id: int, window_class: str):
+        self.vk = vk
+        self.mods = mods
+        self.hotkey_id = hotkey_id
+        self.window_class = window_class
         self.fired = threading.Event()
         self._thread = None
         self._hwnd = 0
@@ -1145,7 +1179,7 @@ class RestoreHotkey:
         if self._thread is not None and self._thread.is_alive():
             return ""
         if not _restore_hotkey_available():
-            return "Restore hotkey is only available on Windows."
+            return "This hotkey is only available on Windows."
         self._ready.clear()
         self._error = ""
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -1158,7 +1192,7 @@ class RestoreHotkey:
         hwnd = self._hwnd
         if hwnd:
             try:
-                ctypes.windll.user32.PostMessageW(hwnd, _RESTORE_WM_DESTROY, 0, 0)
+                ctypes.windll.user32.PostMessageW(hwnd, _HOTKEY_WM_DESTROY, 0, 0)
             except Exception:
                 pass
         thread = self._thread
@@ -1192,6 +1226,7 @@ class RestoreHotkey:
         ]
         user32.UnregisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int]
         user32.DestroyWindow.argtypes = [ctypes.c_void_p]
+        user32.UnregisterClassW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
         user32.PostMessageW.argtypes = [
             ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p,
         ]
@@ -1204,13 +1239,15 @@ class RestoreHotkey:
             ctypes.c_void_p, ctypes.c_void_p,
         )
 
+        hotkey_id = self.hotkey_id
+
         def wndproc(hwnd, msg, wparam, lparam):
-            if msg == _RESTORE_WM_HOTKEY and int(wparam) == RESTORE_HOTKEY_ID:
+            if msg == _HOTKEY_WM_HOTKEY and int(wparam) == hotkey_id:
                 self.fired.set()
                 return 0
-            if msg == _RESTORE_WM_DESTROY:
+            if msg == _HOTKEY_WM_DESTROY:
                 try:
-                    user32.UnregisterHotKey(hwnd, RESTORE_HOTKEY_ID)
+                    user32.UnregisterHotKey(hwnd, hotkey_id)
                 except Exception:
                     pass
                 user32.PostQuitMessage(0)
@@ -1219,7 +1256,7 @@ class RestoreHotkey:
 
         self._wndproc_ref = WNDPROC(wndproc)  # keep alive for the message pump
 
-        class _RestoreHotkeyWndClass(ctypes.Structure):
+        class _IsolatedHotkeyWndClass(ctypes.Structure):
             _fields_ = [
                 ("style", ctypes.c_uint),
                 ("lpfnWndProc", WNDPROC),
@@ -1233,51 +1270,113 @@ class RestoreHotkey:
                 ("lpszClassName", ctypes.c_wchar_p),
             ]
 
-        wc = _RestoreHotkeyWndClass()
+        wc = _IsolatedHotkeyWndClass()
         wc.lpfnWndProc = self._wndproc_ref
         wc.hInstance = kernel32.GetModuleHandleW(None)
-        wc.lpszClassName = _RESTORE_HOTKEY_CLASS
+        wc.lpszClassName = self.window_class
+
+        # v1.60 fix, found by this version's own stop()/start() harness: a
+        # latent crash that predates this version, not something the
+        # IsolatedHotkey refactor introduced. RegisterClassW returning
+        # ERROR_CLASS_ALREADY_EXISTS (1410) used to be treated as "fine,
+        # reuse it" — but a reused registration's lpfnWndProc still points
+        # at a PRIOR _run()'s self._wndproc_ref trampoline, which that
+        # prior call's start() had already overwritten with a new one,
+        # letting ctypes garbage-collect the old native trampoline. The
+        # next CreateWindowExW (or any message Windows later dispatches
+        # through the reused class) then calls into freed trampoline
+        # memory: an illegal-instruction crash. Never trust a "reuse" here
+        # — unregister whatever is already there (best-effort; it may be
+        # this stale trampoline, in which case failing to unregister it
+        # cleanly is no worse than the pre-fix behaviour) and register
+        # fresh, so the class's lpfnWndProc always matches THIS run's own
+        # self._wndproc_ref.
         if not user32.RegisterClassW(ctypes.byref(wc)):
             err = kernel32.GetLastError()
-            if err != 1410:  # ERROR_CLASS_ALREADY_EXISTS: fine, reuse it
-                self._error = "Could not register the restore-hotkey window class."
+            if err == 1410:  # ERROR_CLASS_ALREADY_EXISTS
+                try:
+                    user32.UnregisterClassW(self.window_class, wc.hInstance)
+                except Exception:
+                    pass
+                if not user32.RegisterClassW(ctypes.byref(wc)):
+                    self._error = "Could not register the hotkey window class."
+                    self._ready.set()
+                    return
+            else:
+                self._error = "Could not register the hotkey window class."
                 self._ready.set()
                 return
 
-        hwnd = user32.CreateWindowExW(
-            0, _RESTORE_HOTKEY_CLASS, "Plume hotkey", 0,
-            0, 0, 0, 0, _RESTORE_HWND_MESSAGE, None, wc.hInstance, None,
+        try:
+            hwnd = user32.CreateWindowExW(
+                0, self.window_class, "Plume hotkey", 0,
+                0, 0, 0, 0, _HOTKEY_HWND_MESSAGE, None, wc.hInstance, None,
+            )
+            if not hwnd:
+                self._error = "Could not create the hotkey window."
+                self._ready.set()
+                return
+            self._hwnd = hwnd
+            if not user32.RegisterHotKey(hwnd, self.hotkey_id, self.mods, self.vk):
+                self._error = "{} is already in use by another application.".format(
+                    _hotkey_hint(self.vk)
+                )
+                user32.DestroyWindow(hwnd)
+                self._hwnd = 0
+                self._ready.set()
+                return
+            self._ready.set()
+
+            class _IsolatedHotkeyMsg(ctypes.Structure):
+                _fields_ = [
+                    ("hwnd", ctypes.c_void_p),
+                    ("message", ctypes.c_uint),
+                    ("wParam", ctypes.c_void_p),
+                    ("lParam", ctypes.c_void_p),
+                    ("time", ctypes.c_uint),
+                    ("pt_x", ctypes.c_long),
+                    ("pt_y", ctypes.c_long),
+                ]
+
+            message = _IsolatedHotkeyMsg()
+            while user32.GetMessageW(ctypes.byref(message), 0, 0, 0) != 0:
+                user32.TranslateMessage(ctypes.byref(message))
+                user32.DispatchMessageW(ctypes.byref(message))
+        finally:
+            # Always unregister on the way out, on every exit path above
+            # (CreateWindowExW failure, RegisterHotKey failure, or a clean
+            # message-loop exit) — never just the clean one — so a later
+            # start() on this same instance never lands on the stale-reuse
+            # path this fix closes off. Only reached once RegisterClassW
+            # above actually succeeded (the only paths that reach this
+            # try/finally at all), so there is always something to
+            # unregister here. self._ready is already set by every path
+            # above by the time this runs, so start()'s wait() is never
+            # affected by this cleanup.
+            try:
+                user32.UnregisterClassW(self.window_class, wc.hInstance)
+            except Exception:
+                pass
+
+
+class RestoreHotkey(IsolatedHotkey):
+    """The v1.50 restore-window chord: Ctrl+Shift+P, id 1, its own class."""
+
+    def __init__(self):
+        super().__init__(
+            vk=RESTORE_HOTKEY_VK, mods=RESTORE_HOTKEY_MODS,
+            hotkey_id=RESTORE_HOTKEY_ID, window_class=_RESTORE_HOTKEY_CLASS,
         )
-        if not hwnd:
-            self._error = "Could not create the restore-hotkey window."
-            self._ready.set()
-            return
-        self._hwnd = hwnd
-        if not user32.RegisterHotKey(
-            hwnd, RESTORE_HOTKEY_ID, RESTORE_HOTKEY_MODS, RESTORE_HOTKEY_VK
-        ):
-            self._error = "Ctrl+Shift+P is already in use by another application."
-            user32.DestroyWindow(hwnd)
-            self._hwnd = 0
-            self._ready.set()
-            return
-        self._ready.set()
 
-        class _RestoreHotkeyMsg(ctypes.Structure):
-            _fields_ = [
-                ("hwnd", ctypes.c_void_p),
-                ("message", ctypes.c_uint),
-                ("wParam", ctypes.c_void_p),
-                ("lParam", ctypes.c_void_p),
-                ("time", ctypes.c_uint),
-                ("pt_x", ctypes.c_long),
-                ("pt_y", ctypes.c_long),
-            ]
 
-        message = _RestoreHotkeyMsg()
-        while user32.GetMessageW(ctypes.byref(message), 0, 0, 0) != 0:
-            user32.TranslateMessage(ctypes.byref(message))
-            user32.DispatchMessageW(ctypes.byref(message))
+class QuickTranslateHotkey(IsolatedHotkey):
+    """The v1.60 Quick translate chord: Ctrl+Shift+T, id 2, its own class."""
+
+    def __init__(self):
+        super().__init__(
+            vk=QUICK_HOTKEY_VK, mods=QUICK_HOTKEY_MODS,
+            hotkey_id=QUICK_HOTKEY_ID, window_class=_QUICK_HOTKEY_CLASS,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -4151,6 +4250,32 @@ if GUI_AVAILABLE:
                 ).grid(row=row, column=0, sticky="w", padx=16)
                 row += 1
 
+            # Opt-in system-wide Quick translate (v1.60, notes_026 2.D).
+            # Directly under the restore hotkey so the two "how Plume is
+            # summoned" system-wide controls stay together. Off by default:
+            # unlike Restore, this one pastes, translates and copies —
+            # something that should never start happening to a user's
+            # clipboard without them deliberately turning it on.
+            self.quick_hotkey_var = ctk.BooleanVar(
+                value=bool(self._config.get("quick_translate_hotkey"))
+            )
+            quick_hotkey_box = ctk.CTkCheckBox(
+                body,
+                text="Quick translate with Ctrl+Shift+T (pastes, translates, "
+                     "copies the result)",
+                variable=self.quick_hotkey_var,
+            )
+            quick_hotkey_box.grid(row=row, column=0, sticky="w", **pad)
+            row += 1
+            if not _restore_hotkey_available():
+                quick_hotkey_box.configure(state="disabled")
+                ctk.CTkLabel(
+                    body,
+                    text="Quick translate hotkey is only available on Windows.",
+                    text_color="gray60",
+                ).grid(row=row, column=0, sticky="w", padx=16)
+                row += 1
+
             # Explorer "Send to" file intake (v1.32). Independent of the tray
             # extras above: it is a plain .cmd file, not a pystray feature.
             self.send_to_var = ctk.BooleanVar(
@@ -4298,6 +4423,9 @@ if GUI_AVAILABLE:
             self._config["close_to_tray"] = want_close_to_tray
             self._config["restore_hotkey"] = (
                 bool(self.restore_hotkey_var.get()) and _restore_hotkey_available()
+            )
+            self._config["quick_translate_hotkey"] = (
+                bool(self.quick_hotkey_var.get()) and _restore_hotkey_available()
             )
             try:
                 set_launch_at_sign_in(want_launch)
@@ -5482,6 +5610,9 @@ if GUI_AVAILABLE:
             self._glossary_dialog = None
             self._http_cancel = threading.Event()
             self._restore_hotkey = RestoreHotkey()
+            self._quick_hotkey = QuickTranslateHotkey()  # v1.60, notes_026 2.D
+            self._quick_last_ts = 0.0
+            self._auto_copy_on_deliver = False
             self._previous_exchange = None  # v1.51: one Reply pair, in memory only
             self._clear_snapshot = None  # v1.53: one-level Undo Clear, in memory only
 
@@ -5517,6 +5648,7 @@ if GUI_AVAILABLE:
             self._apply_always_on_top()
             self._maybe_start_tray()
             self._sync_restore_hotkey()
+            self._sync_quick_hotkey()
             self.after(200, self._poll_restore_hotkey)
             self._maybe_start_import(sys.argv)
 
@@ -6204,6 +6336,17 @@ if GUI_AVAILABLE:
             # Ctrl+Z is left alone — it stays the input box's own undo.
             self.bind("<Control-Shift-Z>", self._undo_clear_shortcut)
             self.bind("<Control-Shift-z>", self._undo_clear_shortcut)
+            # Quick translate (v1.60): window-level, always on, independent
+            # of the opt-in system-wide chord — Plume is already focused
+            # and the user asked, so this needs no Settings checkbox. Bound
+            # on the toplevel like Undo Clear, not the input box, so it
+            # works regardless of which widget currently has focus.
+            self.bind("<Control-Shift-t>", self._quick_translate_shortcut)
+            self.bind("<Control-Shift-T>", self._quick_translate_shortcut)
+
+        def _quick_translate_shortcut(self, event):
+            self._quick_translate_from_clipboard()
+            return "break"
 
         # --- small helpers ------------------------------------------------
 
@@ -6833,6 +6976,9 @@ if GUI_AVAILABLE:
             self.input_box.delete("1.0", "end")
             self._on_input_change()
             self.input_box.focus_set()
+            # A stale Quick translate (v1.60) auto-copy intent must not ride
+            # in on the reply draft the user is about to type.
+            self._auto_copy_on_deliver = False
 
         def _refresh_reply_label(self):
             """One button, two labels/captions. Never puts source text on either."""
@@ -7049,6 +7195,7 @@ if GUI_AVAILABLE:
             self._request_id += 1
             self._speech_request_id += 1
             self._new_http_cancel()
+            self._auto_copy_on_deliver = False
             self.translate_btn.configure(state="normal", text="Translate")
             self.correct_btn.configure(state="normal", text="Correct English")
             self.reply_btn.configure(state="normal")
@@ -7133,6 +7280,7 @@ if GUI_AVAILABLE:
             self._stop_speech()
             self._cleanup_tts_file()
             self._restore_hotkey.stop()
+            self._quick_hotkey.stop()
             self.destroy()
 
         def _on_close(self):
@@ -7198,10 +7346,81 @@ if GUI_AVAILABLE:
             else:
                 self._restore_hotkey.stop()
 
+        def _sync_quick_hotkey(self):
+            """Start/stop the system-wide Quick translate hotkey (v1.60),
+            the sibling of _sync_restore_hotkey for the opt-in Settings box.
+            Fails closed exactly like the restore hotkey: if the chord is
+            already taken, the checkbox turns itself back off and a
+            one-line explanation appears rather than silently doing
+            nothing.
+            """
+            want = bool(self.config_data.get("quick_translate_hotkey"))
+            if want:
+                error = self._quick_hotkey.start()
+                if error:
+                    self.config_data["quick_translate_hotkey"] = False
+                    self.advisory.configure(text=error)
+                    self.advisory.grid()
+            else:
+                self._quick_hotkey.stop()
+
+        def _quick_translate_from_clipboard(self):
+            """Paste-replace, translate, auto-copy on accepted delivery
+            (v1.60, notes_026 2.D).
+
+            Window-level Ctrl+Shift+T (always on) and the opt-in system-
+            wide chord (Settings) both land here. Never logs or displays
+            the clipboard text. A 400ms debounce (self._quick_last_ts)
+            stops one chord press from being read as two dispatches by
+            both the Tk binding and a slightly-delayed native poll.
+            """
+            now = time.monotonic()
+            if now - self._quick_last_ts < 0.4:
+                return
+            self._quick_last_ts = now
+            self._show_window()
+            try:
+                clip = self.clipboard_get()
+            except Exception:
+                return
+            clip = clip or ""
+            if not clip.strip():
+                return  # window is up; nothing to translate
+            path = looks_like_importable_path(clip)
+            if path:
+                # Quick translate means "translate this text", never a
+                # silent file import — offer the same confirm _paste() uses.
+                self._paste()
+                return
+            if str(self.translate_btn.cget("state")) == "disabled":
+                self._refresh_status(state="A translation is already running.")
+                return
+            limit = coerce_positive_int(
+                self.config_data.get("max_input_chars"), DEFAULT_MAX_INPUT_CHARS
+            )
+            ok, message = validate_source_size(clip, limit)
+            if not ok:
+                self.advisory.configure(text=message)
+                self.advisory.grid()
+                return
+            # Replace, not insert-at-caret: Quick translate means "this is
+            # the new message", not "append to whatever was already there".
+            self.input_box.delete("1.0", "end")
+            self.input_box.insert("1.0", clip)
+            self._on_input_change()
+            self._auto_copy_on_deliver = True
+            self._run_selected_mode()
+
         def _poll_restore_hotkey(self):
-            """Tk-thread poll of the hotkey's Event; never called from the
-            hotkey's own message-pump thread. Deiconify only, no paste, no
-            translate — "Show and paste clipboard" stays a tray-menu action.
+            """Tk-thread poll of both hotkeys' Events; never called from
+            either hotkey's own message-pump thread. Restore is deiconify
+            only, no paste, no translate — "Show and paste clipboard" stays
+            a tray-menu action. Quick translate (v1.60) is skipped here
+            when Plume is already focused and mapped: the window-level
+            `<Control-Shift-t>` Tk binding will already have fired for that
+            same keypress, and RegisterHotKey's global chord fires
+            regardless of focus, so acting on both would run the pipeline
+            twice.
             """
             try:
                 if not self.winfo_exists():
@@ -7211,6 +7430,18 @@ if GUI_AVAILABLE:
             if self._restore_hotkey.fired.is_set():
                 self._restore_hotkey.fired.clear()
                 self._show_window()
+            if self._quick_hotkey.fired.is_set():
+                self._quick_hotkey.fired.clear()
+                focused = False
+                try:
+                    focused = (
+                        bool(self.winfo_viewable())
+                        and self.focus_displayof() is not None
+                    )
+                except tk.TclError:  # pragma: no cover - window closed
+                    focused = False
+                if not focused:
+                    self._quick_translate_from_clipboard()
             self.after(200, self._poll_restore_hotkey)
 
         def _tray_show(self, icon=None, item=None):
@@ -7406,6 +7637,7 @@ if GUI_AVAILABLE:
             self._request_id += 1
             self._speech_request_id += 1
             self._new_http_cancel()
+            self._auto_copy_on_deliver = False
             self._stop_speech()
             self.translate_btn.configure(state="normal", text="Translate")
             self.correct_btn.configure(state="normal", text="Correct English")
@@ -7700,6 +7932,7 @@ if GUI_AVAILABLE:
             self._apply_always_on_top()
             self._maybe_start_tray()
             self._sync_restore_hotkey()
+            self._sync_quick_hotkey()
             self._refresh_conversation_preset_menu()
             self._refresh_status()
             # An open GlossaryDialog reads config_data fresh on every method
@@ -7747,6 +7980,18 @@ if GUI_AVAILABLE:
 
             # A new request supersedes "Undo Clear" (notes_025 M1): see
             # _translate's identical guard for the full rationale.
+            #
+            # Deliberately does NOT clear _auto_copy_on_deliver here (v1.60):
+            # Quick translate sets that flag and then calls this method (via
+            # _run_selected_mode, when the writing profile's Mode is Correct
+            # then translate) in the very same call chain, so clearing it on
+            # entry would wipe out the intent before the worker even starts.
+            # The busy-guard above already stops a second, unrelated request
+            # from starting while one is in flight, and _clear/_reply/
+            # _reopen_history_entry each clear the flag on their own abandon
+            # paths, and _deliver clears it on every completed delivery
+            # (success or error) — so there is no path left where a stale
+            # True could survive into an unrelated later request.
             self._clear_snapshot = None
             self._set_undo_clear_enabled(False)
 
@@ -7754,6 +7999,11 @@ if GUI_AVAILABLE:
             if not ok:
                 self.advisory.configure(text=message)
                 self.advisory.grid()
+                # v1.60: this refusal (e.g. Auto-detect saw French, not
+                # English) never dispatches a worker, so nothing will ever
+                # clear a Quick translate auto-copy intent if it isn't
+                # cleared right here.
+                self._auto_copy_on_deliver = False
                 return
             text = self._input_text()
             limit = coerce_positive_int(
@@ -7763,6 +8013,7 @@ if GUI_AVAILABLE:
             if not ok:
                 self.advisory.configure(text=message)
                 self.advisory.grid()
+                self._auto_copy_on_deliver = False
                 return
 
             snapshot = dict(self.config_data)
@@ -7785,6 +8036,7 @@ if GUI_AVAILABLE:
                     "on this machine.\n\nContinue with Claude?",
                 )
                 if not proceed:
+                    self._auto_copy_on_deliver = False
                     return
                 self.config_data["privacy_ack"] = True
                 snapshot["privacy_ack"] = True
@@ -7848,6 +8100,12 @@ if GUI_AVAILABLE:
                 self.advisory.configure(text=data)
                 self.advisory.grid()
                 self._refresh_status(state="ready")
+                # v1.60: a Quick translate that went through Correct then
+                # translate mode never reaches the chained _translate()
+                # call below when correction itself fails — clear the
+                # intent here too, or it would leak into a later,
+                # unrelated manual Translate.
+                self._auto_copy_on_deliver = False
                 return
             if self._input_text() != snap_text:
                 self.advisory.configure(
@@ -7857,6 +8115,7 @@ if GUI_AVAILABLE:
                 )
                 self.advisory.grid()
                 self._refresh_status(state="ready")
+                self._auto_copy_on_deliver = False
                 return
 
             corrected = data.get("corrected_text", "")
@@ -7896,6 +8155,11 @@ if GUI_AVAILABLE:
             # A new request supersedes "Undo Clear" (notes_025 M1): the
             # snapshot is from before this work and must not be allowed to
             # wipe the result this call is about to accept.
+            #
+            # Deliberately does NOT clear _auto_copy_on_deliver here (v1.60)
+            # — see _correct_then_translate's identical comment: Quick
+            # translate sets that flag and then calls straight into this
+            # method in the same call chain.
             self._clear_snapshot = None
             self._set_undo_clear_enabled(False)
 
@@ -7908,6 +8172,9 @@ if GUI_AVAILABLE:
             if not ok:
                 self.advisory.configure(text=message)
                 self.advisory.grid()
+                # v1.60: a stale Quick translate intent must not survive a
+                # refused dispatch (no worker is started on this path).
+                self._auto_copy_on_deliver = False
                 return
 
             # Snapshot config + input so later Settings changes do not affect this run.
@@ -7936,6 +8203,9 @@ if GUI_AVAILABLE:
                     "this machine.\n\nContinue with Claude?",
                 )
                 if not proceed:
+                    # v1.60: a declined privacy notice never dispatches a
+                    # worker either.
+                    self._auto_copy_on_deliver = False
                     return
                 self.config_data["privacy_ack"] = True
                 snapshot["privacy_ack"] = True
@@ -8009,6 +8279,7 @@ if GUI_AVAILABLE:
                 self.advisory.grid()
                 self._refresh_status(state="ready")
                 self._notify_tray("Translation failed. Open Plume for the message.")
+                self._auto_copy_on_deliver = False
                 return
 
             self._result_source_text = snap_text
@@ -8044,6 +8315,21 @@ if GUI_AVAILABLE:
                 self._show_result_advisories(data, extra_notes=extra_notes)
             self._refresh_status(state="ready")
             self._notify_tray("Translation ready.")
+
+            # Quick translate's auto-copy (v1.60, notes_026 2.D): only when
+            # this delivery is for what is still showing in the input —
+            # auto-copying a result the user has already typed past would
+            # silently clobber their clipboard with a translation of text
+            # they no longer see. self._current_main is set by
+            # _render_result just above.
+            if (
+                self._auto_copy_on_deliver
+                and self._current_main
+                and self._input_text() == snap_text
+            ):
+                self._copy_main()
+                self._refresh_status(state="Copied.")
+            self._auto_copy_on_deliver = False
 
         def _build_variation_card(self, index, variation):
             """Build and grid one alternative card; return the frame.
