@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.63"
+APP_VERSION = "1.64"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -822,6 +822,49 @@ def speech_rate_from_label(label) -> float:
         if text == label:
             return rate
     return SPEECH_RATE_NORMAL
+
+
+SPEECH_CACHE_LIMIT = 8
+
+
+def speech_cache_key(voice_id, model_id, text) -> tuple:
+    """Identity of one synthesis, without the playback rate (v1.64).
+
+    The tuple holds the spoken text: never format it into a status line,
+    a title or an error message.
+    """
+    voice = (voice_id or "").strip() or DEFAULT_ELEVENLABS_VOICE_ID
+    model = (model_id or "").strip() or DEFAULT_ELEVENLABS_MODEL
+    spoken = text if isinstance(text, str) else ""
+    return (voice, model, spoken)
+
+
+def remember_speech_pcm(cache, key, pcm, limit: int = SPEECH_CACHE_LIMIT) -> list:
+    """Return a new cache (newest last, capped at *limit*); *cache* is not mutated."""
+    if not isinstance(cache, list):
+        cache = []
+    if not isinstance(pcm, (bytes, bytearray)) or not pcm:
+        return list(cache)
+    if not isinstance(limit, int) or limit < 1:
+        limit = SPEECH_CACHE_LIMIT
+    kept = [
+        item for item in cache
+        if not (isinstance(item, tuple) and item and item[0] == key)
+    ]
+    kept.append((key, bytes(pcm)))
+    return kept[-limit:]
+
+
+def lookup_speech_pcm(cache, key):
+    """Return the newest PCM stored for *key*, or None."""
+    if not isinstance(cache, list):
+        return None
+    for item in reversed(cache):
+        if isinstance(item, tuple) and len(item) == 2 and item[0] == key:
+            pcm = item[1]
+            if isinstance(pcm, (bytes, bytearray)) and pcm:
+                return bytes(pcm)
+    return None
 
 
 APPEARANCE_MODE = "dark"
@@ -5654,6 +5697,7 @@ if GUI_AVAILABLE:
             self.config_data = config
             self._request_id = 0
             self._speech_request_id = 0
+            self._speech_cache = []  # v1.64: recent PCM, Tk thread only, in memory
             self._settings = None
             self._variation_cards = []
             self._tts_temp_path = None
@@ -7316,6 +7360,7 @@ if GUI_AVAILABLE:
             # Undo Clear deliberately does not resurrect a cancelled request.
             self._request_id += 1
             self._speech_request_id += 1
+            self._speech_cache = []
             self._new_http_cancel()
             self._clear_quick_followup()
             self.translate_btn.configure(state="normal", text="Translate")
@@ -7399,6 +7444,7 @@ if GUI_AVAILABLE:
             self._request_id += 1
             self._new_http_cancel()
             self._speech_request_id += 1
+            self._speech_cache = []
             self._stop_speech()
             self._cleanup_tts_file()
             self._restore_hotkey.stop()
@@ -7759,6 +7805,7 @@ if GUI_AVAILABLE:
             """
             self._request_id += 1
             self._speech_request_id += 1
+            self._speech_cache = []
             self._new_http_cancel()
             self._clear_quick_followup()
             self._stop_speech()
@@ -7808,6 +7855,21 @@ if GUI_AVAILABLE:
             # Read once per click (v1.58), not continuously: a rate change
             # mid-playback must not affect audio already in flight.
             rate_factor = speech_rate_from_label(self.speech_rate_var.get())
+            cache_key = speech_cache_key(
+                snapshot.get("elevenlabs_voice_id"),
+                DEFAULT_ELEVENLABS_MODEL,
+                text,
+            )
+            cached = lookup_speech_pcm(self._speech_cache, cache_key)
+            if cached is not None:
+                # A replay sends nothing anywhere, so it needs neither the
+                # API key nor the privacy notice; only the rate is re-applied.
+                self._speech_request_id += 1
+                self._play_wav_bytes(pcm_to_wav_bytes(
+                    cached, sample_rate=speech_sample_rate(rate_factor),
+                ))
+                self._refresh_status(state="Speaking again.")
+                return
             if not snapshot.get("elevenlabs_api_key"):
                 self.advisory.configure(
                     text="No ElevenLabs API key is set. Add one in Settings to "
@@ -7849,9 +7911,7 @@ if GUI_AVAILABLE:
 
             def worker():
                 try:
-                    pcm = call_elevenlabs_tts(snapshot, text)
-                    rate = speech_sample_rate(rate_factor)
-                    payload = ("ok", pcm_to_wav_bytes(pcm, sample_rate=rate))
+                    payload = ("ok", call_elevenlabs_tts(snapshot, text))
                 except BackendError as exc:
                     payload = ("error", str(exc))
                 except Exception as exc:  # pragma: no cover - defensive
@@ -7860,7 +7920,9 @@ if GUI_AVAILABLE:
 
                 def _deliver_safe():
                     try:
-                        self._deliver_speech(speech_request_id, payload)
+                        self._deliver_speech(
+                            speech_request_id, payload, cache_key, rate_factor
+                        )
                     except tk.TclError:  # pragma: no cover - window closed
                         pass
 
@@ -7872,8 +7934,8 @@ if GUI_AVAILABLE:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def _deliver_speech(self, speech_request_id, payload):
-            """Deliver speech audio only if it belongs to the latest request."""
+        def _deliver_speech(self, speech_request_id, payload, cache_key, rate_factor):
+            """Play, and remember, audio only if it belongs to the latest request."""
             if result_is_stale(speech_request_id, self._speech_request_id):
                 return
             kind, data = payload
@@ -7881,7 +7943,12 @@ if GUI_AVAILABLE:
                 self.advisory.configure(text=data)
                 self.advisory.grid()
                 return
-            self._play_wav_bytes(data)
+            self._speech_cache = remember_speech_pcm(
+                self._speech_cache, cache_key, data
+            )
+            self._play_wav_bytes(pcm_to_wav_bytes(
+                data, sample_rate=speech_sample_rate(rate_factor),
+            ))
 
         def _stop_speech(self):
             """Stop any in-progress playback. Best-effort; safe if none plays."""

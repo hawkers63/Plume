@@ -2624,6 +2624,67 @@ the English answer you are about to write.
   intended — Reply empties the draft and Quick translate copies the
   English without pinning.
 
+## v1.64 — Speak remembers what it said
+
+Second of the four notes_027 versions, kept out of the Reply change on
+purpose. The comment beside the speech-rate constants says a slower
+rate costs "no extra ElevenLabs call", but that only held for audio
+already in flight: pressing Speak again, or changing the rate and
+pressing Speak, synthesised the same sentence a second time (a second
+charge, a second delay, and a second copy of the text leaving the
+machine).
+
+- **A small in-memory PCM cache.** Three pure helpers beside
+  `speech_rate_from_label`: `speech_cache_key(voice_id, model_id, text)`
+  (voice and model fall back to the shipped defaults, so a blank voice
+  setting and the explicit default share one entry; the playback rate is
+  deliberately *not* part of the key), `remember_speech_pcm(cache, key,
+  pcm, limit=SPEECH_CACHE_LIMIT)` and `lookup_speech_pcm(cache, key)`.
+  The list is newest-last and capped at eight clips; remembering returns
+  a new list rather than mutating the one it was given, empty or
+  non-bytes audio is never stored, and a repeated key takes one slot.
+- **What is stored is the raw 16 kHz PCM**, not a WAV. The slow-rate
+  trick is only a different WAV frame rate, so `_speak` re-wraps the
+  cached PCM with `pcm_to_wav_bytes(…, sample_rate=speech_sample_rate(
+  rate))` at whatever rate is selected *now* — a replay at 0.8× is the
+  same audio as the first play, just labelled slower.
+- **A hit happens before the API-key and privacy checks.** A replay
+  sends nothing anywhere, so it needs neither a configured key nor the
+  privacy notice; a miss still goes through both exactly as before
+  (missing key → the same advisory, declined notice → no request). A hit
+  bumps `_speech_request_id` so an older in-flight clip cannot land on
+  top of it, and reports the fixed status "Speaking again.".
+- **The worker now returns the PCM and the Tk thread wraps it.**
+  `_deliver_speech` stores the clip, then plays it, so the cache is only
+  ever mutated on the UI thread and needs no lock. A stale delivery
+  (Clear, Reopen, close or a newer Speak happened first) is dropped
+  before it can be stored, and an error stores nothing.
+- **Clear, Reopen from History and closing the window empty the cache**
+  next to the existing `_speech_request_id` bump, so audio never
+  outlives the working session it belongs to. It is never written to
+  disk, to the config or to history.
+- **Privacy:** the key contains the spoken text, so the cache is never
+  formatted into a status line, title, advisory or error; the only new
+  string is the fixed "Speaking again.".
+- 14 new headless tests (`TestSpeechCache`: the key has no rate input
+  and falls back to the defaults, remembering does not mutate its input,
+  the ninth distinct clip evicts the oldest, a repeated key keeps one
+  slot, empty and non-bytes audio store nothing, malformed entries are
+  ignored, a bad limit falls back, and cached PCM re-wraps at every
+  offered rate without losing a frame). 529 → 543 tests. Verified live
+  against a real `PlumeApp` under a virtual display with an isolated
+  config directory, `call_elevenlabs_tts` replaced by a counting fake
+  and playback recorded (61 checks): first Speak stores raw PCM; replays
+  at 0.8×, 0.75× and Normal make no further call and carry the right
+  frame rate; a replay works with no key and no privacy acknowledgement
+  and shows no dialog; a miss without a key still shows the missing-key
+  advisory; a different voice is a different clip; Clear, Reopen and
+  close empty the cache; the ninth distinct text evicts the first; a
+  stale delivery after Clear and an older clip superseded by a newer
+  Speak are neither stored nor played; an error shows only the safe
+  message and caches nothing. Run against v1.63 the same replay makes a
+  second network call.
+
 ---
 
 ### Notes on sequencing

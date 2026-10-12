@@ -247,7 +247,10 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   a genuine aid for catching liaisons and elisions). **Speak source**
   sits beside **Copy source** so you can hear the *other* person's
   original French at your chosen rate without copying it into the input
-  or swapping direction.
+  or swapping direction. The last eight clips are kept **in memory
+  only** (v1.64), so pressing Speak again or switching rate replays the
+  same audio without a second ElevenLabs call; Clear, Reopen from
+  History and closing the window discard them.
 - **Correct English** (Ctrl+Shift+Enter) fixes spelling, grammar and
   necessary punctuation in a quickly-typed English draft — never
   paraphrasing, translating or changing register — then automatically
@@ -419,7 +422,10 @@ via `/api/tags`.
 - **Claude** processes text in the cloud: what you submit is sent to Anthropic.
 - **Ollama** keeps everything on this machine, subject to your own Ollama setup.
 - **ElevenLabs Speak** sends only the selected text to ElevenLabs when you use
-  a Speak button and have configured an ElevenLabs key.
+  a Speak button and have configured an ElevenLabs key. Replaying a clip you
+  have already heard sends nothing: the last eight are held in memory (never
+  written to the history or config files) until you Clear, reopen a history
+  entry or close Plume.
 - API keys are stored only if you deliberately enter them; otherwise Plume
   prefers `ANTHROPIC_API_KEY` for Claude. Settings shows stored keys **masked**.
 - Plume does **not** log source messages, translated messages, headers or keys.

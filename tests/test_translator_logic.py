@@ -2476,6 +2476,119 @@ class TestSpeechRate(unittest.TestCase):
         self.assertEqual(plume.speech_rate_from_label("gibberish"), plume.SPEECH_RATE_NORMAL)
 
 
+class TestSpeechCache(unittest.TestCase):
+    """v1.64, notes_027 2.B: a replay or a rate change is not a new call."""
+
+    VOICE = "voice-a"
+    MODEL = "model-a"
+
+    def key(self, text="Bonjour", voice=None, model=None):
+        return plume.speech_cache_key(voice or self.VOICE, model or self.MODEL, text)
+
+    def test_key_has_no_rate_input(self):
+        import inspect
+        params = list(inspect.signature(plume.speech_cache_key).parameters)
+        self.assertEqual(params, ["voice_id", "model_id", "text"])
+        self.assertEqual(self.key(), self.key())
+
+    def test_key_changes_with_text_voice_or_model(self):
+        base = self.key()
+        self.assertNotEqual(base, self.key(text="Bonsoir"))
+        self.assertNotEqual(base, self.key(voice="voice-b"))
+        self.assertNotEqual(base, self.key(model="model-b"))
+
+    def test_key_defaults_and_strips(self):
+        self.assertEqual(
+            plume.speech_cache_key(None, "", "Salut"),
+            (plume.DEFAULT_ELEVENLABS_VOICE_ID, plume.DEFAULT_ELEVENLABS_MODEL, "Salut"),
+        )
+        self.assertEqual(
+            plume.speech_cache_key("  v  ", "  m  ", "Salut"), ("v", "m", "Salut")
+        )
+        self.assertEqual(plume.speech_cache_key("v", "m", None)[2], "")
+
+    def test_remember_does_not_mutate_the_list_it_was_given(self):
+        cache = [(self.key("one"), b"1")]
+        before = list(cache)
+        result = plume.remember_speech_pcm(cache, self.key("two"), b"2")
+        self.assertEqual(cache, before)
+        self.assertIsNot(result, cache)
+        self.assertEqual([item[1] for item in result], [b"1", b"2"])
+
+    def test_ninth_distinct_key_evicts_the_oldest(self):
+        cache = []
+        for index in range(plume.SPEECH_CACHE_LIMIT):
+            cache = plume.remember_speech_pcm(cache, self.key(str(index)), b"x")
+        self.assertEqual(len(cache), plume.SPEECH_CACHE_LIMIT)
+        cache = plume.remember_speech_pcm(cache, self.key("new"), b"y")
+        self.assertEqual(len(cache), plume.SPEECH_CACHE_LIMIT)
+        self.assertIsNone(plume.lookup_speech_pcm(cache, self.key("0")))
+        self.assertEqual(plume.lookup_speech_pcm(cache, self.key("1")), b"x")
+        self.assertEqual(plume.lookup_speech_pcm(cache, self.key("new")), b"y")
+
+    def test_repeated_key_moves_to_the_end_and_keeps_one_slot(self):
+        cache = plume.remember_speech_pcm([], self.key("a"), b"old")
+        self.assertEqual(len(cache), 1)
+        cache = plume.remember_speech_pcm(cache, self.key("a"), b"new")
+        self.assertEqual(len(cache), 1)
+        cache = plume.remember_speech_pcm(cache, self.key("b"), b"b")
+        cache = plume.remember_speech_pcm(cache, self.key("a"), b"newest")
+        self.assertEqual([item[0][2] for item in cache], ["b", "a"])
+        self.assertEqual(plume.lookup_speech_pcm(cache, self.key("a")), b"newest")
+
+    def test_empty_or_non_bytes_pcm_stores_nothing(self):
+        cache = [(self.key("keep"), b"k")]
+        for pcm in (b"", bytearray(), None, "text", 7):
+            result = plume.remember_speech_pcm(cache, self.key("x"), pcm)
+            self.assertEqual(result, cache, msg="pcm was {!r}".format(pcm))
+            self.assertIsNot(result, cache)
+
+    def test_non_list_cache_is_treated_as_empty(self):
+        self.assertIsNone(plume.lookup_speech_pcm(None, self.key()))
+        self.assertIsNone(plume.lookup_speech_pcm((self.key(), b"x"), self.key()))
+        self.assertEqual(
+            plume.remember_speech_pcm(None, self.key(), b"x"), [(self.key(), b"x")]
+        )
+
+    def test_bytearray_is_stored_and_returned_as_bytes(self):
+        cache = plume.remember_speech_pcm([], self.key(), bytearray(b"ab"))
+        found = plume.lookup_speech_pcm(cache, self.key())
+        self.assertEqual(found, b"ab")
+        self.assertIs(type(found), bytes)
+
+    def test_lookup_prefers_the_newest_of_a_hand_built_duplicate(self):
+        cache = [(self.key(), b"old"), (self.key("other"), b"o"), (self.key(), b"new")]
+        self.assertEqual(plume.lookup_speech_pcm(cache, self.key()), b"new")
+
+    def test_lookup_ignores_malformed_entries(self):
+        cache = ["junk", (), (self.key(),), (self.key(), b""), (self.key(), "str")]
+        self.assertIsNone(plume.lookup_speech_pcm(cache, self.key()))
+
+    def test_bad_limit_falls_back_to_the_default(self):
+        cache = []
+        for index in range(plume.SPEECH_CACHE_LIMIT + 2):
+            cache = plume.remember_speech_pcm(cache, self.key(str(index)), b"x", limit=0)
+        self.assertEqual(len(cache), plume.SPEECH_CACHE_LIMIT)
+
+    def test_smaller_limit_keeps_the_newest(self):
+        cache = []
+        for index in range(4):
+            cache = plume.remember_speech_pcm(cache, self.key(str(index)), b"x", limit=2)
+        self.assertEqual([item[0][2] for item in cache], ["2", "3"])
+
+    def test_cached_pcm_rewraps_at_a_later_rate_without_loss(self):
+        pcm = b"\x00\x01\x02\x03" * 40
+        cache = plume.remember_speech_pcm([], self.key(), pcm)
+        for factor in plume.SPEECH_RATES:
+            wav = plume.pcm_to_wav_bytes(
+                plume.lookup_speech_pcm(cache, self.key()),
+                sample_rate=plume.speech_sample_rate(factor),
+            )
+            with wave.open(io.BytesIO(wav), "rb") as wav_file:
+                self.assertEqual(wav_file.getframerate(), plume.speech_sample_rate(factor))
+                self.assertEqual(wav_file.readframes(wav_file.getnframes()), pcm)
+
+
 class TestPrivacyOfDiagnostics(unittest.TestCase):
     SECRET = "please meet me at the old bridge at midnight"
 
