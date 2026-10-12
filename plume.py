@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.62"
+APP_VERSION = "1.63"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -146,6 +146,19 @@ def result_is_incoming_french(result) -> bool:
         result.get("source_language") == FRENCH
         and result.get("target_language") == ENGLISH
     )
+
+
+def reply_should_keep_draft(input_text, result_source) -> bool:
+    """True when Reply must not wipe what the user has started typing (v1.63).
+
+    The text that was just translated is not a draft; anything else that is
+    not whitespace is. Comparison is exact because _input_text() does not
+    strip. Never raises and never echoes either argument.
+    """
+    if not isinstance(input_text, str) or not input_text.strip():
+        return False
+    source = result_source if isinstance(result_source, str) else ""
+    return input_text != source
 
 
 def swap_direction(direction) -> str:
@@ -5660,6 +5673,7 @@ if GUI_AVAILABLE:
             self._quick_hotkey = QuickTranslateHotkey()  # v1.60, notes_026 2.D
             self._quick_last_ts = 0.0
             self._auto_copy_on_deliver = False
+            self._quick_incoming_reply = False  # v1.63: Quick translate arms Reply
             self._previous_exchange = None  # v1.51: one Reply pair, in memory only
             self._clear_snapshot = None  # v1.53: one-level Undo Clear, in memory only
 
@@ -7007,7 +7021,21 @@ if GUI_AVAILABLE:
             self.direction_var.set(swap_direction(self.direction_var.get()))
             self._on_toolbar_change()
 
-        def _reply(self):
+        def _clear_quick_followup(self):
+            """Drop both Quick translate follow-ups (auto-copy, incoming reply)."""
+            self._auto_copy_on_deliver = False
+            self._quick_incoming_reply = False
+
+        def _focus_input_end(self):
+            """Focus the source box with the caret after any draft."""
+            self.input_box.focus_set()
+            source = find_slang_text_widget(self.input_box)
+            if source is None:
+                return
+            source.mark_set("insert", "end-1c")
+            source.see("insert")
+
+        def _apply_reply_turn(self, incoming: bool) -> None:
             """End the current turn, or start drafting a reply to incoming French.
 
             Outgoing (an English -> French result, or no incoming-French
@@ -7035,8 +7063,14 @@ if GUI_AVAILABLE:
             it is a different loop (the translation becomes the new
             source) and must not silently attach the old source as
             context.
+
+            Draft rule (v1.63, notes_027 2.A): the input is cleared only
+            when it still holds the text that was translated. An English
+            answer already started, or the other person's next message
+            already pasted, is a draft: it is kept and the caret moves to
+            its end. *incoming* is passed in so Quick translate can arm
+            the same turn without a second copy of these rules.
             """
-            incoming = result_is_incoming_french(self._current_result)
             if self._current_main:
                 if not incoming:
                     self._copy_main()
@@ -7050,12 +7084,23 @@ if GUI_AVAILABLE:
                 self._on_toolbar_change()
             else:
                 self._swap_direction()
-            self.input_box.delete("1.0", "end")
-            self._on_input_change()
-            self.input_box.focus_set()
-            # A stale Quick translate (v1.60) auto-copy intent must not ride
-            # in on the reply draft the user is about to type.
-            self._auto_copy_on_deliver = False
+            if reply_should_keep_draft(
+                self._input_text(), self._result_source_text
+            ):
+                self._focus_input_end()
+            else:
+                self.input_box.delete("1.0", "end")
+                self._on_input_change()
+                self.input_box.focus_set()
+            # A stale Quick translate (v1.60) intent must not ride in on the
+            # reply draft the user is about to type.
+            self._clear_quick_followup()
+
+        def _reply(self):
+            """Reply, or reply to incoming French, without wiping a draft."""
+            self._apply_reply_turn(
+                result_is_incoming_french(self._current_result)
+            )
 
         def _refresh_reply_label(self):
             """One button, two labels/captions. Never puts source text on either."""
@@ -7272,7 +7317,7 @@ if GUI_AVAILABLE:
             self._request_id += 1
             self._speech_request_id += 1
             self._new_http_cancel()
-            self._auto_copy_on_deliver = False
+            self._clear_quick_followup()
             self.translate_btn.configure(state="normal", text="Translate")
             self.correct_btn.configure(state="normal", text="Correct English")
             self.reply_btn.configure(state="normal")
@@ -7486,6 +7531,7 @@ if GUI_AVAILABLE:
             self.input_box.insert("1.0", clip)
             self._on_input_change()
             self._auto_copy_on_deliver = True
+            self._quick_incoming_reply = True
             self._run_selected_mode()
 
         def _poll_restore_hotkey(self):
@@ -7714,7 +7760,7 @@ if GUI_AVAILABLE:
             self._request_id += 1
             self._speech_request_id += 1
             self._new_http_cancel()
-            self._auto_copy_on_deliver = False
+            self._clear_quick_followup()
             self._stop_speech()
             self.translate_btn.configure(state="normal", text="Translate")
             self.correct_btn.configure(state="normal", text="Correct English")
@@ -8058,8 +8104,9 @@ if GUI_AVAILABLE:
             # A new request supersedes "Undo Clear" (notes_025 M1): see
             # _translate's identical guard for the full rationale.
             #
-            # Deliberately does NOT clear _auto_copy_on_deliver here (v1.60):
-            # Quick translate sets that flag and then calls this method (via
+            # Deliberately does NOT clear the Quick translate flags
+            # (_auto_copy_on_deliver, _quick_incoming_reply; v1.60, v1.63):
+            # Quick translate sets them and then calls this method (via
             # _run_selected_mode, when the writing profile's Mode is Correct
             # then translate) in the very same call chain, so clearing it on
             # entry would wipe out the intent before the worker even starts.
@@ -8080,7 +8127,7 @@ if GUI_AVAILABLE:
                 # English) never dispatches a worker, so nothing will ever
                 # clear a Quick translate auto-copy intent if it isn't
                 # cleared right here.
-                self._auto_copy_on_deliver = False
+                self._clear_quick_followup()
                 return
             text = self._input_text()
             limit = coerce_positive_int(
@@ -8090,7 +8137,7 @@ if GUI_AVAILABLE:
             if not ok:
                 self.advisory.configure(text=message)
                 self.advisory.grid()
-                self._auto_copy_on_deliver = False
+                self._clear_quick_followup()
                 return
 
             snapshot = dict(self.config_data)
@@ -8113,7 +8160,7 @@ if GUI_AVAILABLE:
                     "on this machine.\n\nContinue with Claude?",
                 )
                 if not proceed:
-                    self._auto_copy_on_deliver = False
+                    self._clear_quick_followup()
                     return
                 self.config_data["privacy_ack"] = True
                 snapshot["privacy_ack"] = True
@@ -8182,7 +8229,7 @@ if GUI_AVAILABLE:
                 # call below when correction itself fails — clear the
                 # intent here too, or it would leak into a later,
                 # unrelated manual Translate.
-                self._auto_copy_on_deliver = False
+                self._clear_quick_followup()
                 return
             if self._input_text() != snap_text:
                 self.advisory.configure(
@@ -8192,7 +8239,7 @@ if GUI_AVAILABLE:
                 )
                 self.advisory.grid()
                 self._refresh_status(state="ready")
-                self._auto_copy_on_deliver = False
+                self._clear_quick_followup()
                 return
 
             corrected = data.get("corrected_text", "")
@@ -8233,10 +8280,10 @@ if GUI_AVAILABLE:
             # snapshot is from before this work and must not be allowed to
             # wipe the result this call is about to accept.
             #
-            # Deliberately does NOT clear _auto_copy_on_deliver here (v1.60)
-            # — see _correct_then_translate's identical comment: Quick
-            # translate sets that flag and then calls straight into this
-            # method in the same call chain.
+            # Deliberately does NOT clear the Quick translate flags here
+            # (v1.60, v1.63) — see _correct_then_translate's identical
+            # comment: Quick translate sets them and then calls straight
+            # into this method in the same call chain.
             self._clear_snapshot = None
             self._set_undo_clear_enabled(False)
 
@@ -8251,7 +8298,7 @@ if GUI_AVAILABLE:
                 self.advisory.grid()
                 # v1.60: a stale Quick translate intent must not survive a
                 # refused dispatch (no worker is started on this path).
-                self._auto_copy_on_deliver = False
+                self._clear_quick_followup()
                 return
 
             # Snapshot config + input so later Settings changes do not affect this run.
@@ -8282,7 +8329,7 @@ if GUI_AVAILABLE:
                 if not proceed:
                     # v1.60: a declined privacy notice never dispatches a
                     # worker either.
-                    self._auto_copy_on_deliver = False
+                    self._clear_quick_followup()
                     return
                 self.config_data["privacy_ack"] = True
                 snapshot["privacy_ack"] = True
@@ -8356,7 +8403,7 @@ if GUI_AVAILABLE:
                 self.advisory.grid()
                 self._refresh_status(state="ready")
                 self._notify_tray("Translation failed. Open Plume for the message.")
-                self._auto_copy_on_deliver = False
+                self._clear_quick_followup()
                 return
 
             self._result_source_text = snap_text
@@ -8393,20 +8440,32 @@ if GUI_AVAILABLE:
             self._refresh_status(state="ready")
             self._notify_tray("Translation ready.")
 
-            # Quick translate's auto-copy (v1.60, notes_026 2.D): only when
-            # this delivery is for what is still showing in the input —
-            # auto-copying a result the user has already typed past would
-            # silently clobber their clipboard with a translation of text
-            # they no longer see. self._current_main is set by
-            # _render_result just above.
-            if (
+            # Quick translate follow-ups run only when this delivery is for
+            # what is still showing in the input — acting on a result the
+            # user has already typed past would clobber their clipboard, or
+            # their new text, over a translation of text they no longer see.
+            # self._current_main is set by _render_result just above.
+            #
+            # Incoming French (v1.63, notes_027 2.A) arms Reply to this
+            # instead of copying: the result is English, which is not what
+            # you are about to paste into the chat. Outgoing results keep
+            # the v1.60 auto-copy.
+            armed_reply = (
+                self._quick_incoming_reply
+                and result_is_incoming_french(data)
+                and self._input_text() == snap_text
+            )
+            if armed_reply:
+                self._apply_reply_turn(True)
+                self._refresh_status(state="Ready to reply.")
+            elif (
                 self._auto_copy_on_deliver
                 and self._current_main
                 and self._input_text() == snap_text
             ):
                 self._copy_main()
                 self._refresh_status(state="Copied.")
-            self._auto_copy_on_deliver = False
+            self._clear_quick_followup()
 
         def _build_variation_card(self, index, variation):
             """Build and grid one alternative card; return the frame.

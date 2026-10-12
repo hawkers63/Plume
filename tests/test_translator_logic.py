@@ -214,6 +214,44 @@ class TestResultIsIncomingFrench(unittest.TestCase):
         self.assertFalse(plume.result_is_incoming_french("French"))
 
 
+class TestReplyShouldKeepDraft(unittest.TestCase):
+    """v1.63, notes_027 2.A: Reply keeps a real draft but still clears
+    the text that was just translated."""
+
+    def test_blank_input_is_never_a_draft(self):
+        self.assertFalse(plume.reply_should_keep_draft("", ""))
+        self.assertFalse(plume.reply_should_keep_draft("   ", "   "))
+        self.assertFalse(plume.reply_should_keep_draft(" \n\t", "Bonjour"))
+
+    def test_unchanged_source_is_not_a_draft(self):
+        self.assertFalse(plume.reply_should_keep_draft("Bonjour", "Bonjour"))
+        self.assertFalse(plume.reply_should_keep_draft("Bonjour ", "Bonjour "))
+
+    def test_one_character_edit_is_a_draft(self):
+        self.assertTrue(plume.reply_should_keep_draft("Bonjour!", "Bonjour"))
+        self.assertTrue(plume.reply_should_keep_draft("Bonjour ", "Bonjour"))
+        self.assertTrue(plume.reply_should_keep_draft("bonjour", "Bonjour"))
+
+    def test_new_text_after_a_result_is_a_draft(self):
+        self.assertTrue(
+            plume.reply_should_keep_draft("Yes, around 7", "Tu viens a quelle heure ?")
+        )
+
+    def test_no_result_keeps_any_non_blank_text(self):
+        self.assertTrue(plume.reply_should_keep_draft("Yes, around 7", ""))
+        self.assertTrue(plume.reply_should_keep_draft("Yes, around 7", None))
+
+    def test_non_strings_are_not_drafts(self):
+        self.assertFalse(plume.reply_should_keep_draft(None, "Bonjour"))
+        self.assertFalse(plume.reply_should_keep_draft(42, "Bonjour"))
+        self.assertFalse(plume.reply_should_keep_draft(b"Bonjour", "Bonjour"))
+
+    def test_incoming_and_outgoing_callers_share_one_rule(self):
+        for source in ("Tu viens ?", "Are you coming?"):
+            self.assertFalse(plume.reply_should_keep_draft(source, source))
+            self.assertTrue(plume.reply_should_keep_draft(source + "!", source))
+
+
 class TestHotkeyHint(unittest.TestCase):
     """v1.60, notes_026 3.J: the one pure helper in the IsolatedHotkey
     refactor, used to build an "already in use" error message."""

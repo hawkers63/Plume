@@ -2566,6 +2566,64 @@ the export format itself.
   button actions row (Clear history / Export favourites / Export
   visible) renders fully, no clipping.
 
+## v1.63 — Reply keeps a draft, Quick translate arms Reply
+
+First of the four notes_027 versions (draft-safe Reply, then a speech
+cache, speech cancel and the texting/study gaps — shipped one at a time
+so a reply regression and a playback regression never share a bisect).
+Two corrections to how a French message you have just read hands over to
+the English answer you are about to write.
+
+- **Reply no longer wipes a real draft.** Reply and "Reply to this" used
+  to clear the whole source box unconditionally, so an answer you had
+  already started (or the other person's next message, pasted before you
+  clicked) was lost. New pure helper
+  `reply_should_keep_draft(input_text, result_source)`: the box is
+  cleared only when it is blank or still exactly the text that was just
+  translated; anything else is a draft, kept as it stands with the caret
+  moved to its end. The comparison is exact (`_input_text()` does not
+  strip), the helper never raises and never echoes either argument, and
+  it ignores languages, so the incoming and outgoing paths share one
+  rule.
+- **`_apply_reply_turn(incoming)`** is the old `_reply` body plus that
+  rule; `_reply` is now a thin wrapper that works out `incoming` from the
+  result on screen. Otherwise unchanged: outgoing copies the composed
+  translation and swaps a fixed direction; incoming pins English →
+  French (even from Auto-detect) and does not copy; both install the
+  reply-thread pair; Situation is never touched.
+- **Quick translate of incoming French now arms "Reply to this" instead
+  of copying the English.** v1.60 auto-copied whatever main translation
+  arrived, which for a French → English result put the *English* on the
+  clipboard, not something you paste into the chat. A second flag,
+  `_quick_incoming_reply`, set beside `_auto_copy_on_deliver`, routes an
+  accepted French → English delivery (input still equal to the snapshot,
+  as before) through `_apply_reply_turn(True)`: direction pinned to
+  English → French, the turn remembered, the source cleared, the
+  clipboard left alone, status "Ready to reply.". An English → French
+  Quick translate is unchanged: it still auto-copies the French and
+  reads "Copied.".
+- **The two flags always travel together.** `_clear_quick_followup()`
+  replaces every former `_auto_copy_on_deliver = False` (Clear, Reopen,
+  both correction paths, `_translate`'s refusals, error delivery and the
+  success tail — including two sites in `_deliver_correction` that the
+  note's insertion map did not list, found by searching for the
+  assignment rather than trusting the list), and `_apply_reply_turn`
+  ends with it, so a Quick translate intent can never ride in on the
+  reply draft you are about to type.
+- 7 new headless tests for `reply_should_keep_draft` (blank input, a
+  shared trailing space, a one-character edit, no result on screen,
+  non-strings, one rule for both shapes). 522 → 529 tests. The behaviour
+  itself is UI-lifecycle, so it was verified live against a real
+  `PlumeApp` under a virtual display with an isolated config directory
+  and `translate` mocked (no network): 59 checks covering Reply with the
+  source untouched / a draft typed / their next French line pasted / no
+  result at all, Quick translate in both directions, a correction
+  refusal, a backend error, a Clear while a request is pending, and text
+  typed during the round trip (none arms, copies or pins, and both flags
+  end cleared). The same scenarios run against v1.62 fail exactly where
+  intended — Reply empties the draft and Quick translate copies the
+  English without pinning.
+
 ---
 
 ### Notes on sequencing
