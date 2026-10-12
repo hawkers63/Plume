@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.65"
+APP_VERSION = "1.66"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -565,6 +565,22 @@ def slang_insertion(text: str, offset: int, term: str, limit: int):
     if len(candidate) > limit:
         raise ValueError("The insertion would exceed the character limit.")
     return candidate, len(left) + len(inserted)
+
+
+# Not beside TEXTING_SHORTCUTS: the default argument needs SLANG_CATALOGUE.
+def texting_insert_text(term, expanded=False, catalogue=SLANG_CATALOGUE) -> str:
+    """Return what a texting chip inserts: the raw term or its full form."""
+    if not isinstance(term, str) or not term:
+        raise ValueError("Choose a catalogue term.")
+    for record in catalogue:
+        if record[1] == term:
+            if not expanded:
+                return record[1]
+            expansion = (record[2] or "").strip()
+            if not expansion:
+                raise ValueError("That shortcut has no expanded form.")
+            return expansion
+    raise ValueError("Choose a catalogue term.")
 
 
 def find_slang_text_widget(widget):
@@ -1735,6 +1751,42 @@ def export_history_to_markdown(entries) -> str:
                 else:
                     lines.append("- {}".format(translation))
         lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def iter_meaning_check_rows(entries):
+    """Yield (translation, meaning) per usable alternative; skips the main one."""
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        variations = entry.get("variations")
+        if not isinstance(variations, list):
+            continue
+        for variation in variations:
+            if not isinstance(variation, dict):
+                continue
+            translation = _export_field(variation.get("translation"))
+            meaning = _export_field(variation.get("english_meaning_check"))
+            if translation and meaning:
+                yield translation, meaning
+
+
+def export_meaning_checks_tsv(entries) -> str:
+    """Two-column Anki TSV, front alternative then meaning check; no header."""
+    return "\n".join(
+        "{}\t{}".format(front, back)
+        for front, back in iter_meaning_check_rows(entries)
+    )
+
+
+def export_meaning_checks_markdown(entries) -> str:
+    """A short study sheet of alternative / meaning-check pairs."""
+    lines = ["# Plume — meaning checks", ""]
+    for front, back in iter_meaning_check_rows(entries):
+        lines.append("- {} — *{}*".format(front, back))
+    lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -4649,6 +4701,11 @@ if GUI_AVAILABLE:
                 actions, text="Export visible", width=140,
                 command=self._export_visible, fg_color="gray30",
             ).grid(row=0, column=2, padx=(8, 0))
+            # Own row: row 0 is already about as wide as the 560px minimum.
+            ctk.CTkButton(
+                actions, text="Export meaning checks", width=180,
+                command=self._export_meaning_checks, fg_color="gray30",
+            ).grid(row=1, column=0, sticky="w", pady=(8, 0))
 
             self.list_frame = ctk.CTkScrollableFrame(self)
             self.list_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
@@ -4803,6 +4860,44 @@ if GUI_AVAILABLE:
                 )
                 return
             self._write_history_export(visible, title="Export visible")
+
+        def _export_meaning_checks(self):
+            """Favourites-only meaning-check export; the search box does not apply."""
+            title = "Export meaning checks"
+            self._reload_entries()
+            favourites = [e for e in self._entries if e.get("favourite")]
+            count = sum(1 for _row in iter_meaning_check_rows(favourites))
+            if not count:
+                messagebox.showinfo(
+                    title, "You have no favourited meaning checks to export yet.",
+                )
+                return
+            path = filedialog.asksaveasfilename(
+                title=title,
+                defaultextension=".tsv",
+                filetypes=[
+                    ("Anki TSV deck", "*.tsv"),
+                    ("Markdown study sheet", "*.md"),
+                ],
+            )
+            if not path:
+                return
+            if path.lower().endswith(".md"):
+                content = export_meaning_checks_markdown(favourites)
+            else:
+                content = export_meaning_checks_tsv(favourites)
+            try:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+            except OSError:
+                messagebox.showerror(title, "Could not write the export file.")
+                return
+            messagebox.showinfo(
+                title,
+                "Exported {} meaning check{} to {}.".format(
+                    count, "" if count == 1 else "s", path
+                ),
+            )
 
         def _write_history_export(self, entries, title):
             """Shared save-dialogue + write path for both export buttons
@@ -6068,11 +6163,19 @@ if GUI_AVAILABLE:
             ctk.CTkLabel(
                 chips, text="Texting", text_color="gray60",
             ).grid(row=0, column=0, padx=(0, 6))
+            # No command=: it would fire too, inserting twice on Shift-click.
             for index, term in enumerate(TEXTING_SHORTCUTS, start=1):
-                ctk.CTkButton(
+                chip = ctk.CTkButton(
                     chips, text=term, width=44, fg_color="gray30",
-                    command=lambda t=term: self._insert_texting_shortcut(t),
-                ).grid(row=0, column=index, padx=(0, 4))
+                )
+                chip.grid(row=0, column=index, padx=(0, 4))
+                chip.bind(
+                    "<Button-1>",
+                    lambda event, t=term: self._on_texting_chip(event, t),
+                )
+            ctk.CTkLabel(
+                chips, text="Shift: full form", text_color="gray60",
+            ).grid(row=0, column=len(TEXTING_SHORTCUTS) + 1, padx=(6, 0))
 
             buttons = ctk.CTkFrame(left, fg_color="transparent")
             buttons.grid(row=9, column=0, sticky="ew", padx=12, pady=(8, 4))
@@ -6683,18 +6786,26 @@ if GUI_AVAILABLE:
             self._on_input_change()
             source.focus_set()
 
-        def _insert_texting_shortcut(self, term):
+        def _insert_texting_shortcut(self, term, expanded=False):
             """Chip-row wrapper (v1.61) around _insert_slang_source.
 
             Surfaces the same English-direction refusal on the advisory
             strip rather than letting it propagate as an unhandled
-            exception from a plain button command.
+            exception from a chip click.
             """
             try:
-                self._insert_slang_source(term)
+                self._insert_slang_source(
+                    texting_insert_text(term, expanded=expanded)
+                )
             except ValueError as exc:
                 self.advisory.configure(text=str(exc))
                 self.advisory.grid()
+
+        def _on_texting_chip(self, event, term):
+            """Button-1 on a chip (v1.66): Shift (Tk state bit 0) expands."""
+            expanded = bool(getattr(event, "state", 0) & 0x0001)
+            self._insert_texting_shortcut(term, expanded=expanded)
+            return "break"
 
         # --- Phrasebook (v1.43, notes_019) --------------------------------
 

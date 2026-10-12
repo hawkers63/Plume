@@ -3218,6 +3218,110 @@ class TestTextingShortcuts(unittest.TestCase):
             self.assertEqual(candidate, "Salut " + term)
 
 
+class TestTextingInsertText(unittest.TestCase):
+    """v1.66, notes_027 2.D: Shift-click on a chip inserts the full form."""
+
+    EXPANSIONS = {
+        "stp": "s'il te plaît",
+        "rdv": "rendez-vous",
+        "cad": "c'est-à-dire",
+        "bcp": "beaucoup",
+        "pcq": "parce que",
+        "pk": "pourquoi",
+    }
+
+    @staticmethod
+    def _row(term, expansion):
+        return ("id-" + term, term, expansion, "meaning", "Texting",
+                "Informal", "note")
+
+    def test_default_is_the_raw_abbreviation_for_every_chip(self):
+        for term in plume.TEXTING_SHORTCUTS:
+            self.assertEqual(plume.texting_insert_text(term), term)
+            self.assertEqual(
+                plume.texting_insert_text(term, expanded=False), term,
+            )
+
+    def test_expanded_is_the_catalogue_expansion_for_every_chip(self):
+        by_term = {record[1]: record[2] for record in plume.SLANG_CATALOGUE}
+        for term in plume.TEXTING_SHORTCUTS:
+            self.assertEqual(
+                plume.texting_insert_text(term, expanded=True), by_term[term],
+            )
+
+    def test_the_six_chips_expand_to_their_friendly_forms(self):
+        self.assertEqual(set(self.EXPANSIONS), set(plume.TEXTING_SHORTCUTS))
+        for term, expansion in self.EXPANSIONS.items():
+            self.assertEqual(
+                plume.texting_insert_text(term, expanded=True), expansion,
+            )
+
+    def test_shift_is_never_a_no_op(self):
+        for term in plume.TEXTING_SHORTCUTS:
+            full = plume.texting_insert_text(term, expanded=True)
+            self.assertTrue(full.strip())
+            self.assertNotEqual(full, term)
+
+    def test_unknown_empty_and_non_string_terms_raise_a_fixed_message(self):
+        for bad in ("", "zzz", None, 5, ["stp"]):
+            for expanded in (False, True):
+                with self.subTest(term=bad, expanded=expanded):
+                    with self.assertRaises(ValueError) as caught:
+                        plume.texting_insert_text(bad, expanded=expanded)
+                    self.assertEqual(
+                        str(caught.exception), "Choose a catalogue term.",
+                    )
+
+    def test_errors_never_echo_the_term(self):
+        planted = "PLANTED-SOURCE-PHRASE"
+        for expanded in (False, True):
+            with self.assertRaises(ValueError) as caught:
+                plume.texting_insert_text(planted, expanded=expanded)
+            self.assertNotIn(planted, str(caught.exception))
+
+    def test_a_row_without_an_expansion_only_fails_when_expanded(self):
+        catalogue = (
+            self._row("xyz", ""),
+            self._row("yzx", "   "),
+            self._row("zxy", None),
+        )
+        for term in ("xyz", "yzx", "zxy"):
+            with self.subTest(term=term):
+                self.assertEqual(
+                    plume.texting_insert_text(term, catalogue=catalogue), term,
+                )
+                with self.assertRaises(ValueError) as caught:
+                    plume.texting_insert_text(
+                        term, expanded=True, catalogue=catalogue,
+                    )
+                self.assertEqual(
+                    str(caught.exception), "That shortcut has no expanded form.",
+                )
+
+    def test_the_catalogue_argument_is_honoured_and_expansion_is_stripped(self):
+        catalogue = (self._row("aaa", "  alpha  "),)
+        self.assertEqual(
+            plume.texting_insert_text("aaa", True, catalogue), "alpha",
+        )
+        with self.assertRaises(ValueError):
+            plume.texting_insert_text("stp", catalogue=catalogue)
+
+    def test_expansion_is_placed_on_a_word_boundary(self):
+        full = plume.texting_insert_text("stp", expanded=True)
+        candidate, caret = plume.slang_insertion("Bonjour", 7, full, 200)
+        self.assertEqual(candidate, "Bonjour s'il te plaît")
+        self.assertEqual(caret, len(candidate))
+        candidate, caret = plume.slang_insertion("Donne-moi ça", 9, full, 200)
+        self.assertEqual(candidate, "Donne-moi s'il te plaît ça")
+
+    def test_every_expansion_is_a_valid_slang_insertion(self):
+        for term in plume.TEXTING_SHORTCUTS:
+            full = plume.texting_insert_text(term, expanded=True)
+            self.assertEqual(
+                plume.slang_insertion("", 0, full, 200), (full, len(full)),
+            )
+
+
 class TestSlangSearchKey(unittest.TestCase):
     def test_folds_accents(self):
         self.assertEqual(plume.slang_search_key("désolé"), plume.slang_search_key("desole"))
@@ -3659,6 +3763,143 @@ class TestExportFavourites(unittest.TestCase):
     def test_markdown_export_one_section_per_entry(self):
         md = plume.export_history_to_markdown([self._entry(), self._entry()])
         self.assertEqual(md.count("## Bonjour"), 2)
+
+    def test_tsv_export_golden_is_byte_for_byte(self):
+        # v1.66 adds the meaning-check export beside this one and must not
+        # change it: the "<br>" join and the refusal to filter stay.
+        entry = {
+            "source_text": "Bonjour",
+            "situation": "a close friend",
+            "main_translation": "Hello",
+            "favourite": False,
+            "variations": [
+                {"translation": "Salut", "english_meaning_check": "Hi"},
+                {"translation": "Coucou", "english_meaning_check": ""},
+            ],
+        }
+        self.assertEqual(
+            plume.export_history_to_tsv([entry]),
+            "Bonjour<br>Situation: a close friend\tHello<br>Salut (Hi)<br>Coucou",
+        )
+
+
+class TestMeaningCheckExport(unittest.TestCase):
+    """v1.66, notes_027 2.D: alternatives as their own two-column deck."""
+
+    def _entry(self, **overrides):
+        entry = plume.make_history_entry(
+            "Bonjour", valid_result(), situation="a close friend", favourite=True
+        )
+        entry.update(overrides)
+        return entry
+
+    def test_one_favourite_with_five_alternatives_is_five_two_column_lines(self):
+        tsv = plume.export_meaning_checks_tsv([self._entry()])
+        expected = [
+            (v["translation"], v["english_meaning_check"])
+            for v in valid_result()["variations"]
+        ]
+        self.assertEqual(
+            [tuple(line.split("\t")) for line in tsv.split("\n")], expected,
+        )
+
+    def test_tsv_has_no_header_and_no_trailing_newline(self):
+        tsv = plume.export_meaning_checks_tsv([self._entry()])
+        self.assertTrue(tsv.startswith("Salut la compagnie\tHi everyone\n"))
+        self.assertFalse(tsv.endswith("\n"))
+
+    def test_empty_input_is_an_empty_tsv(self):
+        self.assertEqual(plume.export_meaning_checks_tsv([]), "")
+
+    def test_a_tab_or_newline_inside_a_field_becomes_a_space(self):
+        entry = self._entry(variations=[
+            {"translation": "Salut\tla\ncompagnie",
+             "english_meaning_check": "Hi\teveryone\r\nelse"},
+        ])
+        tsv = plume.export_meaning_checks_tsv([entry])
+        self.assertEqual(tsv, "Salut la compagnie\tHi everyone else")
+        self.assertEqual(len(tsv.splitlines()), 1)
+
+    def test_the_main_translation_and_source_are_never_a_row(self):
+        entry = self._entry(
+            source_text="PLANTED-SOURCE", main_translation="PLANTED-MAIN",
+        )
+        for output in (
+            plume.export_meaning_checks_tsv([entry]),
+            plume.export_meaning_checks_markdown([entry]),
+        ):
+            self.assertNotIn("PLANTED-SOURCE", output)
+            self.assertNotIn("PLANTED-MAIN", output)
+            self.assertNotIn("a close friend", output)
+
+    def test_a_non_favourite_passed_directly_is_still_exported(self):
+        entry = self._entry(favourite=False)
+        self.assertEqual(
+            len(plume.export_meaning_checks_tsv([entry]).split("\n")), 5,
+        )
+
+    def test_entry_order_then_variation_order_and_no_dedupe(self):
+        rows = list(plume.iter_meaning_check_rows([self._entry(), self._entry()]))
+        self.assertEqual(len(rows), 10)
+        self.assertEqual(rows[:5], rows[5:])
+        self.assertEqual(rows[0], ("Salut la compagnie", "Hi everyone"))
+        self.assertEqual(rows[4], ("Bien le bonjour", "A good hello"))
+
+    def test_unusable_alternatives_are_skipped_clean_pairs_survive(self):
+        entry = self._entry(variations=[
+            {"translation": "Un", "english_meaning_check": "One"},
+            {"translation": "Deux", "english_meaning_check": ""},
+            {"translation": "", "english_meaning_check": "Three"},
+            {"translation": "  ", "english_meaning_check": "  "},
+            "not a dict",
+            None,
+            {"translation": "Cinq"},
+            {"english_meaning_check": "Six"},
+            {"translation": "Sept", "english_meaning_check": "Seven"},
+        ])
+        self.assertEqual(
+            list(plume.iter_meaning_check_rows([entry])),
+            [("Un", "One"), ("Sept", "Seven")],
+        )
+
+    def test_an_atypical_alternative_count_contributes_what_it_has(self):
+        entry = self._entry(variations=valid_result()["variations"][:3])
+        self.assertEqual(len(list(plume.iter_meaning_check_rows([entry]))), 3)
+
+    def test_malformed_input_yields_nothing_and_never_raises(self):
+        for bad in (
+            None, "text", 5, {}, [None], [5], ["x"], [{}],
+            [{"variations": None}], [{"variations": "abc"}],
+            [{"variations": {"translation": "A"}}],
+        ):
+            with self.subTest(entries=bad):
+                self.assertEqual(list(plume.iter_meaning_check_rows(bad)), [])
+                self.assertEqual(plume.export_meaning_checks_tsv(bad), "")
+
+    def test_exports_do_not_mutate_the_entries(self):
+        entry = self._entry(variations=[
+            {"translation": "A\tB", "english_meaning_check": "C\nD"},
+        ])
+        before = json.dumps(entry, sort_keys=True)
+        plume.export_meaning_checks_tsv([entry])
+        plume.export_meaning_checks_markdown([entry])
+        self.assertEqual(json.dumps(entry, sort_keys=True), before)
+
+    def test_markdown_has_a_heading_and_one_bullet_per_alternative(self):
+        md = plume.export_meaning_checks_markdown([self._entry()])
+        lines = md.split("\n")
+        self.assertEqual(lines[0], "# Plume — meaning checks")
+        self.assertEqual(lines[1], "")
+        self.assertEqual(lines[2], "- Salut la compagnie — *Hi everyone*")
+        self.assertEqual(sum(1 for line in lines if line.startswith("- ")), 5)
+        self.assertTrue(md.endswith("\n"))
+        self.assertFalse(md.endswith("\n\n"))
+
+    def test_markdown_for_nothing_is_the_heading_and_a_newline(self):
+        self.assertEqual(
+            plume.export_meaning_checks_markdown([]),
+            "# Plume — meaning checks\n",
+        )
 
 
 class TestCurrentResultExport(unittest.TestCase):

@@ -208,7 +208,12 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   without opening that dialog. These are in-sentence abbreviations, not
   copy-time suffixes (a suffix of "rdv" would read "On se voit demain
   rdv", which is wrong), so they're deliberately separate from the
-  Casual sign-off picker's `tkt`/`dsl`/`a+`.
+  Casual sign-off picker's `tkt`/`dsl`/`a+`. **Shift-click** a chip
+  (v1.66) to insert the full form instead — `s'il te plaît`,
+  `rendez-vous`, `c'est-à-dire`, `beaucoup`, `parce que`, `pourquoi` —
+  read from the same catalogue as French slang…; a grey "Shift: full
+  form" hint sits at the end of the strip. Both forms refuse while the
+  direction is forced to English → French.
 - A **Phrasebook** button beside French slang…: a second, free-form local
   reference — your own source → note pairs, added as you go, **Insert**ed
   into the message at the caret or **Delete**d. Capped at 30 entries (80
@@ -239,7 +244,12 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   "clear history" preserving favourited entries, and **Export
   favourites** to an Anki TSV deck or Markdown study sheet. **Export
   visible** (v1.62) exports whatever the current search/favourites
-  filter is showing instead, using the same two formats.
+  filter is showing instead, using the same two formats. **Export
+  meaning checks** (v1.66, on its own second row of buttons) writes just
+  your favourites' alternative translations and their English meaning
+  checks — a two-column Anki TSV (front, back) or a Markdown list, with
+  no main translation, source phrase or situation — and ignores the
+  search box, so a filter can't quietly shrink a study deck.
 - Optional ElevenLabs **Speak** buttons for pronunciation help, with a
   **Stop** button and a speech-rate menu — **Normal / 0.8× / 0.75×**,
   persisted across restarts — instead of a plain Slow toggle (a slower,

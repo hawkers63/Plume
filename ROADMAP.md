@@ -2743,6 +2743,115 @@ by the stale-id guard.
   advisory. The same end-to-end Clear against v1.64 leaves the worker
   asleep.
 
+## v1.66 — Shift-click chips insert the full form; Export meaning checks
+
+Last of the four notes_027 versions, closing the two study/texting gaps
+it left open. The texting chips only ever inserted the abbreviation
+(`stp`, `cad`), although the friendly full forms (`s'il te plaît`,
+`c'est-à-dire`) were already in `SLANG_CATALOGUE` and never reached the
+caret. And a favourite's five alternatives and their English meaning
+checks sat inside one Anki "Back" blob, so "what does this alternative
+actually mean?" could not be drilled as a card of its own.
+
+- **Shift-click on a chip inserts the full form.** New pure helper
+  `texting_insert_text(term, expanded=False, catalogue=SLANG_CATALOGUE)`
+  returns the raw term by default and the catalogue's stripped expansion
+  when `expanded` is true: `stp` → `s'il te plaît`, `rdv` →
+  `rendez-vous`, `cad` → `c'est-à-dire`, `bcp` → `beaucoup`, `pcq` →
+  `parce que`, `pk` → `pourquoi`. An unknown, empty or non-string term
+  raises `ValueError("Choose a catalogue term.")`, and an expanded
+  request on a row with a blank expansion raises `"That shortcut has no
+  expanded form."` — fixed text that never echoes the term.
+  `_insert_texting_shortcut(term, expanded=False)` hands the result to
+  the existing `_insert_slang_source`, so the English-direction refusal,
+  the character limit and the word-boundary spacing apply to both forms
+  unchanged: Shift does not let French into a forced English source.
+- **The chips drop their `command=`.** Each chip now binds `<Button-1>`
+  to `_on_texting_chip(event, term)`, which reads Shift from the Tk
+  state bit (`event.state & 0x0001`), inserts, and returns `"break"`.
+  CustomTkinter's `bind` adds to the button's own click handling rather
+  than replacing it, so a chip that kept a `command=` as well would fire
+  twice, and a Shift-click would insert the abbreviation and then the
+  full form. Caps Lock, Ctrl and Alt on their own do not expand; Shift
+  together with Ctrl or Caps Lock does. Shift-click needs a keyboard
+  Shift: without one the chips behave exactly as in v1.61.
+- **A grey "Shift: full form" hint** ends the same chip row, so there is
+  no new row. Measured, not guessed: at the 1000×600 floor the left pane
+  is 482 px wide (458 usable inside its padding) and the chip row
+  requests 425 px, with the hint's right edge at 425, so neither
+  fallback the note allowed (chips at width 40, then "Shift: full") was
+  needed. At 1180×760 the pane is 572 px (548 usable) and the request is
+  the same 425. Screenshots at both sizes show the row on one line with
+  nothing clipped.
+- **Export meaning checks.** Three pure helpers beside
+  `export_history_to_markdown`. `iter_meaning_check_rows(entries)`
+  yields `(translation, english_meaning_check)` for each usable
+  alternative, in entry order then variation order, skipping a blank or
+  non-string side and any malformed entry or variation. It never yields
+  the main translation: the contract gives the main no meaning check,
+  and inventing one would put the source phrase on the back of a card.
+  There is no de-duplication — two starred conversations that share a
+  line are two cards, and Anki's own duplicate check is the place to
+  merge them. `export_meaning_checks_tsv(entries)` writes
+  `front<TAB>back` per row through `_export_field`, so a tab or newline
+  cannot break a note boundary: no header, no third column, no trailing
+  newline. `export_meaning_checks_markdown(entries)` writes the heading
+  `# Plume — meaning checks` and then `- front — *back*` lines.
+  `export_history_to_tsv` and its `<br>` join are untouched, and a new
+  byte-for-byte golden test pins that.
+- **A fourth History button, on a second row.** "Export meaning checks"
+  (width 180, row 1, column 0, `pady=(8, 0)`): row 0 already holds three
+  buttons at 220, 160 and 140 px and is about as wide as the dialog's
+  560 px minimum, so a fourth beside them would clip.
+  `_export_meaning_checks` reloads history from disk first and uses
+  **favourites only** — not the visible, filtered list: a search must
+  not silently shrink a study deck (Export visible stays the filtered
+  path for the full-card export). With nothing to export it says "You
+  have no favourited meaning checks to export yet." and never opens the
+  save dialog. Otherwise the dialog offers Anki TSV (`.tsv`, the
+  default) or Markdown (`.md`) and the extension picks the writer; a
+  failed write says only "Could not write the export file."; success
+  says "Exported N meaning check(s) to <path>." — N counts cards, not
+  entries, and the path is the one the user chose. No phrase appears in
+  any title, message or status line. A favourite is kept by
+  `normalise_history_entry` with whatever alternatives it has (even
+  none), whereas a non-favourite needs exactly five clean ones or
+  `load_history()` drops it, so the export can meet a favourite with
+  fewer than five and simply contributes the pairs it has. Layout
+  checked at 560×480 and 640×680: the new button sits at (16, 84),
+  180×28, fully inside the dialog, and row 0 is where it was (Clear
+  history at 16,48 · Export favourites 244,48 · Export visible 412,48).
+- **One deliberate deviation from the note.** `texting_insert_text`
+  sits after `slang_insertion`, not after `TEXTING_SHORTCUTS` as the
+  insertion map says: its default argument is `SLANG_CATALOGUE`, which
+  is defined further down the module, and a default is evaluated when
+  the `def` runs, so the earlier spot would raise `NameError` on import.
+- No example-config edit and no history-schema change. 24 new headless
+  tests: `TestTextingInsertText` (10: the raw term by default for every
+  chip, the six expansions pinned, fixed messages that never echo a
+  planted term, a blank, whitespace or `None` expansion failing only
+  when expanded, a custom catalogue honoured, boundary placement through
+  `slang_insertion`), `TestMeaningCheckExport` (13: two columns with no
+  header and no trailing newline, tabs and newlines flattened, the main
+  translation, source and situation never present, entry-then-variation
+  order, no de-dupe, unusable alternatives skipped, an atypical count
+  contributing what it has, malformed input yielding nothing, no
+  mutation, the Markdown form) and the TSV golden test in
+  `TestExportFavourites`. 549 → 573 tests. Verified live against a real
+  `PlumeApp` under a virtual display with an isolated config directory
+  (82 checks): all six chips carry no command; plain and Shift clicks
+  through both the label and the canvas, and a synthesised
+  `<Shift-Button-1>`; the modifier combinations above; word-boundary
+  spacing; the refusal in a forced English → French direction with its
+  fixed advisory and nothing inserted; the character-limit refusal of
+  the long form; no planted phrase on the advisory, status bar or any
+  title; focus back in the message box; and, for the export, the empty,
+  no-usable-pair, search-filter-ignored, TSV, Markdown, other-extension,
+  cancelled, write-error and reload-before-export cases, with Export
+  favourites and Export visible unchanged. The same script against v1.65
+  fails every Shift, hint and no-command check (a Shift-click inserts
+  `stp`) before stopping at the missing `_on_texting_chip`.
+
 ---
 
 ### Notes on sequencing
