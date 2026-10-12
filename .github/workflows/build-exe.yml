@@ -1,0 +1,50 @@
+name: Build Windows executable
+
+# Builds dist\Plume.exe with PyInstaller and attaches it to the Release.
+# Runs when a Release is published, or by hand for an existing tag.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing Release tag to attach Plume.exe to (for example v1.66)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Plume.exe (Windows / Python 3.11)
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pystray Pillow
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build the executable
+        run: pyinstaller plume.spec --noconfirm --clean
+
+      - name: Attach Plume.exe to the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$env:TAG" dist\Plume.exe --clobber
