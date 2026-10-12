@@ -2852,6 +2852,87 @@ actually mean?" could not be drilled as a card of its own.
   fails every Shift, hint and no-command check (a Shift-click inserts
   `stp`) before stopping at the missing `_on_texting_chip`.
 
+## v1.67 — Glossed emote menu; captions that finish
+
+From notes_028. Casual sign-off and MMORPG chat already show an English
+gloss in their dropdowns (`tkt (don't worry)`), but the emote picker
+listed bare marks, so `mdr`, `ptdr` and `jpp` told an English reader
+nothing. And the grey captions beside the two slang pickers ran off the
+card: notes_028 saw them cut at "…meaning, not ju" and "…chat term,
+app", and measured live at the 1000×600 floor the v1.66 rows ask for
+543 px and 574 px of the 411 px the card gives them.
+
+- **The emote menu carries a gloss.** `FINISHING_TOUCH_CATALOGUE`
+  replaces the flat tuple with `(raw, gloss)` pairs, the shape Casual
+  sign-off and MMORPG chat already use, and `FINISHING_TOUCHES` is now
+  derived from it: still `None` plus the fourteen raw marks, in the same
+  order, so nothing else that reads it changes. New
+  `finishing_touch_display()` and `finishing_touch_raw_value()` are thin
+  wrappers over the shared `_glossed_display` / `_glossed_raw_lookup`,
+  with the same contract as the sign-off and MMORPG pairs: a mark or its
+  full label resolves to the mark, and anything else — a bare gloss, a
+  gloss on the wrong mark, a blank, a non-string — resolves to the
+  "None" sentinel, so a gloss can never reach the clipboard. The
+  glosses: `:)` smile, `:p` playful, `;)` wink, `xD` laughing, `mdr`
+  LOL, `ptdr` ROFL, `jpp` had enough, `:D` big grin, `:/` unsure, `:'(`
+  tearful, `:o` surprised, `^^` happy, `<3` love, `xo` kisses.
+- **One seam on the copy path.** `_current_touch()` now passes the emote
+  variable through `finishing_touch_raw_value()`, as it already did for
+  the other two pickers. The primary card, Copy, Copy all, Copy HTML, a
+  variation card's Copy and the diff export all read the touch there, so
+  they all compose the bare mark; Speak reads the raw translation and
+  never sees a touch. Clear and History reopen still reset the variable
+  to "None", which is both the raw and the display value, so they needed
+  no change. No gloss is stored in history or sent to either backend.
+- **A fixed-width button.** `width=156, dynamic_resizing=False` (was
+  110). CTkOptionMenu's default would grow the closed button to fit the
+  chosen label — ":) (smile)" is wider than "None" — and shove the
+  speech-rate menu along. The text area is now 119 px and the longest
+  label, "jpp (had enough)", takes 96 px. The open list is a native Tk
+  menu that sizes itself (131 px, was 101) and may cover Copy and Speak
+  while it is open, which the note accepted. At the floor the row now
+  asks for 382 px of 411 (was 336); the rate menu stays pinned to the
+  right edge (x = 321, 90 px, "Normal" in full) with 37 px between the
+  two menus.
+- **Captions that finish.** `SIGNOFF_ROW_HINT = "Changes meaning"` and
+  `MMORPG_ROW_HINT = "Game-chat tag"` replace the two sentences. At
+  1000×600 the sign-off caption has 118 px and needs 102, and the MMORPG
+  caption has 121 and needs 84; both rows fit at 1180×760 as well.
+- **One deliberate deviation from the note.** The note proposed "Meaning,
+  not just tone" for the sign-off caption, with a 24-character cap.
+  Measured, that string needs 125 px of the 118 px the caption has at the
+  floor, so it still clips by about 7 px. That fails the note's own
+  acceptance check (fully visible at 1000×600), and a 24-character cap
+  would admit other strings that clip too. "Changes meaning" keeps the
+  point of the separate picker — a sign-off changes the meaning, not just
+  the tone — and the tests cap both captions at 20 characters. The
+  note's fallback was to drop the caption altogether; either way it is a
+  one-line constant. Measured with CustomTkinter's bundled Roboto 13
+  under a virtual display, not Windows ClearType, so the tighter caption
+  keeps 16 px of slack for a rendering difference.
+- No example-config edit and no history-schema change. 16 new headless
+  tests in `TestGlossedFinishingTouch` (the display of three marks and of
+  None; the flat tuple derived from the catalogue; a gloss on every mark
+  with the mark leading its label; unique labels, at most 18 characters
+  so they fit the fixed button; the raw value reversing the display,
+  accepting a bare mark, and sending a bare gloss, a stale label, a
+  gloss on the wrong mark, a blank and a non-string to None; only the
+  mark composed and copied, never the gloss; captions at most 20
+  characters; and neither old sentence being a constant or anywhere in
+  `plume.py`). 573 → 589 tests. Verified live against a real `PlumeApp`
+  under a virtual display with an isolated config directory (44 checks):
+  the menu and the native list show the 15 glossed labels in order; for
+  each of the 14 marks the closed button stays 156 px wide with the rate
+  menu where it was and nothing clipped; and the primary card, Copy, a
+  variation's Copy, Copy all, Copy HTML and Speak carry the bare mark
+  (Speak: nothing appended) and never the gloss; all three pickers
+  together copy `:) tkt gg`; a bare gloss and a gloss on the wrong mark
+  resolve to nothing while a bare mark still works; Clear and History
+  reopen put the menu back on "None", button text included; and both
+  captions fit at 1000×600 and 1180×760. With
+  `finishing_touch_raw_value` deliberately broken to pass the label
+  through, 13 of the 44 fail.
+
 ---
 
 ### Notes on sequencing

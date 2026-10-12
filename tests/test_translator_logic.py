@@ -3145,6 +3145,125 @@ class TestMmorpgTerms(unittest.TestCase):
         self.assertEqual(plume.compose_finishing_touch(":)", "tkt"), ":) tkt")
 
 
+class TestGlossedFinishingTouch(unittest.TestCase):
+    """v1.67 (notes_028): the emote dropdown carries a short English gloss,
+    like Casual sign-off and MMORPG chat, but only the raw token is ever
+    composed, copied or spoken."""
+
+    def test_display_shows_bracketed_gloss(self):
+        self.assertEqual(plume.finishing_touch_display(":)"), ":) (smile)")
+        self.assertEqual(plume.finishing_touch_display("mdr"), "mdr (LOL)")
+        self.assertEqual(plume.finishing_touch_display("jpp"), "jpp (had enough)")
+
+    def test_none_displays_as_none(self):
+        self.assertEqual(
+            plume.finishing_touch_display(plume.FINISHING_TOUCH_NONE), "None"
+        )
+
+    def test_flat_token_tuple_is_derived_from_the_catalogue(self):
+        self.assertEqual(
+            plume.FINISHING_TOUCH_CATALOGUE[0], (plume.FINISHING_TOUCH_NONE, None)
+        )
+        self.assertEqual(
+            plume.FINISHING_TOUCHES,
+            tuple(term for term, _gloss in plume.FINISHING_TOUCH_CATALOGUE),
+        )
+
+    def test_every_token_has_a_gloss_shown_beside_the_raw_token(self):
+        for term, gloss in plume.FINISHING_TOUCH_CATALOGUE[1:]:
+            self.assertTrue(gloss and gloss.strip(), term)
+            display = plume.finishing_touch_display(term)
+            self.assertTrue(display.startswith(term), display)
+            self.assertIn("({})".format(gloss), display)
+
+    def test_display_labels_are_unique(self):
+        labels = [plume.finishing_touch_display(t) for t in plume.FINISHING_TOUCHES]
+        self.assertEqual(len(labels), len(set(labels)))
+
+    def test_labels_fit_the_fixed_width_button(self):
+        # The closed menu is a fixed 156 px (119 px of text). Measured live,
+        # the longest label today ("jpp (had enough)", 16 characters) is
+        # 96 px. Remeasure before raising this cap.
+        for term in plume.FINISHING_TOUCHES:
+            label = plume.finishing_touch_display(term)
+            self.assertLessEqual(len(label), 18, label)
+
+    def test_raw_value_reverses_display(self):
+        for term in plume.FINISHING_TOUCHES:
+            display = plume.finishing_touch_display(term)
+            self.assertEqual(plume.finishing_touch_raw_value(display), term)
+
+    def test_raw_value_also_accepts_the_bare_raw_token(self):
+        for term in plume.FINISHING_TOUCHES:
+            self.assertEqual(plume.finishing_touch_raw_value(term), term)
+
+    def test_raw_value_resolves_a_bare_gloss_to_none_sentinel(self):
+        self.assertEqual(
+            plume.finishing_touch_raw_value("smile"), plume.FINISHING_TOUCH_NONE
+        )
+        for _term, gloss in plume.FINISHING_TOUCH_CATALOGUE[1:]:
+            self.assertEqual(
+                plume.finishing_touch_raw_value(gloss), plume.FINISHING_TOUCH_NONE
+            )
+
+    def test_raw_value_resolves_unrecognised_to_none_sentinel(self):
+        # A stale label, or a gloss paired with the wrong token, must never
+        # be passed through as if it were a token.
+        for stale in ("not a real label", ":) (wink)", "", "   "):
+            self.assertEqual(
+                plume.finishing_touch_raw_value(stale), plume.FINISHING_TOUCH_NONE
+            )
+
+    def test_raw_value_resolves_non_string_to_none_sentinel(self):
+        self.assertEqual(
+            plume.finishing_touch_raw_value(None), plume.FINISHING_TOUCH_NONE
+        )
+        self.assertEqual(
+            plume.finishing_touch_raw_value(42), plume.FINISHING_TOUCH_NONE
+        )
+
+    def test_only_the_raw_token_is_composed_not_the_gloss(self):
+        composed = plume.compose_finishing_touch(
+            plume.finishing_touch_raw_value(":) (smile)"), "tkt", "gg"
+        )
+        self.assertEqual(composed, ":) tkt gg")
+        self.assertNotIn("smile", composed)
+
+    def test_copied_text_carries_the_token_never_the_gloss(self):
+        for term, gloss in plume.FINISHING_TOUCH_CATALOGUE[1:]:
+            touch = plume.compose_finishing_touch(
+                plume.finishing_touch_raw_value(plume.finishing_touch_display(term)),
+                plume.CASUAL_SIGNOFF_NONE,
+            )
+            copied = plume.append_finishing_touch("Salut", touch)
+            self.assertEqual(copied, "Salut " + term)
+            self.assertNotIn(gloss, copied)
+
+    def test_row_hints_stay_short_enough_for_the_card(self):
+        # Measured live at the 1000x600 floor (Roboto 13): the sign-off
+        # caption has 118 px, and 22 characters ("Meaning, not just tone",
+        # 125 px) still clipped. Remeasure before raising this cap.
+        for hint in (plume.SIGNOFF_ROW_HINT, plume.MMORPG_ROW_HINT):
+            self.assertTrue(hint.strip())
+            self.assertLessEqual(len(hint), 20, hint)
+
+    def test_old_clipping_sentences_are_not_the_row_hints(self):
+        self.assertNotEqual(
+            plume.SIGNOFF_ROW_HINT, "Changes register and meaning, not just tone"
+        )
+        self.assertNotEqual(
+            plume.MMORPG_ROW_HINT, "Online-gaming chat term, appended the same way"
+        )
+
+    def test_old_clipping_sentences_are_gone_from_the_source(self):
+        # The window only builds under CustomTkinter, which this headless
+        # suite does not import, so guard the source text itself.
+        with open(plume.__file__, "r", encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertNotIn("Changes register and meaning, not just tone", source)
+        self.assertNotIn("Online-gaming chat term, appended the same way", source)
+
+
 class TestSlangCatalogue(unittest.TestCase):
     def test_ids_are_unique(self):
         ids = [record[0] for record in plume.SLANG_CATALOGUE]

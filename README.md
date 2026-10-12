@@ -187,12 +187,13 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   a 14-term **Emotes & Reactions** picker (`:)` `:p` `;)` `xD` `mdr` `ptdr`
   `jpp` `:D` `:/` `:'(` `:o` `^^` `<3` `xo`), an 11-term **Casual sign-off**
   picker (`tkt`, `grave`, `dsl`, `bof`, `nickel`, `tranquille`, `carrément`,
-  `biz`, `a+`, `merci`, `trop bien`) labelled as changing register and
-  meaning, not just tone, and a 20-term **MMORPG chat** picker (`dispo`,
+  `biz`, `a+`, `merci`, `trop bien`) captioned "Changes meaning" (it shifts
+  register, not just tone), and a 20-term **MMORPG chat** picker (`dispo`,
   `rez`, `bj`, `osef`, `oklm`, `aïe`, `gg`, `gl`, `hf`, `afk`, `brb`, `sec`,
   `lag`, `gj`, `go`, `gn`, `cya`, `cyl`, `ttyl`, `ttys`) for online-gaming
-  chat. Both slang pickers show an English gloss in brackets (e.g. "tkt
-  (don't worry)") — only the term itself is ever appended, never the gloss.
+  chat. All three pickers show an English gloss in brackets (e.g. ":)
+  (smile)", "tkt (don't worry)"; the emote glosses are new in v1.67) — only
+  the term itself is ever appended, never the gloss.
 - A **French slang…** reference window: search a local, curated catalogue
   of French terms and phrases (bilingual, accent/case-insensitive) by
   category, insert one straight into the message at your caret, copy just

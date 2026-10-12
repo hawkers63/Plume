@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.66"
+APP_VERSION = "1.67"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -273,11 +273,39 @@ PRESET_NAME_MAX = 40
 # "Emotes & Reactions" group. The touch is applied AFTER translation, at copy
 # time, and is never sent to the model, so the translation itself keeps its
 # faithful tone. A "Casual sign-off / slang" group can follow in a later phase.
+#
+# v1.67 (notes_028): each entry pairs the raw token (what is appended) with a
+# short English gloss shown only in the dropdown label, the same (raw, gloss)
+# shape Casual sign-off and MMORPG chat use, e.g. ":) (smile)". FINISHING_TOUCHES
+# stays the tuple of raw tokens, in this order, so Copy never sees a gloss.
 FINISHING_TOUCH_NONE = "None"
-FINISHING_TOUCHES = (
-    FINISHING_TOUCH_NONE, ":)", ":p", ";)", "xD", "mdr", "ptdr", "jpp",
-    ":D", ":/", ":'(", ":o", "^^", "<3", "xo",
+FINISHING_TOUCH_CATALOGUE = (
+    (FINISHING_TOUCH_NONE, None),
+    (":)", "smile"),
+    (":p", "playful"),
+    (";)", "wink"),
+    ("xD", "laughing"),
+    ("mdr", "LOL"),
+    ("ptdr", "ROFL"),
+    ("jpp", "had enough"),
+    (":D", "big grin"),
+    (":/", "unsure"),
+    (":'(", "tearful"),
+    (":o", "surprised"),
+    ("^^", "happy"),
+    ("<3", "love"),
+    ("xo", "kisses"),
 )
+FINISHING_TOUCHES = tuple(term for term, _gloss in FINISHING_TOUCH_CATALOGUE)
+
+# Side captions on the Casual sign-off and MMORPG chat rows (v1.67). The
+# previous sentences were cut off at the card edge ("not ju", "term, app").
+# Capped at 20 characters: measured in the live window, the sign-off caption
+# has 118 px at the 1000x600 floor (Roboto 13), and 22 characters
+# ("Meaning, not just tone", 125 px) still clipped there. Do not lengthen
+# these without remeasuring both rows at 1000x600.
+SIGNOFF_ROW_HINT = "Changes meaning"
+MMORPG_ROW_HINT = "Game-chat tag"
 
 # --- Casual sign-off / slang catalogue (v1.14, notes_004 revisited) --------
 # The second phase notes_004 deliberately deferred: unlike the tone-only
@@ -398,6 +426,7 @@ def _glossed_raw_lookup(catalogue) -> dict:
 
 _CASUAL_SIGNOFF_DISPLAY_TO_RAW = _glossed_raw_lookup(CASUAL_SIGNOFF_CATALOGUE)
 _MMORPG_TERM_DISPLAY_TO_RAW = _glossed_raw_lookup(MMORPG_TERM_CATALOGUE)
+_FINISHING_TOUCH_DISPLAY_TO_RAW = _glossed_raw_lookup(FINISHING_TOUCH_CATALOGUE)
 
 
 def casual_signoff_display(term: str) -> str:
@@ -427,6 +456,22 @@ def mmorpg_term_raw_value(display) -> str:
     if not isinstance(display, str):
         return MMORPG_TERM_NONE
     return _MMORPG_TERM_DISPLAY_TO_RAW.get(display, MMORPG_TERM_NONE)
+
+
+def finishing_touch_display(term: str) -> str:
+    """Emote dropdown label (v1.67), e.g. ":) (smile)". None stays "None"."""
+    return _glossed_display(term, FINISHING_TOUCH_CATALOGUE)
+
+
+def finishing_touch_raw_value(display) -> str:
+    """Reverse of finishing_touch_display; see casual_signoff_raw_value.
+
+    A stale or unknown label resolves to the None sentinel rather than
+    being passed through, so a gloss can never reach the clipboard.
+    """
+    if not isinstance(display, str):
+        return FINISHING_TOUCH_NONE
+    return _FINISHING_TOUCH_DISPLAY_TO_RAW.get(display, FINISHING_TOUCH_NONE)
 
 # --- French slang reference (v1.34, notes_014) ------------------------------
 # A searchable local catalogue, separate from the append-tag pickers above:
@@ -6318,10 +6363,16 @@ if GUI_AVAILABLE:
             ctk.CTkLabel(touch_row, text="Add a finishing touch").grid(
                 row=0, column=0, sticky="w", padx=(0, 8)
             )
+            # v1.67: options carry their gloss (":) (smile)"); only the raw
+            # token is ever appended (see finishing_touch_raw_value). A fixed
+            # width, because the default would grow the button to the chosen
+            # label and push the speech-rate menu along.
             self.finishing_touch_var = ctk.StringVar(value=FINISHING_TOUCH_NONE)
             ctk.CTkOptionMenu(
-                touch_row, values=list(FINISHING_TOUCHES),
-                variable=self.finishing_touch_var, width=110,
+                touch_row,
+                values=[finishing_touch_display(t) for t in FINISHING_TOUCHES],
+                variable=self.finishing_touch_var, width=156,
+                dynamic_resizing=False,
                 command=self._on_finishing_touch_change,
             ).grid(row=0, column=1, sticky="w")
             self.speech_rate_menu = ctk.CTkOptionMenu(
@@ -6354,7 +6405,7 @@ if GUI_AVAILABLE:
                 command=self._on_finishing_touch_change,
             ).grid(row=0, column=1, sticky="w")
             ctk.CTkLabel(
-                signoff_row, text="Changes register and meaning, not just tone",
+                signoff_row, text=SIGNOFF_ROW_HINT,
                 text_color="gray60",
             ).grid(row=0, column=2, sticky="w", padx=(8, 0))
 
@@ -6374,7 +6425,7 @@ if GUI_AVAILABLE:
                 command=self._on_finishing_touch_change,
             ).grid(row=0, column=1, sticky="w")
             ctk.CTkLabel(
-                mmorpg_row, text="Online-gaming chat term, appended the same way",
+                mmorpg_row, text=MMORPG_ROW_HINT,
                 text_color="gray60",
             ).grid(row=0, column=2, sticky="w", padx=(8, 0))
 
@@ -6593,12 +6644,13 @@ if GUI_AVAILABLE:
 
         def _current_touch(self):
             """The composed finishing touch: emote + casual sign-off + MMORPG
-            term (v1.14, v1.31). The two glossed pickers store their display
-            label (e.g. "tkt (don't worry)"); only the raw term before the
-            bracket is ever appended to the copied/spoken text.
+            term (v1.14, v1.31). All three pickers store their display label
+            (e.g. ":) (smile)", "tkt (don't worry)"; the emote picker since
+            v1.67); only the raw term is ever appended to the copied/spoken
+            text.
             """
             return compose_finishing_touch(
-                self.finishing_touch_var.get(),
+                finishing_touch_raw_value(self.finishing_touch_var.get()),
                 casual_signoff_raw_value(self.casual_signoff_var.get()),
                 mmorpg_term_raw_value(self.mmorpg_var.get()),
             )
