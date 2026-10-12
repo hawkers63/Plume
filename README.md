@@ -395,9 +395,12 @@ connection) are retried automatically with a short exponential backoff
 before Plume shows an error — no action needed, and nothing is retried
 for a rejected key, a missing model, or a certificate/TLS failure. The
 status bar shows retry progress ("Retrying (2 of 4)…") so a 429 doesn't
-look like a hang; ElevenLabs Speak retries the same way. Clear, closing
-the window, or starting a new translation stops an abandoned request
-from retrying or being delivered late.
+look like a hang; ElevenLabs Speak retries the same way ("Retrying speech
+(2 of 4)…"). Clear, closing the window, or starting a new translation
+stops an abandoned request from retrying or being delivered late. Speak
+has its own cancel (v1.65): Clear, Reopen from History, closing the
+window, or a newer Speak wakes a Speak that is waiting to retry, while a
+translation starting never cancels a Speak (or the reverse).
 
 Optional: **"If Claude is unavailable, retry once with local Ollama"**
 (Settings, off by default) tries Ollama a single time after Claude

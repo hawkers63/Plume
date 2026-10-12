@@ -2685,6 +2685,64 @@ machine).
   message and caches nothing. Run against v1.63 the same replay makes a
   second network call.
 
+## v1.65 — Speak gets its own cancel
+
+Third of the four notes_027 versions. `call_elevenlabs_tts` has honoured
+a `_cancel_event` since v1.59 (it checks before every attempt and waits
+with `Event.wait`, so a set event wakes a backoff at once), but `_speak`
+never passed one, and the docstring said so. A Speak that hit a 429 with
+a `Retry-After` therefore slept through the whole pause after Clear,
+Reopen or close, and then made the next request anyway — one more call,
+and one more copy of the text sent — before its result was thrown away
+by the stale-id guard.
+
+- **`self._speech_cancel` and `_new_speech_cancel()`**, beside
+  `_http_cancel` / `_new_http_cancel()` and the same shape (set the old
+  event, install and return a fresh one). Deliberately **independent**
+  of `_http_cancel`: `_translate` and `_correct_then_translate` call
+  `_new_http_cancel()` every time, so sharing one event would have
+  cancelled a Speak whenever a translation started, and a translation
+  whenever a Speak started.
+- **Wired at the abandon paths:** right after the existing
+  `_speech_request_id += 1` in `_clear`, `_on_close_destroy` and
+  `_reopen_history_entry`; on a cache-hit replay (so an older Speak's
+  backoff cannot deliver over the replay); and on the network path of
+  `_speak`, where the request id is bumped, as
+  `snapshot["_cancel_event"] = self._new_speech_cancel()`. A missing API
+  key or a declined privacy notice still returns *before* any bump, so
+  it does not cancel a Speak that is already in flight (the v1.59 M2
+  rule, now covering the event as well as the id).
+- **No new wording.** The retry status stays "Retrying speech (n of
+  m)…", the cancelled worker's `BackendError("The request was
+  cancelled.")` is dropped by `_deliver_speech`'s stale-id guard and never
+  shown, and neither carries the spoken text. As with Translate, a
+  `urlopen` already blocked in a read still runs to its timeout:
+  cancellation stops the *next* retry and the clip being stored or
+  played; it does not claim to abort a blocked socket.
+- Stale text corrected: the comment in `_speak` and the
+  `call_elevenlabs_tts` docstring both said Speak has no cancel event;
+  `_reopen_history_entry`'s docstring now mentions both events.
+- 6 new headless tests in `TestElevenLabsTTS`, the `_http_post_json`
+  cancel tests' counterparts (event already set → no `urlopen` and the
+  fixed message; set during an attempt → one request and no retry status;
+  the message never contains the spoken text; an unset event changes
+  neither the retry count nor the status callbacks; a real-clock
+  loopback test where a `Retry-After: 2` backoff wakes in under a second
+  with exactly one request; and a loopback test of the Speak-supersedes-
+  Speak case, where the older call is cancelled mid-backoff while a newer
+  one succeeds). 543 → 549 tests. Verified live against a real
+  `PlumeApp` under a virtual display with an isolated config directory
+  (52 checks): the worker receives `_speech_cancel`, never
+  `_http_cancel`; Clear, Reopen, close, a newer Speak and a replay each
+  set the previous Speak's event and leave the new one unset; a Translate
+  and a Speak in flight at once complete independently in either order; a
+  missing key or declined notice cancels nothing; and, with the real
+  `call_elevenlabs_tts` and a 503 + `Retry-After: 5` server stand-in, the
+  status reads "Retrying speech (2 of 4)…" and Clear returns the worker
+  in well under a second with no second request, nothing played and no
+  advisory. The same end-to-end Clear against v1.64 leaves the worker
+  asleep.
+
 ---
 
 ### Notes on sequencing

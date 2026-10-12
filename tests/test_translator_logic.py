@@ -2410,6 +2410,191 @@ class TestElevenLabsTTS(unittest.TestCase):
             else:
                 self.fail("expected BackendError")
 
+    # v1.65, notes_027 2.C: Speak now hands this function its own cancel
+    # event (never Translate's), so the contract it already honoured needs
+    # the same coverage _http_post_json has.
+
+    def test_cancelled_before_first_attempt_raises_without_a_request(self):
+        event = threading.Event()
+        event.set()
+
+        def fake_urlopen(request, timeout=None):
+            self.fail("urlopen should not be called when already cancelled")
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume.call_elevenlabs_tts(
+                    {"elevenlabs_api_key": "sk_test", "_cancel_event": event},
+                    "Bonjour",
+                )
+        self.assertEqual(str(ctx.exception), "The request was cancelled.")
+
+    def test_cancel_during_an_attempt_stops_before_the_retry_status(self):
+        event = threading.Event()
+        calls = {"n": 0}
+        retries = []
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            event.set()
+            raise urllib.error.HTTPError(
+                "https://api.elevenlabs.io/v1/text-to-speech/x", 503, "busy",
+                {}, io.BytesIO(b""),
+            )
+
+        snapshot = {
+            "elevenlabs_api_key": "sk_test",
+            "_cancel_event": event,
+            "_on_retry": lambda n, m: retries.append((n, m)),
+        }
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(plume.BackendError) as ctx:
+                plume.call_elevenlabs_tts(snapshot, "Bonjour")
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(retries, [])
+        self.assertEqual(str(ctx.exception), "The request was cancelled.")
+
+    def test_cancel_message_never_contains_spoken_text(self):
+        secret = "meet me at the old bridge"
+        event = threading.Event()
+        event.set()
+        with self.assertRaises(plume.BackendError) as ctx:
+            plume.call_elevenlabs_tts(
+                {"elevenlabs_api_key": "k", "_cancel_event": event}, secret
+            )
+        self.assertNotIn(secret, str(ctx.exception))
+
+    def test_an_unset_cancel_event_does_not_change_retries_or_status(self):
+        class InstantEvent:
+            """Never set; wait() returns at once so backoff costs no time."""
+
+            def __init__(self):
+                self.waits = []
+
+            def is_set(self):
+                return False
+
+            def wait(self, timeout=None):
+                self.waits.append(timeout)
+                return False
+
+        event = InstantEvent()
+        retries = []
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise urllib.error.HTTPError(
+                    "https://api.elevenlabs.io/v1/text-to-speech/x", 429, "busy",
+                    {}, io.BytesIO(b""),
+                )
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda *a, **k: b"\x01\x02\x03\x04",
+            )
+
+        snapshot = {
+            "elevenlabs_api_key": "sk_test",
+            "_cancel_event": event,
+            "_on_retry": lambda n, m: retries.append((n, m)),
+        }
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            audio = plume.call_elevenlabs_tts(snapshot, "Bonjour")
+        self.assertEqual(audio, b"\x01\x02\x03\x04")
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(len(event.waits), 2)
+        self.assertEqual(
+            retries, [(2, plume.HTTP_MAX_ATTEMPTS), (3, plume.HTTP_MAX_ATTEMPTS)]
+        )
+
+    def test_cancellation_during_backoff_wait_wakes_promptly(self):
+        request_count = {"n": 0}
+
+        class Handler(_QuietHandler):
+            def do_POST(self):
+                self._read_body()
+                request_count["n"] += 1
+                self._send_json(503, {"error": "busy"}, {"Retry-After": "2"})
+
+        server, thread = _start_loopback_server(Handler)
+        try:
+            base = "http://127.0.0.1:{}".format(server.server_port)
+            event = threading.Event()
+            threading.Timer(0.1, event.set).start()
+            started = time.monotonic()
+            with mock.patch.object(plume, "ELEVENLABS_BASE_URL", base):
+                with self.assertRaises(plume.BackendError) as ctx:
+                    plume.call_elevenlabs_tts(
+                        {"elevenlabs_api_key": "sk_test", "_cancel_event": event},
+                        "Bonjour",
+                    )
+            elapsed = time.monotonic() - started
+        finally:
+            _stop_loopback_server(server, thread)
+        # Retry-After: 2 would hold the call for ~2s uninterrupted.
+        self.assertLess(elapsed, 1.0)
+        self.assertEqual(str(ctx.exception), "The request was cancelled.")
+        self.assertEqual(request_count["n"], 1)
+
+    def test_newer_speak_succeeds_while_an_older_one_is_cancelled_mid_backoff(self):
+        # What _speak does when a second Speak (or Clear) lands during a
+        # backoff: _new_speech_cancel() sets the old event, the new call
+        # carries a fresh one.
+        old_requests = {"n": 0}
+
+        class OldHandler(_QuietHandler):
+            def do_POST(self):
+                self._read_body()
+                old_requests["n"] += 1
+                self._send_json(503, {"error": "busy"}, {"Retry-After": "2"})
+
+        class NewHandler(_QuietHandler):
+            def do_POST(self):
+                self._read_body()
+                body = b"\x01\x02\x03\x04"
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/pcm")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        old_server, old_thread = _start_loopback_server(OldHandler)
+        new_server, new_thread = _start_loopback_server(NewHandler)
+        try:
+            old_base = "http://127.0.0.1:{}".format(old_server.server_port)
+            new_base = "http://127.0.0.1:{}".format(new_server.server_port)
+            old_event = threading.Event()
+            old_result = {}
+
+            def run_old():
+                with mock.patch.object(plume, "ELEVENLABS_BASE_URL", old_base):
+                    try:
+                        plume.call_elevenlabs_tts(
+                            {"elevenlabs_api_key": "sk_test", "_cancel_event": old_event},
+                            "Ancienne",
+                        )
+                    except plume.BackendError as exc:
+                        old_result["error"] = str(exc)
+
+            runner = threading.Thread(target=run_old, daemon=True)
+            runner.start()
+            time.sleep(0.2)
+            old_event.set()
+            runner.join(timeout=2)
+
+            with mock.patch.object(plume, "ELEVENLABS_BASE_URL", new_base):
+                audio = plume.call_elevenlabs_tts(
+                    {"elevenlabs_api_key": "sk_test", "_cancel_event": threading.Event()},
+                    "Nouvelle",
+                )
+        finally:
+            _stop_loopback_server(old_server, old_thread)
+            _stop_loopback_server(new_server, new_thread)
+        self.assertEqual(audio, b"\x01\x02\x03\x04")
+        self.assertEqual(old_result.get("error"), "The request was cancelled.")
+        self.assertEqual(old_requests["n"], 1)
+
 
 class TestPcmToWav(unittest.TestCase):
     def test_round_trip_preserves_pcm_and_format(self):

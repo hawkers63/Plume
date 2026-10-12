@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.64"
+APP_VERSION = "1.65"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -3393,10 +3393,10 @@ def call_elevenlabs_tts(config_snapshot, text: str) -> bytes:
     urlopen with no retry at all, so a 429 was a user-facing error on the
     first attempt. Not routed through _http_post_json itself: that helper
     JSON-decodes the response body, and this one returns raw PCM bytes.
-    *config_snapshot* may carry "_cancel_event" (Speak does not currently
-    share Translate's cancel event, so this is normally None — retrying
-    still stays bounded by the response's own timeout) and "_on_retry",
-    the same worker-thread status callback _translate installs.
+    *config_snapshot* may carry "_cancel_event" and "_on_retry", the same
+    keys _translate installs. Speak passes its own event (v1.65, never
+    Translate's): setting it stops the next attempt and wakes a backoff
+    wait, but a urlopen already blocked in read still runs to its timeout.
     """
     api_key = (config_snapshot.get("elevenlabs_api_key") or "").strip()
     if not api_key:
@@ -5713,6 +5713,7 @@ if GUI_AVAILABLE:
             self._phrasebook_dialog = None
             self._glossary_dialog = None
             self._http_cancel = threading.Event()
+            self._speech_cancel = threading.Event()
             self._restore_hotkey = RestoreHotkey()
             self._quick_hotkey = QuickTranslateHotkey()  # v1.60, notes_026 2.D
             self._quick_last_ts = 0.0
@@ -7330,6 +7331,16 @@ if GUI_AVAILABLE:
             self._http_cancel = threading.Event()
             return self._http_cancel
 
+        def _new_speech_cancel(self):
+            """Wake the previous Speak backoff; return a fresh event (v1.65).
+
+            Independent of _http_cancel: a translation starting must not
+            abort a Speak, and a Speak starting must not abort a translation.
+            """
+            self._speech_cancel.set()
+            self._speech_cancel = threading.Event()
+            return self._speech_cancel
+
         def _take_clear_snapshot(self) -> dict:
             """Capture the fields Clear is about to drop (v1.53, notes_023
             2.D). In-memory only, never persisted, never sent anywhere.
@@ -7361,6 +7372,7 @@ if GUI_AVAILABLE:
             self._request_id += 1
             self._speech_request_id += 1
             self._speech_cache = []
+            self._new_speech_cancel()
             self._new_http_cancel()
             self._clear_quick_followup()
             self.translate_btn.configure(state="normal", text="Translate")
@@ -7445,6 +7457,7 @@ if GUI_AVAILABLE:
             self._new_http_cancel()
             self._speech_request_id += 1
             self._speech_cache = []
+            self._new_speech_cancel()
             self._stop_speech()
             self._cleanup_tts_file()
             self._restore_hotkey.stop()
@@ -7795,8 +7808,8 @@ if GUI_AVAILABLE:
             Reopen is a user-visible replacement of the working result, the
             same class of action as Clear: an in-flight translation or
             speech worker must not be allowed to land on top of it. Bump
-            both request ids, invalidate the shared HTTP cancel event (so a
-            retry/backoff wait in a still-running worker stops promptly
+            both request ids, invalidate the HTTP and Speak cancel events (so
+            a retry/backoff wait in a still-running worker stops promptly
             instead of only being dropped later by the stale-id check at
             delivery, notes_025 m1), and stop any playback before touching
             widgets — without calling _clear()/_clear_results() itself,
@@ -7806,6 +7819,7 @@ if GUI_AVAILABLE:
             self._request_id += 1
             self._speech_request_id += 1
             self._speech_cache = []
+            self._new_speech_cancel()
             self._new_http_cancel()
             self._clear_quick_followup()
             self._stop_speech()
@@ -7865,6 +7879,7 @@ if GUI_AVAILABLE:
                 # A replay sends nothing anywhere, so it needs neither the
                 # API key nor the privacy notice; only the rate is re-applied.
                 self._speech_request_id += 1
+                self._new_speech_cancel()
                 self._play_wav_bytes(pcm_to_wav_bytes(
                     cached, sample_rate=speech_sample_rate(rate_factor),
                 ))
@@ -7894,9 +7909,8 @@ if GUI_AVAILABLE:
                     # safe and matches the equivalent Claude privacy flow.
                     pass
 
-            # v1.59, notes_026 2.C: Speak does not share Translate's cancel
-            # event (notes_015 already deferred that), so this is retry
-            # progress only, not cancellation.
+            # Retry progress for the status bar (v1.59). Cancellation is
+            # Speak's own event, attached below, never Translate's.
             snapshot["_on_retry"] = (
                 lambda n, m: self._schedule_status(
                     "Retrying speech ({} of {})…".format(n, m)
@@ -7908,6 +7922,7 @@ if GUI_AVAILABLE:
             # previous, still-in-flight TTS request via this same counter.
             self._speech_request_id += 1
             speech_request_id = self._speech_request_id
+            snapshot["_cancel_event"] = self._new_speech_cancel()
 
             def worker():
                 try:
