@@ -3149,6 +3149,86 @@ heading, link, HTML or code block in the rendered sheet.
   exports in both formats, written and failing safely. With a plain
   overwrite put back at the four sites, 13 of the 37 fail.
 
+## v1.70 — A reply marked "do not retry" is not retried
+
+From notes_029, part 5 (bounded backend retries). Nearly all of it has
+shipped: v1.27 (capped exponential backoff, `Retry-After` honoured as a
+minimum inside a total-wait budget, Claude's 529 opted in at its own
+call site), v1.38 (a certificate failure never retried, error bodies not
+drained, cooperative cancel) and v1.59 (a fixed "Retrying (2 of 4)…"
+status line with no phrase, URL or exception text in it, and the same
+retry for Speak). One line of the note's policy was not met: "Respect
+x-should-retry: false." A 429, 502, 503, 504 or Claude 529 carrying that
+header was retried up to three more times anyway, waiting out the
+backoff between requests, and a 429 with `Retry-After: 30` was waited
+out in full before the next one.
+
+- **The header now ends the retrying.** New pure helper
+  `_server_forbids_retry(headers)` is true only when `x-should-retry` is
+  `false`, in any case and with surrounding whitespace ignored; a
+  missing, empty, unreadable or any other value is false, and it never
+  raises. `_http_post_json` reads it with `Retry-After`, before the error
+  body is closed, and the retry condition gained one clause (`and not
+  server_forbids_retry`). A marked response is requested once: no
+  backoff wait, no `on_retry` call (so no "Retrying…" status), and its
+  `Retry-After` is not waited out. Claude and Ollama share the
+  transport, so both get it.
+- **The message is unchanged.** The reply ends in the same fixed text
+  for its status as an exhausted one (`_friendly_http_message`), so no
+  header value, body, URL or phrase reaches the UI, and "Please retry"
+  still reads rightly: the header says that repeating the request now
+  will not help, not that the service is gone for good.
+- **Only `false` counts.** `true` does not widen the retry set: a 401,
+  404 or other client error is never retried whatever the header says,
+  and a retryable status with no header, or any other value, is retried
+  exactly as before.
+- **Deliberate deviations from the note.** Three attempts from 0.5
+  seconds: declined. Four attempts from 0.6 s (capped at 8 s, with 30 s
+  of total waiting) and the "(2 of 4)" copy are v1.27/v1.59 behaviour
+  with tests behind them, and the note names no failure the change would
+  fix. An unhinted 429 is still retried: an ordinary rate limit is the
+  common 429 and clears within seconds, the spend-cap 429 the note
+  worries about is what the header is for (so it is now honoured instead
+  of guessed at), and being wrong costs a few seconds before an error
+  that was coming anyway. Timeouts are still retried like any dropped
+  connection: Claude's socket timeout is 60 s and a reply here is five
+  short variations, so a timeout looks more like a stalled connection
+  than a long generation, and being wrong costs a repeated request,
+  bounded by the attempt count and the wait budget, which Clear stops
+  between attempts. If you would rather risk a missing translation than
+  a repeated one, the note's "only when brief" rule is a small version
+  of its own. The ElevenLabs Speak loop is untouched: the header is the
+  Claude API's, and the note is about the translation transport.
+- No config or history-schema change. 14 new headless tests (638 → 652)
+  in `TestShouldRetryHeader`: the helper (any case or padding; every
+  other value, a missing header and a `.get` that raises), a marked 503
+  requested once with no sleep, no retry callback, the error body closed
+  and the usual message free of the reply, a marked 429 ignoring its
+  `Retry-After`, an unmarked or `true` 503 retried as before, the header
+  name read case-insensitively from a real `HTTPMessage`, the opted-in
+  529, a 401 unchanged with either value, only the marked response in a
+  sequence stopping it, and four real-socket loopback tests (a marked
+  and an unmarked 503 through `_http_post_json`, a marked and an
+  unmarked 529 through `call_anthropic`). 12 of 12 deliberately broken
+  variants (header ignored, helper always false, case-sensitive, padding
+  not stripped, any value or any substring counting, inverted, the wrong
+  header name, exceptions escaping, `true` widening the set, a 429 or a
+  `Retry-After` exempted) fail at least one new test. Verified live
+  against a real `PlumeApp` under a virtual display (Linux,
+  customtkinter 5.2.2, not Windows) with an isolated config directory,
+  Claude's and Ollama's endpoints pointed at a local server and any
+  non-loopback request failing the run (32 checks): a marked 503 is
+  requested once and shows the fixed message, no "Retrying" status and
+  nothing from the reply; an unmarked 503 makes four attempts with the
+  three retry statuses; two 503s then a success delivers the
+  translation; a marked 429 with `Retry-After: 30` is one request and
+  finishes inside three seconds; a marked 529 stops and an unmarked one
+  does not;
+  capitals and padding are honoured, `true` and an unknown value change
+  nothing; a 401 is one request either way; and Ollama behaves the same.
+  With the clause removed, 9 of the 32 fail: the marked cases, the 429
+  among them still waiting.
+
 ---
 
 ### Notes on sequencing

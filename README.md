@@ -416,7 +416,8 @@ enter it, otherwise from the `ANTHROPIC_API_KEY` environment variable.
 Transient failures (rate limiting, a temporary 502/503/504, or a dropped
 connection) are retried automatically with a short exponential backoff
 before Plume shows an error — no action needed, and nothing is retried
-for a rejected key, a missing model, or a certificate/TLS failure. The
+for a rejected key, a missing model, or a certificate/TLS failure, and a
+reply marked `x-should-retry: false` (v1.70) is not retried either. The
 status bar shows retry progress ("Retrying (2 of 4)…") so a 429 doesn't
 look like a hang; ElevenLabs Speak retries the same way ("Retrying speech
 (2 of 4)…"). Clear, closing the window, or starting a new translation

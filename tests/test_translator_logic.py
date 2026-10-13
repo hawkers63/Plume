@@ -2411,6 +2411,196 @@ class TestHttpLoopbackIntegration(unittest.TestCase):
         self.assertEqual(old_request_count["n"], 1)
 
 
+class TestShouldRetryHeader(unittest.TestCase):
+    """v1.70: a response marked "x-should-retry: false" is never retried."""
+
+    @staticmethod
+    def _error(code, body=b"", closed=None, **headers):
+        message = plume.http.client.HTTPMessage()
+        for name, value in headers.items():
+            message[name.replace("_", "-")] = value
+
+        class Body(io.BytesIO):
+            def close(self_inner):
+                if closed is not None:
+                    closed.append(code)
+                super().close()
+
+        return urllib.error.HTTPError("https://x", code, "msg", message, Body(body))
+
+    def _post(self, errors, **kwargs):
+        """Raise *errors* in turn, then answer 200; report what happened."""
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            if calls["n"] <= len(errors):
+                raise errors[calls["n"] - 1]
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda *a: None,
+                read=lambda *a, **k: b'{"ok": true}',
+            )
+
+        result, error = None, None
+        with mock.patch.object(plume, "time") as fake_time, \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            try:
+                result = plume._http_post_json(
+                    "https://x", {}, {"content-type": "application/json"}, 5, **kwargs
+                )
+            except plume.BackendError as exc:
+                error = str(exc)
+        return {
+            "result": result, "error": error,
+            "calls": calls["n"], "sleeps": fake_time.sleep.call_count,
+        }
+
+    def test_false_in_any_case_or_with_spaces_forbids_retry(self):
+        for value in ("false", "False", "FALSE", " false ", "\tfalse"):
+            message = plume.http.client.HTTPMessage()
+            message["X-Should-Retry"] = value
+            self.assertTrue(plume._server_forbids_retry(message), repr(value))
+
+    def test_anything_else_does_not_forbid_retry(self):
+        for value in ("true", "TRUE", "", "no", "0", "falsey", "false, true"):
+            message = plume.http.client.HTTPMessage()
+            message["X-Should-Retry"] = value
+            self.assertFalse(plume._server_forbids_retry(message), repr(value))
+        self.assertFalse(plume._server_forbids_retry(plume.http.client.HTTPMessage()))
+
+    def test_missing_or_unreadable_headers_do_not_forbid_retry(self):
+        class Broken:
+            def get(self, name, default=None):
+                raise RuntimeError("no headers for you")
+
+        for headers in (None, {}, Broken(), {"x-should-retry": None}, {"x-should-retry": False}):
+            self.assertFalse(plume._server_forbids_retry(headers), repr(headers))
+        self.assertTrue(plume._server_forbids_retry({"x-should-retry": "false"}))
+
+    def test_503_marked_false_is_requested_once_with_the_usual_message(self):
+        closed, retried = [], []
+        out = self._post(
+            [self._error(503, b"leaked phrase", closed, X_Should_Retry="false")],
+            max_attempts=4, on_retry=lambda n, m: retried.append((n, m)),
+        )
+        self.assertEqual(out["calls"], 1)
+        self.assertEqual(out["sleeps"], 0)
+        self.assertEqual(retried, [])
+        self.assertEqual(closed, [503])
+        self.assertEqual(out["error"], plume._friendly_http_message(503, "backend"))
+        self.assertNotIn("leaked", out["error"])
+
+    def test_429_marked_false_ignores_a_retry_after_hint(self):
+        out = self._post(
+            [self._error(429, Retry_After="1", X_Should_Retry="false")], max_attempts=4,
+        )
+        self.assertEqual(out["calls"], 1)
+        self.assertEqual(out["sleeps"], 0)
+        self.assertEqual(out["error"], plume._friendly_http_message(429, "backend"))
+
+    def test_unmarked_or_marked_true_503_is_retried_as_before(self):
+        for headers in ({}, {"X_Should_Retry": "true"}):
+            out = self._post([self._error(503, **headers)])
+            self.assertEqual(out["result"], {"ok": True}, headers)
+            self.assertEqual(out["calls"], 2, headers)
+            self.assertEqual(out["sleeps"], 1, headers)
+
+    def test_header_name_is_case_insensitive_on_a_real_message(self):
+        out = self._post([self._error(503, X_SHOULD_RETRY="False")])
+        self.assertEqual(out["calls"], 1)
+        self.assertIsNone(out["result"])
+
+    def test_opted_in_529_marked_false_is_not_retried(self):
+        out = self._post(
+            [self._error(529, X_Should_Retry="false")],
+            retryable_codes=plume.HTTP_RETRYABLE_CODES | {529},
+        )
+        self.assertEqual(out["calls"], 1)
+        self.assertEqual(out["error"], plume._friendly_http_message(529, "backend"))
+
+    def test_header_cannot_make_a_client_error_retryable_or_change_its_message(self):
+        for value in ("false", "true"):
+            out = self._post([self._error(401, X_Should_Retry=value)])
+            self.assertEqual(out["calls"], 1, value)
+            self.assertEqual(out["sleeps"], 0, value)
+            self.assertEqual(out["error"], plume._friendly_http_message(401, "backend"), value)
+
+    def test_only_the_marked_response_stops_the_sequence(self):
+        retried = []
+        out = self._post(
+            [self._error(503), self._error(503, X_Should_Retry="false")],
+            max_attempts=4, on_retry=lambda n, m: retried.append((n, m)),
+        )
+        self.assertEqual(out["calls"], 2)
+        self.assertEqual(out["sleeps"], 1)
+        self.assertEqual(retried, [(2, 4)])
+        self.assertEqual(out["error"], plume._friendly_http_message(503, "backend"))
+
+    def _loopback_503(self, headers, max_attempts):
+        count = {"n": 0}
+
+        class Handler(_QuietHandler):
+            def do_POST(self):
+                self._read_body()
+                count["n"] += 1
+                self._send_json(503, {"error": "busy"}, headers)
+
+        server, thread = _start_loopback_server(Handler)
+        try:
+            url = "http://127.0.0.1:{}/".format(server.server_port)
+            with mock.patch.object(plume, "_backoff_delay", return_value=0.0):
+                with self.assertRaises(plume.BackendError) as ctx:
+                    plume._http_post_json(
+                        url, {}, {"content-type": "application/json"}, timeout=5,
+                        max_attempts=max_attempts,
+                    )
+        finally:
+            _stop_loopback_server(server, thread)
+        return count["n"], str(ctx.exception)
+
+    def test_loopback_503_marked_false_is_requested_once(self):
+        requests, message = self._loopback_503({"X-Should-Retry": "false"}, 4)
+        self.assertEqual(requests, 1)
+        self.assertEqual(message, plume._friendly_http_message(503, "backend"))
+
+    def test_loopback_503_without_the_header_is_still_retried(self):
+        requests, message = self._loopback_503({}, 3)
+        self.assertEqual(requests, 3)
+        self.assertEqual(message, plume._friendly_http_message(503, "backend"))
+
+    def _claude_529(self, headers):
+        count = {"n": 0}
+
+        class Handler(_QuietHandler):
+            def do_POST(self):
+                self._read_body()
+                count["n"] += 1
+                self._send_json(529, {"error": {"message": "overloaded"}}, headers)
+
+        server, thread = _start_loopback_server(Handler)
+        try:
+            url = "http://127.0.0.1:{}/".format(server.server_port)
+            with mock.patch.object(plume, "ANTHROPIC_URL", url), \
+                    mock.patch.object(plume, "_backoff_delay", return_value=0.0):
+                with self.assertRaises(plume.BackendError) as ctx:
+                    plume.call_anthropic(
+                        {"anthropic_api_key": "sk-not-a-real-key"}, "system", "hello",
+                    )
+        finally:
+            _stop_loopback_server(server, thread)
+        return count["n"], str(ctx.exception)
+
+    def test_claude_call_stops_at_once_on_a_529_marked_false(self):
+        requests, message = self._claude_529({"x-should-retry": "false"})
+        self.assertEqual(requests, 1)
+        self.assertEqual(message, plume._friendly_http_message(529, "Claude API"))
+
+    def test_claude_call_still_retries_an_unmarked_529(self):
+        requests, message = self._claude_529({})
+        self.assertEqual(requests, plume.HTTP_MAX_ATTEMPTS)
+        self.assertEqual(message, plume._friendly_http_message(529, "Claude API"))
+
+
 class TestResponseExtraction(unittest.TestCase):
     def test_anthropic_text_from_response_extracts_text(self):
         data = {"content": [{"type": "text", "text": "Bonjour"}]}

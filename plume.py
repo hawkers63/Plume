@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.69"
+APP_VERSION = "1.70"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -3170,6 +3170,14 @@ def _backoff_delay(attempt, retry_after=None) -> float:
 _TRANSIENT_RESPONSE_ERRORS = (TimeoutError, OSError, http.client.IncompleteRead)
 
 
+def _server_forbids_retry(headers) -> bool:
+    """True when the response says "x-should-retry: false" (v1.70)."""
+    try:
+        return str(headers.get("x-should-retry") or "").strip().lower() == "false"
+    except Exception:
+        return False
+
+
 def _http_post_json(url, payload, headers, timeout, service_name="backend",
                      max_attempts=HTTP_MAX_ATTEMPTS, retryable_codes=None,
                      max_retry_wait=30.0, cancel_event=None, on_retry=None):
@@ -3188,7 +3196,8 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
     that would blow this budget is refused with a clear message rather
     than silently honoured for an arbitrarily long wait or silently
     shortened. A successful response is bounded to HTTP_MAX_RESPONSE_BYTES
-    rather than read fully into memory (v1.38, notes_014 G).
+    rather than read fully into memory (v1.38, notes_014 G). A response
+    marked "x-should-retry: false" is not retried either (v1.70).
 
     *cancel_event* (v1.38, notes_015 2.E), if given, is checked before each
     attempt, during backoff waiting, and once immediately after a request
@@ -3266,6 +3275,7 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
                 retry_after = exc.headers.get("Retry-After")
             except Exception:
                 retry_after = None
+            server_forbids_retry = _server_forbids_retry(exc.headers)
             # Release the connection without draining a potentially unbounded
             # error body into memory (v1.38, notes_014 G) — retrying must not
             # wait for that either.
@@ -3273,7 +3283,7 @@ def _http_post_json(url, payload, headers, timeout, service_name="backend",
                 exc.close()
             except Exception:
                 pass
-            if exc.code in codes and attempt < attempts - 1:
+            if exc.code in codes and attempt < attempts - 1 and not server_forbids_retry:
                 _notify_retry(attempt)
                 wait_or_give_up(attempt, retry_after)
                 continue
