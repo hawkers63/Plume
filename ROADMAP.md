@@ -3338,6 +3338,107 @@ could be composed onto an English-target result, where it means nothing.
   `_render_result` and the picker's snap-back already stand in front of
   them; the headless guards are there for those.
 
+## v1.72 — Slower speech says it lowers the pitch
+
+From notes_029, part 2 (slow pronunciation). The speech-rate menu itself
+shipped in v1.58 (Normal / 0.8× / 0.75×, saved across restarts), with
+cached clips replayed at the chosen rate in v1.64 and Speak's own cancel
+in v1.65. One request was still open. The note says a slower WAV header
+"also lowers pitch. Add a short explanation to the control, such as:
+Slower playback also lowers the voice's pitch." The README said
+"lower-pitched", but nothing in the window told someone who picked 0.75×
+why the voice had turned deeper, which reads as a fault rather than a
+property of the method.
+
+- **The explanation.** `SPEECH_RATE_PITCH_NOTE` is the note's own
+  sentence, word for word. `speech_rate_note(factor)` returns it for 0.8×
+  and 0.75× and an empty string at Normal; it reads the rate through
+  `normalise_speech_rate`, so a value that is not one of the three rates
+  counts as Normal and says nothing. `_on_speech_rate_change` makes the
+  note from the rate it has just saved and shows it on the status bar
+  with `_refresh_status(state=note)`.
+- **Why the status bar and not a caption beside the menu.** Measured
+  under a virtual display, the card that holds the menu is 526 px wide
+  at the default 1180×760 and 436 px at the 1000×600 minimum. At the
+  minimum the row with the rate menu uses all 412 px of the inner width
+  (label 120, emote menu 156, rate menu 90 and 38 px between the two
+  menus), against 17 px spare on the sign-off row and 38 px on the
+  game-tag row, whose captions v1.67 had already cut to "Changes
+  meaning" and "Game-chat tag" to fit. A sentence of 46 characters
+  cannot sit there without clipping. The app has no tooltip mechanism,
+  and building one for a single sentence is more machinery than the
+  request needs. The status line is where v1.71 puts its refusal note,
+  it holds a fixed sentence with no phrase in it, and the whole line,
+  backend half included, needs 630 px of the 968 the label has at the
+  minimum (622 with Ollama).
+- **Transient, and it only removes itself.** Like v1.71's note it is
+  replaced by the next status refresh: typing, a result, any action. It
+  appears when a slower rate is chosen, not at start-up with one saved.
+  Choosing Normal clears the line only when this note is what it shows,
+  so "translating…", "Retrying…" and the sign-off note are left alone.
+  One cosmetic residual: choosing a slower rate while a request runs
+  replaces "translating…" with the note until the result lands. The
+  buttons stay locked, the result arrives as usual and its own status
+  replaces the note.
+- **The rest of part 2 was already in place, and is left alone.** The
+  note's header-based playback is `pcm_to_wav_bytes`, which has built the
+  WAV with the stdlib `wave` module (`setframerate`, `writeframes`) since
+  Speak shipped in v1.6; `speech_sample_rate` (v1.58) scales the rate of
+  the retained PCM, and a replay at another rate makes no second
+  ElevenLabs request (v1.64). The
+  note's table assumes 24,000 Hz PCM; Plume asks for 16,000 Hz, so the
+  same factors give 12,800 Hz and 12,000 Hz. The optional
+  `tts_playback_rate` key is declined: `speech_rate` already holds only
+  1.0, 0.8 or 0.75 and anything else loads as Normal, so a rename would
+  need a config migration for no visible change. "Retain synchronous
+  winsound playback" does not fit what the code does: it plays a
+  temporary file with `SND_FILENAME | SND_ASYNC` and never `SND_MEMORY`,
+  so the combination the Python documentation forbids is not in use, and
+  Stop (`SND_PURGE`) and v1.65's cancel depend on the asynchronous play.
+- No config or history-schema change, and nothing about how speech is
+  generated, cached, played or labelled changes. 11 new headless tests
+  (671 → 682). `TestSpeechRateNote` (7): no note at Normal; the same note
+  for both slower rates; every unknown value (0, 2, None, "false",
+  0.8000001, NaN, an empty list or dict, True) reads as Normal and says
+  nothing; a numeric string such as "0.75" reads as the rate it names;
+  each menu label leads to the right note; the note is a short fixed
+  sentence (a full stop, at most 60 characters, no braces, the word
+  "pitch"); and the status line carries it while an empty state brings
+  the character count back. `TestSpeechRateNoteWiring` (4 guards over the
+  parsed source, since `PlumeApp` is not importable headlessly): the note
+  is made from the rate that was saved; a slower rate sends it to the
+  status bar as the state; Normal clears only this note, with a bare
+  refresh; and the menu still calls the handler. 20 of 20 deliberately
+  broken variants fail at least one of them: the helper always empty,
+  always the note, inverted, without its normaliser, or giving the note
+  to only one of the slower rates; the note emptied, unfinished, too
+  long, given a placeholder or without the word "pitch"; the handler
+  never showing it, showing it through the wrong refresh, or building it
+  from the menu label instead of the rate; never clearing, clearing
+  unconditionally, with its test inverted, showing the note again or
+  testing another text; and the menu unwired. Both baselines (the new
+  classes, then the whole suite) were asserted clean first.
+  Verified live against a real `PlumeApp` under a virtual display
+  (Linux, customtkinter 5.2.2, not Windows) with an isolated config
+  directory, a fake backend and any network request failing the run (40
+  checks): the note appears for 0.8× and 0.75× as the end of the usual
+  status line, with nothing of the typed phrase in it; the rate is
+  applied and saved; typing replaces the note; Normal clears it and
+  restores the character count; Normal leaves "translating…",
+  "Retrying…" and the sign-off note alone; two slower rates in a row
+  show the note once; a new result clears it; a rate chosen mid-request
+  leaves the buttons locked, the result arrives and the rate sticks; a
+  rate chosen after Quick translate shows the note; no dialog or advisory
+  appears; the whole line fits at 1000 px for both backends; and the menu
+  keeps its three options. Against the v1.71 code the 9 checks that look
+  for the note fail, and the other 31, which pin behaviour that must not
+  change, pass. 15 of the 20 broken variants fail the live script as
+  well. The other five cannot be seen from the window: the live script
+  reads the note's wording from the module, so a reworded note agrees
+  with itself and only the headless tests pin the wording, and the
+  helper's own normaliser is never reached, because the handler has
+  already normalised the rate.
+
 ---
 
 ### Notes on sequencing

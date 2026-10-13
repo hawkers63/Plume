@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.71"
+APP_VERSION = "1.72"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -934,6 +934,17 @@ def speech_rate_from_label(label) -> float:
         if text == label:
             return rate
     return SPEECH_RATE_NORMAL
+
+
+# Status-bar line (v1.72); the control's row has no room for a caption.
+SPEECH_RATE_PITCH_NOTE = "Slower playback also lowers the voice's pitch."
+
+
+def speech_rate_note(factor) -> str:
+    """The pitch note for a slower rate, empty at Normal (v1.72)."""
+    if normalise_speech_rate(factor) == SPEECH_RATE_NORMAL:
+        return ""
+    return SPEECH_RATE_PITCH_NOTE
 
 
 SPEECH_CACHE_LIMIT = 8
@@ -6842,13 +6853,17 @@ if GUI_AVAILABLE:
             change does not affect audio already in flight — _speak reads
             this once per click, not continuously.
             """
-            self.config_data["speech_rate"] = speech_rate_from_label(
-                self.speech_rate_var.get()
-            )
+            rate = speech_rate_from_label(self.speech_rate_var.get())
+            self.config_data["speech_rate"] = rate
             try:
                 save_config(self.config_data)
             except ConfigError:
                 pass  # best-effort; the preference still applies this session
+            note = speech_rate_note(rate)
+            if note:
+                self._refresh_status(state=note)
+            elif SPEECH_RATE_PITCH_NOTE in self.status_label.cget("text"):
+                self._refresh_status()
 
         def _speak_source(self):
             """Pronounce the source, not the translation (v1.58).

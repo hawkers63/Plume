@@ -266,7 +266,9 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   **Stop** button and a speech-rate menu — **Normal / 0.8× / 0.75×**,
   persisted across restarts — instead of a plain Slow toggle (a slower,
   lower-pitched playback rate — not studio-quality time-stretching, but
-  a genuine aid for catching liaisons and elisions). **Speak source**
+  a genuine aid for catching liaisons and elisions). Picking a slower
+  rate says so on the status bar (v1.72: "Slower playback also lowers
+  the voice's pitch."), until you type or choose Normal. **Speak source**
   sits beside **Copy source** so you can hear the *other* person's
   original French at your chosen rate without copying it into the input
   or swapping direction. The last eight clips are kept **in memory

@@ -2994,6 +2994,142 @@ class TestSpeechRate(unittest.TestCase):
         self.assertEqual(plume.speech_rate_from_label("gibberish"), plume.SPEECH_RATE_NORMAL)
 
 
+class TestSpeechRateNote(unittest.TestCase):
+    """v1.72, notes_029 2.2: a slower rate says it also lowers the pitch."""
+
+    def test_normal_has_no_note(self):
+        self.assertEqual(plume.speech_rate_note(plume.SPEECH_RATE_NORMAL), "")
+
+    def test_every_slower_rate_has_the_note(self):
+        slower = [r for r in plume.SPEECH_RATES if r != plume.SPEECH_RATE_NORMAL]
+        self.assertEqual(len(slower), 2)
+        for rate in slower:
+            self.assertEqual(plume.speech_rate_note(rate), plume.SPEECH_RATE_PITCH_NOTE)
+
+    def test_unknown_values_fall_back_to_normal_and_say_nothing(self):
+        for value in (0, 2, None, "false", 0.8000001, "not a number",
+                      float("nan"), [], {}, True):
+            self.assertEqual(plume.speech_rate_note(value), "", msg=repr(value))
+
+    def test_a_numeric_string_reads_like_the_rate_it_names(self):
+        self.assertEqual(plume.speech_rate_note("0.75"), plume.SPEECH_RATE_PITCH_NOTE)
+
+    def test_each_menu_label_leads_to_the_right_note(self):
+        for rate, label in plume.SPEECH_RATE_LABELS.items():
+            expected = (
+                "" if rate == plume.SPEECH_RATE_NORMAL else plume.SPEECH_RATE_PITCH_NOTE
+            )
+            self.assertEqual(
+                plume.speech_rate_note(plume.speech_rate_from_label(label)),
+                expected, msg=label,
+            )
+        self.assertEqual(
+            plume.speech_rate_note(plume.speech_rate_from_label("gibberish")), ""
+        )
+
+    def test_the_note_is_a_short_fixed_sentence(self):
+        note = plume.SPEECH_RATE_PITCH_NOTE
+        self.assertTrue(note.endswith("."))
+        self.assertLessEqual(len(note), 60)
+        self.assertNotIn("{", note)
+        self.assertNotIn("}", note)
+        self.assertIn("pitch", note)
+
+    def test_the_status_line_carries_the_note_and_an_empty_state_clears_it(self):
+        note = plume.SPEECH_RATE_PITCH_NOTE
+        config = {"backend": "ollama"}
+        self.assertTrue(plume.format_status(config, 12, note).endswith(" | " + note))
+        self.assertTrue(plume.format_status(config, 12, "").endswith(" | 12 characters"))
+
+
+class TestSpeechRateNoteWiring(unittest.TestCase):
+    """v1.72: the rate handler, read as source (PlumeApp is not importable here)."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(plume.__file__, "r", encoding="utf-8") as fh:
+            cls.tree = ast.parse(fh.read())
+        found = [
+            node for node in ast.walk(cls.tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_on_speech_rate_change"
+        ]
+        assert len(found) == 1
+        cls.handler = found[0]
+
+    def _note_branch(self):
+        branches = [
+            node for node in ast.walk(self.handler)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name) and node.test.id == "note"
+        ]
+        self.assertEqual(len(branches), 1)
+        return branches[0]
+
+    @staticmethod
+    def _status_calls(statements):
+        return [
+            node for stmt in statements for node in ast.walk(stmt)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_refresh_status"
+        ]
+
+    def test_the_note_is_made_from_the_rate_that_was_saved(self):
+        stored = [
+            node for node in ast.walk(self.handler)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Subscript) for t in node.targets)
+            and isinstance(node.value, ast.Name) and node.value.id == "rate"
+        ]
+        self.assertEqual(len(stored), 1)
+        made = [
+            node for node in ast.walk(self.handler)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "note" for t in node.targets)
+        ]
+        self.assertEqual(len(made), 1)
+        call = made[0].value
+        self.assertIsInstance(call, ast.Call)
+        self.assertEqual(getattr(call.func, "id", None), "speech_rate_note")
+        self.assertEqual([getattr(arg, "id", None) for arg in call.args], ["rate"])
+
+    def test_a_slower_rate_puts_the_note_on_the_status_bar(self):
+        calls = self._status_calls(self._note_branch().body)
+        self.assertEqual(len(calls), 1)
+        keywords = {kw.arg: kw.value for kw in calls[0].keywords}
+        self.assertEqual(list(keywords), ["state"])
+        self.assertIsInstance(keywords["state"], ast.Name)
+        self.assertEqual(keywords["state"].id, "note")
+
+    def test_picking_normal_clears_only_this_note(self):
+        orelse = self._note_branch().orelse
+        self.assertEqual(len(orelse), 1)
+        branch = orelse[0]
+        self.assertIsInstance(branch, ast.If)
+        test = branch.test
+        self.assertIsInstance(test, ast.Compare)
+        self.assertEqual([type(op) for op in test.ops], [ast.In])
+        self.assertEqual(getattr(test.left, "id", None), "SPEECH_RATE_PITCH_NOTE")
+        calls = self._status_calls(branch.body)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].keywords, [])
+        self.assertEqual(branch.orelse, [])
+
+    def test_the_rate_menu_still_calls_the_handler(self):
+        menus = [
+            node for node in ast.walk(self.tree)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Attribute) and t.attr == "speech_rate_menu"
+                for t in node.targets
+            )
+        ]
+        self.assertEqual(len(menus), 1)
+        commands = [kw.value for kw in menus[0].value.keywords if kw.arg == "command"]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(getattr(commands[0], "attr", None), "_on_speech_rate_change")
+
+
 class TestSpeechCache(unittest.TestCase):
     """v1.64, notes_027 2.B: a replay or a rate change is not a new call."""
 
