@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.68"
+APP_VERSION = "1.69"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -1773,6 +1773,52 @@ def clear_history(entries) -> list:
     return [entry for entry in entries if entry.get("favourite")]
 
 
+def write_text_atomic(path: str, text: str) -> None:
+    """Replace *path* with *text* in one step, or leave it untouched (v1.69)."""
+    # Unique, exclusively created name: *path* is user-chosen, so a fixed ".tmp" sibling could be their file.
+    tmp_path = "{}.{}.tmp".format(path, uuid.uuid4().hex[:8])
+    fh = open(tmp_path, "x", encoding="utf-8")  # failing here leaves nothing of ours to remove
+    try:
+        with fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+_MARKDOWN_SPECIAL = re.compile(r"[\\`*_\[\]<>#|~]|&(?=#?\w+;)")
+_MARKDOWN_LINE_START = re.compile(r"[-+=]|:-+:?$")
+_MARKDOWN_LIST_NUMBER = re.compile(r"^(\d+)([.)])(?=\s|$)")
+
+
+def markdown_safe(value, multiline: bool = False) -> str:
+    """Escape *value* so Markdown shows it as text, not markup; *multiline* keeps its lines (v1.69)."""
+    lines = [line.strip() for line in str(value or "").splitlines()]
+    if not multiline:
+        lines = [" ".join(line for line in lines if line)]
+    safe = []
+    for line in lines:
+        line = _MARKDOWN_SPECIAL.sub(r"\\\g<0>", line)
+        if _MARKDOWN_LINE_START.match(line):
+            line = "\\" + line
+        else:
+            line = _MARKDOWN_LIST_NUMBER.sub(r"\1\\\2", line)
+        safe.append(line)
+    return "\n".join(safe)
+
+
+def _diff_fence(changes: str) -> str:
+    """A backtick fence longer than any backtick run inside *changes*."""
+    longest_run = max((len(run) for run in re.findall(r"`+", changes)), default=0)
+    return "`" * max(3, longest_run + 1)
+
+
 def _export_field(value) -> str:
     """Flatten a field for a single-line export row: no raw tabs or newlines."""
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -1818,27 +1864,30 @@ def export_history_to_markdown(entries) -> str:
     One section per entry, in the order given, with the date, the situation
     (when recorded), the main translation and the five alternatives.
     *entries* is expected to already be filtered to favourites only.
+    Text fields are escaped with markdown_safe (v1.69).
     """
     lines = ["# Plume — favourite translations", ""]
     for entry in entries:
-        source = entry.get("source_text", "").strip() or "(no source text)"
+        source = markdown_safe(entry.get("source_text")) or "(no source text)"
         lines.append("## {}".format(source))
-        timestamp = entry.get("timestamp", "")
+        timestamp = markdown_safe(entry.get("timestamp"))
         if timestamp:
             lines.append("*{}*".format(timestamp))
-        situation = entry.get("situation", "").strip()
+        situation = markdown_safe(entry.get("situation"))
         if situation:
             lines.append("**Situation:** {}".format(situation))
         lines.append("")
-        lines.append("**Main translation:** {}".format(entry.get("main_translation", "")))
+        lines.append("**Main translation:** {}".format(
+            markdown_safe(entry.get("main_translation"))
+        ))
         variations = entry.get("variations", [])
         if variations:
             lines.append("")
             lines.append("**Alternatives:**")
             lines.append("")
             for variation in variations:
-                translation = variation.get("translation", "")
-                meaning = variation.get("english_meaning_check", "")
+                translation = markdown_safe(variation.get("translation"))
+                meaning = markdown_safe(variation.get("english_meaning_check"))
                 if meaning:
                     lines.append("- {} — *{}*".format(translation, meaning))
                 else:
@@ -1878,7 +1927,7 @@ def export_meaning_checks_markdown(entries) -> str:
     """A short study sheet of alternative / meaning-check pairs."""
     lines = ["# Plume — meaning checks", ""]
     for front, back in iter_meaning_check_rows(entries):
-        lines.append("- {} — *{}*".format(front, back))
+        lines.append("- {} — *{}*".format(markdown_safe(front), markdown_safe(back)))
     lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1890,29 +1939,30 @@ def export_current_result_markdown(source_text, result, situation="") -> str:
     the translation currently on screen, whether or not history is enabled.
     The trailing diff is a study aid only — source and translation are
     different languages, so it is never a claim that the two match.
+    Text is escaped with markdown_safe and the diff fence sized by _diff_fence (v1.69).
     """
     lines = ["# Plume translation", ""]
-    situation = (situation or "").strip()
+    situation = markdown_safe(situation)
     if situation:
         lines.append("**Situation:** {}".format(situation))
         lines.append("")
     lines.append("## Source")
     lines.append("")
-    lines.append(source_text or "")
+    lines.append(markdown_safe(source_text, multiline=True))
     lines.append("")
     lines.append("## Main translation")
     lines.append("")
-    lines.append(result.get("main_translation") or "")
+    lines.append(markdown_safe(result.get("main_translation"), multiline=True))
     lines.append("")
     variations = result.get("variations") or []
     if variations:
         lines.append("## Alternatives")
         lines.append("")
         for index, variation in enumerate(variations, start=1):
-            meaning = variation.get("english_meaning_check") or ""
+            meaning = markdown_safe(variation.get("english_meaning_check"))
             lines.append("{}. {}{}".format(
                 index,
-                variation.get("translation") or "",
+                markdown_safe(variation.get("translation")),
                 " — *{}*".format(meaning) if meaning else "",
             ))
         lines.append("")
@@ -1923,11 +1973,13 @@ def export_current_result_markdown(source_text, result, situation="") -> str:
         fromfile="source", tofile="translation", lineterm="",
     ))
     if diff:
+        changes = "\n".join(diff)
+        fence = _diff_fence(changes)
         lines.append("## Diff")
         lines.append("")
-        lines.append("```diff")
-        lines.extend(diff)
-        lines.append("```")
+        lines.append(fence + "diff")
+        lines.append(changes)
+        lines.append(fence)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1956,8 +2008,7 @@ def export_translation_diff(source_text: str, translation: str) -> str:
     if not diff:
         return header + "No textual differences.\n"
     changes = "\n".join(diff)
-    longest_run = max((len(run) for run in re.findall(r"`+", changes)), default=0)
-    fence = "`" * max(3, longest_run + 1)
+    fence = _diff_fence(changes)
     return header + fence + "diff\n" + changes + "\n" + fence + "\n"
 
 
@@ -4980,8 +5031,7 @@ if GUI_AVAILABLE:
             else:
                 content = export_meaning_checks_tsv(favourites)
             try:
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write(content)
+                write_text_atomic(path, content)
             except OSError:
                 messagebox.showerror(title, "Could not write the export file.")
                 return
@@ -5014,8 +5064,7 @@ if GUI_AVAILABLE:
             else:
                 content = export_history_to_tsv(entries)
             try:
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write(content)
+                write_text_atomic(path, content)
             except OSError:
                 messagebox.showerror(title, "Could not write the export file.")
                 return
@@ -9001,8 +9050,7 @@ if GUI_AVAILABLE:
                 self._result_source_text, result_for_export, self._result_situation
             )
             try:
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write(content)
+                write_text_atomic(path, content)
             except OSError:
                 self.advisory.configure(text="Could not write the export file.")
                 self.advisory.grid()
@@ -9026,8 +9074,7 @@ if GUI_AVAILABLE:
                 return
             content = export_translation_diff(self._result_source_text, self._current_main)
             try:
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write(content)
+                write_text_atomic(path, content)
             except OSError:
                 self.advisory.configure(text="Could not write the comparison file.")
                 self.advisory.grid()

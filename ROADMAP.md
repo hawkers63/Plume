@@ -3029,6 +3029,126 @@ for a direction or Situation you had since changed.
   in `_quick_translate_from_clipboard`, which the scenarios call
   directly.
 
+## v1.69 — Exports write atomically and Markdown shows text as text
+
+From notes_029, part 3 (Export Favourites). The feature itself exists
+(v1.13 Anki TSV and Markdown, v1.62 Export visible, v1.66 Export meaning
+checks) and history already keeps everything the note's adapter needs,
+so there is no migration. Two of the note's safety requirements were not
+met. Every export was written with a plain `open(path, "w")`, which
+truncates the file first, so a failure part-way through (a full disk, a
+crash) could leave a study deck empty or half-written. And the Markdown
+exports wrote submitted phrases and model replies raw, so a phrase such
+as `# Heading`, `[link](…)`, `<script>` or a code fence turned into a
+heading, link, HTML or code block in the rendered sheet.
+
+- **Exports are written atomically.** New `write_text_atomic(path,
+  text)` writes UTF-8 to a temporary file beside the target, flushes and
+  fsyncs it, then `os.replace`s it over the target: the same sequence as
+  `save_config` and `save_history`. If the write, the fsync or the
+  replace fails, the temporary file is removed and any existing file is
+  exactly as it was. All four write sites use it, inside their existing
+  `except OSError`, so the fixed messages ("Could not write the export
+  file." and "Could not write the comparison file.") are unchanged and no
+  path, phrase or exception text reaches the UI. The temporary name is
+  `<path>.<8 hex>.tmp`, created with mode `"x"`, rather than
+  `save_history`'s fixed `.tmp` sibling or `NamedTemporaryFile`: here the
+  path is chosen by the user, so a fixed sibling could be a file of
+  theirs (exclusive create refuses instead of overwriting it), and
+  `NamedTemporaryFile` would give the exported file its private 0600 mode
+  on POSIX. Text mode and newline handling are as before.
+- **Markdown shows submitted and translated text as text.** New pure
+  helper `markdown_safe(value, multiline=False)` puts a backslash before
+  the characters CommonMark and GitHub-style Markdown give a meaning to
+  (`` \ ` * _ [ ] < > # | ~ ``), before an `&` only where it would start an
+  entity (`&amp;`, `&#35;`), and before a line-leading `-`, `+` or `=`, a
+  bare table divider such as `:-:`, and the `.` or `)` of a leading
+  `1.` / `1)`. Only those characters change, so ordinary French and
+  English come back byte-for-byte (`1.5 kg`, `v1.2`, `Tom & Jerry`,
+  `AT&T`, `:-)`, accents, non-breaking spaces, emoji). Single-line mode
+  (headings, list items, labels) joins the stripped non-empty lines with a
+  space; `multiline=True` (the study sheet's Source and Main translation)
+  keeps each line and escapes it separately. The History sheet, the
+  meaning-check sheet and the current-result sheet send every submitted or
+  translated field through it — source, Situation, main translation, each
+  alternative and its meaning check — and leave their own headings and
+  labels alone.
+- **The Diff section can no longer break out of its fence.** The
+  current-result sheet fenced its Diff with a fixed three backticks, so a
+  fence line that the source and the translation share (a context line in
+  the diff) closed it early and what followed was no longer inside a code
+  block. The standalone comparison (v1.23) already sized its fence longer
+  than any backtick run it contains; that rule is now one helper,
+  `_diff_fence`, used by both. The diff is still computed from the raw
+  text, so it shows exactly what was submitted.
+- **Deliberate deviations from the note.** The Anki TSV is unchanged. The
+  note asks for "escaped HTML with `<br>` line breaks"; the `<br>` joins
+  are v1.13's, and `export_history_to_tsv` is pinned byte-for-byte by a
+  golden test. Escaping `&`, `<` and `>` there would change the Front of
+  every phrase containing them, so re-importing an older deck would stop
+  matching its notes and add duplicates, and it is only right when Anki
+  imports the file with HTML enabled, which depends on the import
+  dialog's "Allow HTML in fields" or an `#html:true` header. Anki's
+  documentation could not be reached from this sandbox to settle that (the
+  request was held for approval), so the TSV, and the `#separator` /
+  `#html` / `#columns` headers, wait for a decision: if you import with
+  HTML on and want phrases containing `<` or `&` to survive, that is a
+  small version of its own. No worker thread: the files are a few
+  kilobytes, and moving a write off the main thread would bring Tk's
+  thread-safety rules (dialogs, status updates) for no visible gain. No
+  preset filename such as `plume_favourites.tsv`: the save dialogs
+  already ask before overwriting, and the extension chosen there selects
+  TSV or Markdown, which a preset name would pre-empt. No "protected text
+  blocks" in place of escapes: that would replace the sheets' existing
+  shape, which tests and previously saved sheets rely on, and escaping
+  meets the requirement that submitted markup cannot become a heading,
+  link or embedded HTML element.
+- **Residuals, stated plainly.** A GitHub-style viewer may auto-link a
+  bare URL in a phrase (nothing is fetched, and the link can include our
+  escape backslashes). A lone surrogate in the text raises
+  `UnicodeEncodeError`, which the callers' `except OSError` does not
+  catch; that was true before, but the old file now survives it. If the
+  process is killed mid-write a stray `<path>.<8 hex>.tmp` can remain. On
+  Windows, `os.replace` onto a file another program has open raises
+  `PermissionError`, which lands on the existing fixed message.
+- No config or history-schema change. 31 new headless tests (607 → 638):
+  `TestWriteTextAtomic` (11: exact UTF-8 bytes, a newline round trip, an
+  existing file replaced without a leftover temp, a failed fsync and a
+  failed replace each keeping the old file and removing the temp, a
+  directory in the way and a missing folder raising `OSError` with
+  nothing created, a lone surrogate keeping the old file, an unrelated
+  `out.md.tmp` neighbour left alone, a temp-name clash refusing rather
+  than deleting the other file, and the temp sitting beside the target),
+  `TestMarkdownSafe` (8: plain text unchanged, each special character
+  escaped, Windows path backslashes doubled, only entity-like ampersands
+  escaped, the line-start escapes, single-line joining, multiline mode,
+  empty input) and `TestMarkdownExportSafety` (12: the three exporters
+  byte-identical to v1.68 for ordinary text, exact hostile output for
+  each, hostile phrases leaving the document skeleton the same as a
+  plain-word control's, a marker present and escaped everywhere it is
+  submitted, the diff fence never closed early, `_diff_fence` itself, the
+  TSV exporters deliberately unescaped, and no input mutated). Ordinary
+  text exports byte-for-byte as in v1.68 (30 Markdown comparisons, plus
+  the TSV and the comparison export), and 13 of 13 deliberately broken
+  variants of the helpers fail at least one new test. The three Markdown
+  exporters were also run through markdown-it-py (CommonMark with tables
+  and strikethrough, raw HTML on) and GitHub's cmark-gfm (raw HTML on):
+  116 hostile phrases plus random strings of markup tokens, about 68,000
+  to 89,000 checks per seed over eight seeds, none failing. For each
+  phrase the document skeleton equals a plain-word control's and each
+  field renders as its own text (cmark-gfm: skeleton only, with a bare
+  URL allowed to become a link); the harness fails when the escaping is
+  deliberately weakened. Verified live against a real `PlumeApp` and
+  `HistoryDialog` under a virtual display (Linux, customtkinter 5.2.2,
+  not Windows) with an isolated config directory, a stand-in save dialog
+  and a fake backend (37 checks): the sheet and the comparison written
+  with no temp file left; a hostile source inert before the Diff, with
+  only the sheet's own headings; a forced `os.replace` failure at each of
+  the four sites keeping the old file, showing the fixed message and
+  leaving no temp; a missing folder; cancel; and all three History
+  exports in both formats, written and failing safely. With a plain
+  overwrite put back at the four sites, 13 of the 37 fail.
+
 ---
 
 ### Notes on sequencing

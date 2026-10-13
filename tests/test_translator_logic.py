@@ -4219,6 +4219,445 @@ class TestTranslationDiffExport(unittest.TestCase):
         self.assertIn("not an assessment of translation accuracy", content.lower())
 
 
+class TestWriteTextAtomic(unittest.TestCase):
+    """v1.69: an export replaces the old file in one step or leaves it alone."""
+
+    def _put(self, folder, name, text):
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def _bytes(self, path):
+        with open(path, "rb") as fh:
+            return fh.read()
+
+    def test_creates_the_file_as_exact_utf8(self):
+        text = "Ça va ? — « d’accord » 😀"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.md")
+            plume.write_text_atomic(path, text)
+            self.assertEqual(self._bytes(path), text.encode("utf-8"))
+
+    def test_line_breaks_round_trip_through_a_text_read(self):
+        text = "# Titre\n\nLigne deux\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.md")
+            plume.write_text_atomic(path, text)
+            with open(path, "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), text)
+
+    def test_replaces_an_existing_file_and_leaves_no_temporary_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._put(tmp, "out.md", "old")
+            plume.write_text_atomic(path, "new")
+            self.assertEqual(self._bytes(path), b"new")
+            self.assertEqual(os.listdir(tmp), ["out.md"])
+
+    def test_a_failed_sync_keeps_the_old_file_and_removes_the_temporary_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._put(tmp, "out.md", "old")
+            with mock.patch.object(plume.os, "fsync", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    plume.write_text_atomic(path, "new")
+            self.assertEqual(self._bytes(path), b"old")
+            self.assertEqual(os.listdir(tmp), ["out.md"])
+
+    def test_a_failed_replace_keeps_the_old_file_and_removes_the_temporary_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._put(tmp, "out.md", "old")
+            # Windows refuses the replace while another program has the file open.
+            with mock.patch.object(plume.os, "replace", side_effect=PermissionError("in use")):
+                with self.assertRaises(OSError):
+                    plume.write_text_atomic(path, "new")
+            self.assertEqual(self._bytes(path), b"old")
+            self.assertEqual(os.listdir(tmp), ["out.md"])
+
+    def test_a_directory_in_the_way_raises_oserror_and_leaves_no_temporary_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.md")
+            os.mkdir(path)
+            with self.assertRaises(OSError):
+                plume.write_text_atomic(path, "new")
+            self.assertEqual(os.listdir(tmp), ["out.md"])
+            self.assertTrue(os.path.isdir(path))
+
+    def test_a_missing_folder_raises_oserror_and_creates_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(OSError):
+                plume.write_text_atomic(os.path.join(tmp, "gone", "out.md"), "new")
+            self.assertEqual(os.listdir(tmp), [])
+
+    def test_text_that_cannot_be_encoded_keeps_the_old_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._put(tmp, "out.md", "old")
+            with self.assertRaises(UnicodeEncodeError):
+                plume.write_text_atomic(path, "broken \ud800 text")
+            self.assertEqual(self._bytes(path), b"old")
+            self.assertEqual(os.listdir(tmp), ["out.md"])
+
+    def test_an_unrelated_dot_tmp_neighbour_is_never_touched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.md")
+            neighbour = self._put(tmp, "out.md.tmp", "theirs")
+            plume.write_text_atomic(path, "new")
+            self.assertEqual(self._bytes(neighbour), b"theirs")
+            self.assertEqual(self._bytes(path), b"new")
+
+    def test_a_temporary_name_clash_fails_without_deleting_the_other_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._put(tmp, "out.md", "old")
+            clash = self._put(tmp, "out.md.deadbeef.tmp", "theirs")
+            fixed = mock.Mock(hex="deadbeef" * 4)
+            with mock.patch.object(plume.uuid, "uuid4", return_value=fixed):
+                with self.assertRaises(FileExistsError):
+                    plume.write_text_atomic(path, "new")
+            self.assertEqual(self._bytes(clash), b"theirs")
+            self.assertEqual(self._bytes(path), b"old")
+
+    def test_the_temporary_file_sits_beside_the_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.md")
+            with mock.patch.object(plume.os, "replace", wraps=os.replace) as replace:
+                plume.write_text_atomic(path, "new")
+            (source, target), _ = replace.call_args
+            self.assertEqual(os.path.dirname(source), tmp)
+            self.assertTrue(source.endswith(".tmp"))
+            self.assertEqual(target, path)
+
+
+class TestMarkdownSafe(unittest.TestCase):
+    """v1.69: submitted and translated text must show as text in a .md file."""
+
+    def test_ordinary_french_and_english_text_comes_back_unchanged(self):
+        for text in (
+            "Ça va ?", "« Bonjour »", "1.5 kg", "14.30", "v1.2", "Tom & Jerry",
+            "AT&T", "R&D", "Rendez-vous à 14 h — devant la gare.", "l’été",
+            "50% off", "$100", "(parens) and {braces}", "2024-10-13",
+            "x = y + z", "a - b", ":-)", "Bonjour\u00a0!", "😀",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(plume.markdown_safe(text), text)
+
+    def test_every_character_markdown_acts_on_gets_a_backslash(self):
+        for char in "\\`*_[]<>#|~":
+            with self.subTest(char=char):
+                self.assertEqual(
+                    plume.markdown_safe("a{}b".format(char)), "a\\{}b".format(char),
+                )
+
+    def test_a_windows_path_keeps_every_backslash_visible(self):
+        self.assertEqual(plume.markdown_safe("C:\\Users\\Mark"), "C:\\\\Users\\\\Mark")
+
+    def test_entity_like_ampersands_are_escaped_but_plain_ones_are_not(self):
+        for text, expected in (
+            ("&amp;", "\\&amp;"), ("&copy;", "\\&copy;"),
+            ("&#35;", "\\&\\#35;"), ("&#x41;", "\\&\\#x41;"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(plume.markdown_safe(text), expected)
+        for text in ("&", "a &b c", "&amp"):
+            with self.subTest(text=text):
+                self.assertEqual(plume.markdown_safe(text), text)
+
+    def test_a_line_that_would_start_a_list_rule_or_table_is_escaped(self):
+        for text, expected in (
+            ("- x", "\\- x"), ("+ x", "\\+ x"), ("= x", "\\= x"), ("-5", "\\-5"),
+            ("---", "\\---"), ("1. x", "1\\. x"), ("12) x", "12\\) x"),
+            ("1.", "1\\."), (":-:", "\\:-:"), (":--", "\\:--"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(plume.markdown_safe(text), expected)
+
+    def test_single_line_mode_joins_the_lines_with_one_space(self):
+        self.assertEqual(plume.markdown_safe("line1\r\nline2"), "line1 line2")
+        self.assertEqual(plume.markdown_safe("a\n\n  b  \nc"), "a b c")
+        self.assertEqual(plume.markdown_safe("  padded  "), "padded")
+        self.assertEqual(plume.markdown_safe("10\u00a0km"), "10\u00a0km")
+        self.assertEqual(plume.markdown_safe("a\n- b"), "a - b")
+
+    def test_multiline_mode_keeps_each_line_and_escapes_it_separately(self):
+        self.assertEqual(
+            plume.markdown_safe("  one  \n\n  two  ", multiline=True), "one\n\ntwo",
+        )
+        self.assertEqual(
+            plume.markdown_safe("a\r\n- b\r\n1. c", multiline=True), "a\n\\- b\n1\\. c",
+        )
+
+    def test_nothing_in_gives_an_empty_string(self):
+        for value in (None, "", "   "):
+            for multiline in (False, True):
+                with self.subTest(value=value, multiline=multiline):
+                    self.assertEqual(plume.markdown_safe(value, multiline=multiline), "")
+        self.assertEqual(plume.markdown_safe("\n \n"), "")
+
+
+class TestMarkdownExportSafety(unittest.TestCase):
+    """v1.69: the Markdown sheets show text as text and keep their shape."""
+
+    PLAIN = {
+        "source_text": "Where is the station?",
+        "situation": "asking a stranger",
+        "main_translation": "Où est la gare ?",
+        "timestamp": "2026-10-13T09:15:00",
+        "favourite": True,
+        "variations": [
+            {"translation": "Où se trouve la gare ?",
+             "english_meaning_check": "Where is the station located?"},
+            {"translation": "La gare, c'est par où ?",
+             "english_meaning_check": "Which way to the station?"},
+            {"translation": "Vous savez où est la gare ?",
+             "english_meaning_check": ""},
+        ],
+    }
+    HOSTILE = {
+        "source_text": "# Heading\n[click](http://evil.example)\n"
+                       "<script>alert(1)</script>\n- item",
+        "situation": "![img](http://evil.example/x.png)",
+        "main_translation": "**bold** and _em_ and `code`",
+        "timestamp": "2026-10-13T09:15:00",
+        "favourite": True,
+        "variations": [
+            {"translation": "1. first",
+             "english_meaning_check": "<b>hi</b> &amp; | pipe"},
+            {"translation": "- dash", "english_meaning_check": ""},
+        ],
+    }
+
+    def _entry_of(self, phrase):
+        return dict(
+            self.PLAIN, source_text=phrase, situation=phrase, main_translation=phrase,
+            variations=[{"translation": phrase, "english_meaning_check": phrase}],
+        )
+
+    def test_plain_text_gives_the_same_favourites_sheet_as_before_v1_69(self):
+        self.assertEqual(plume.export_history_to_markdown([self.PLAIN]).split("\n"), [
+            "# Plume — favourite translations",
+            "",
+            "## Where is the station?",
+            "*2026-10-13T09:15:00*",
+            "**Situation:** asking a stranger",
+            "",
+            "**Main translation:** Où est la gare ?",
+            "",
+            "**Alternatives:**",
+            "",
+            "- Où se trouve la gare ? — *Where is the station located?*",
+            "- La gare, c'est par où ? — *Which way to the station?*",
+            "- Vous savez où est la gare ?",
+            "",
+        ])
+
+    def test_plain_text_gives_the_same_meaning_check_sheet_as_before_v1_69(self):
+        self.assertEqual(plume.export_meaning_checks_markdown([self.PLAIN]).split("\n"), [
+            "# Plume — meaning checks",
+            "",
+            "- Où se trouve la gare ? — *Where is the station located?*",
+            "- La gare, c'est par où ? — *Which way to the station?*",
+            "",
+        ])
+
+    def test_plain_text_gives_the_same_current_result_sheet_as_before_v1_69(self):
+        result = {
+            "main_translation": self.PLAIN["main_translation"],
+            "variations": self.PLAIN["variations"],
+        }
+        md = plume.export_current_result_markdown(
+            self.PLAIN["source_text"], result, situation=self.PLAIN["situation"],
+        )
+        self.assertEqual(md.split("\n"), [
+            "# Plume translation",
+            "",
+            "**Situation:** asking a stranger",
+            "",
+            "## Source",
+            "",
+            "Where is the station?",
+            "",
+            "## Main translation",
+            "",
+            "Où est la gare ?",
+            "",
+            "## Alternatives",
+            "",
+            "1. Où se trouve la gare ? — *Where is the station located?*",
+            "2. La gare, c'est par où ? — *Which way to the station?*",
+            "3. Vous savez où est la gare ?",
+            "",
+            "## Diff",
+            "",
+            "```diff",
+            "--- source",
+            "+++ translation",
+            "@@ -1 +1 @@",
+            "-Where is the station?",
+            "+Où est la gare ?",
+            "```",
+            "",
+        ])
+
+    def test_a_hostile_favourite_is_escaped_field_by_field(self):
+        self.assertEqual(plume.export_history_to_markdown([self.HOSTILE]).split("\n"), [
+            "# Plume — favourite translations",
+            "",
+            "## \\# Heading \\[click\\](http://evil.example) "
+            "\\<script\\>alert(1)\\</script\\> - item",
+            "*2026-10-13T09:15:00*",
+            "**Situation:** !\\[img\\](http://evil.example/x.png)",
+            "",
+            "**Main translation:** \\*\\*bold\\*\\* and \\_em\\_ and \\`code\\`",
+            "",
+            "**Alternatives:**",
+            "",
+            "- 1\\. first — *\\<b\\>hi\\</b\\> \\&amp; \\| pipe*",
+            "- \\- dash",
+            "",
+        ])
+
+    def test_a_hostile_meaning_check_row_stays_one_escaped_bullet(self):
+        self.assertEqual(plume.export_meaning_checks_markdown([self.HOSTILE]).split("\n"), [
+            "# Plume — meaning checks",
+            "",
+            "- 1\\. first — *\\<b\\>hi\\</b\\> \\&amp; \\| pipe*",
+            "",
+        ])
+
+    def test_a_hostile_current_result_is_escaped_and_its_diff_fence_grows(self):
+        result = {
+            "main_translation": "```\nprint(2)\n```\n# title",
+            "variations": self.HOSTILE["variations"],
+        }
+        md = plume.export_current_result_markdown(
+            "```\nprint(1)\n```\n# title\n---", result, situation="> quote",
+        )
+        self.assertEqual(md.split("\n"), [
+            "# Plume translation",
+            "",
+            "**Situation:** \\> quote",
+            "",
+            "## Source",
+            "",
+            "\\`\\`\\`",
+            "print(1)",
+            "\\`\\`\\`",
+            "\\# title",
+            "\\---",
+            "",
+            "## Main translation",
+            "",
+            "\\`\\`\\`",
+            "print(2)",
+            "\\`\\`\\`",
+            "\\# title",
+            "",
+            "## Alternatives",
+            "",
+            "1. 1\\. first — *\\<b\\>hi\\</b\\> \\&amp; \\| pipe*",
+            "2. \\- dash",
+            "",
+            "## Diff",
+            "",
+            "````diff",
+            "--- source",
+            "+++ translation",
+            "@@ -1,5 +1,4 @@",
+            " ```",
+            "-print(1)",
+            "+print(2)",
+            " ```",
+            " # title",
+            "----",
+            "````",
+            "",
+        ])
+
+    def test_no_phrase_can_add_a_heading_a_bullet_or_a_line(self):
+        shape = lambda md: [line.split(" ")[0] for line in md.split("\n")]
+        favourites = shape(plume.export_history_to_markdown([self._entry_of("word")]))
+        checks = shape(plume.export_meaning_checks_markdown([self._entry_of("word")]))
+        for phrase in (
+            "# h", "## h", "- x", "+ x", "* x", "1. x", "1) x", "> q", "---", "===",
+            "```", "~~~", "    code", "[a](b)", "<b>x</b>", "| a | b |", ":-:",
+            "a\n# h\n- x\n---\n```", "line1\r\nline2\n\nline3",
+        ):
+            with self.subTest(phrase=phrase):
+                entry = self._entry_of(phrase)
+                self.assertEqual(
+                    shape(plume.export_history_to_markdown([entry])), favourites,
+                )
+                self.assertEqual(
+                    shape(plume.export_meaning_checks_markdown([entry])), checks,
+                )
+
+    def test_every_exported_field_goes_through_the_escaper(self):
+        marker = "<M>"
+        entry = dict(
+            self.PLAIN, source_text=marker, situation=marker,
+            main_translation=marker, timestamp=marker,
+            variations=[{"translation": marker, "english_meaning_check": marker}],
+        )
+        history = plume.export_history_to_markdown([entry])
+        self.assertNotIn(marker, history)
+        self.assertEqual(history.count("\\<M\\>"), 6)
+        meaning = plume.export_meaning_checks_markdown([entry])
+        self.assertNotIn(marker, meaning)
+        self.assertEqual(meaning.count("\\<M\\>"), 2)
+        current = plume.export_current_result_markdown(
+            marker, {"main_translation": marker, "variations": entry["variations"]},
+            situation=marker,
+        )
+        self.assertNotIn(marker, current)
+        self.assertEqual(current.count("\\<M\\>"), 5)
+
+    def test_the_diff_fence_is_never_closed_early_by_the_texts(self):
+        result = {"main_translation": "```\nprint(2)\n```", "variations": []}
+        lines = plume.export_current_result_markdown(
+            "```\nprint(1)\n```", result,
+        ).split("\n")
+        opening = lines.index("````diff")
+        body = lines[opening + 1:-1]
+        self.assertEqual(body[-1], "````")
+
+        def closes(line):
+            stripped = line.lstrip(" ")
+            return len(line) - len(stripped) <= 3 and stripped.startswith("````") and not stripped.strip("`")
+
+        self.assertEqual([i for i, line in enumerate(body) if closes(line)], [len(body) - 1])
+
+    def test_the_fence_is_one_longer_than_the_longest_backtick_run(self):
+        self.assertEqual(plume._diff_fence(""), "```")
+        self.assertEqual(plume._diff_fence("`"), "```")
+        self.assertEqual(plume._diff_fence("``"), "```")
+        self.assertEqual(plume._diff_fence("```"), "````")
+        self.assertEqual(plume._diff_fence("a `` b ```` c ` d"), "`````")
+
+    def test_the_tsv_exports_are_not_escaped(self):
+        self.assertEqual(
+            plume.export_history_to_tsv([self.HOSTILE]),
+            "# Heading [click](http://evil.example) <script>alert(1)</script> - item"
+            "<br>Situation: ![img](http://evil.example/x.png)\t"
+            "**bold** and _em_ and `code`<br>1. first (<b>hi</b> &amp; | pipe)<br>- dash",
+        )
+        self.assertEqual(
+            plume.export_meaning_checks_tsv([self.HOSTILE]),
+            "1. first\t<b>hi</b> &amp; | pipe",
+        )
+
+    def test_the_markdown_exports_do_not_mutate_their_inputs(self):
+        entry = dict(self.HOSTILE)
+        result = {
+            "main_translation": entry["main_translation"],
+            "variations": entry["variations"],
+        }
+        before = json.dumps([entry, result], sort_keys=True)
+        plume.export_history_to_markdown([entry])
+        plume.export_meaning_checks_markdown([entry])
+        plume.export_current_result_markdown(
+            entry["source_text"], result, situation=entry["situation"],
+        )
+        self.assertEqual(json.dumps([entry, result], sort_keys=True), before)
+
+
 class TestMetrics(unittest.TestCase):
     def test_counts_characters_and_words(self):
         metrics = plume.text_metrics("one two three")

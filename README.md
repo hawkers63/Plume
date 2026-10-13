@@ -250,7 +250,12 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   your favourites' alternative translations and their English meaning
   checks — a two-column Anki TSV (front, back) or a Markdown list, with
   no main translation, source phrase or situation — and ignores the
-  search box, so a filter can't quietly shrink a study deck.
+  search box, so a filter can't quietly shrink a study deck. Markdown
+  exports (v1.69) escape your phrases and the translations, so a pasted
+  `#`, `*`, `[link](…)` or `<tag>` shows as the text you typed instead of
+  becoming a heading, link or HTML (ordinary text is unchanged; the Anki
+  TSV is untouched). Every export file is written atomically — a failed
+  save leaves any existing file as it was.
 - Optional ElevenLabs **Speak** buttons for pronunciation help, with a
   **Stop** button and a speech-rate menu — **Normal / 0.8× / 0.75×**,
   persisted across restarts — instead of a plain Slow toggle (a slower,
@@ -334,7 +339,9 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   situation, all alternatives, a diff view), **Export diff…** for a
   standalone textual source/translation comparison, and **Copy as HTML**
   (Windows) for pasting formatted text into email or documents — all
-  next to Favourite on the primary card. All three (plus Favourite) use
+  next to Favourite on the primary card. The study sheet escapes its
+  text the same way as the History exports (v1.69), and both files are
+  written atomically. All three (plus Favourite) use
   the exact text that produced the on-screen result, even if you've since
   edited the input box.
 - The input pane shows a reading-time estimate alongside the character
