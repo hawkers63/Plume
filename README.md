@@ -193,7 +193,13 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   `lag`, `gj`, `go`, `gn`, `cya`, `cyl`, `ttyl`, `ttys`) for online-gaming
   chat. All three pickers show an English gloss in brackets (e.g. ":)
   (smile)", "tkt (don't worry)"; the emote glosses are new in v1.67) — only
-  the term itself is ever appended, never the gloss.
+  the term itself is ever appended, never the gloss. A touch belongs to the
+  result it was chosen for (v1.71): all three pickers return to None
+  whenever a new translation appears, so nothing picked for one message
+  rides along onto the next. The Casual sign-off applies to French
+  translations only — its terms are all French — so choosing one while an
+  English reading is on screen clears it again with a one-line note in the
+  status bar; the emote and MMORPG pickers still apply to either language.
 - A **French slang…** reference window: search a local, curated catalogue
   of French terms and phrases (bilingual, accent/case-insensitive) by
   category, insert one straight into the message at your caret, copy just
@@ -306,7 +312,9 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   translating an incoming French message (v1.63) does not copy the
   English: it arms **Reply to this** instead (English → French pinned,
   the turn remembered, the source cleared, status "Ready to reply."), so
-  the clipboard still holds what you copied. Uses its own isolated
+  the clipboard still holds what you copied. The copied result is always
+  the bare translation: finishing touches start from None on every new
+  result (v1.71), so one picked earlier cannot ride along. Uses its own isolated
   message-only window, the identical safe mechanism the restore hotkey
   already used, extended to support a second independent chord.
 - **Conversation presets:** save the toolbar's direction, French form,

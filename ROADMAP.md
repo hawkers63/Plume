@@ -3229,6 +3229,115 @@ out in full before the next one.
   With the clause removed, 9 of the 32 fail: the marked cases, the 429
   among them still waiting.
 
+## v1.71 — Touches stay with the result they were chosen for
+
+From notes_029, part 4 (casual sign-offs and texting shortcuts). Most of
+it has shipped: the texting chips work on the source before translating
+and stand down on a forced EN→FR direction (v1.61, v1.66), and the
+Casual sign-off picker has been a separate, labelled copy-time choice
+since v1.14. The note's last paragraph was not met at copy time: "Allow
+the French palette only when the selected translation belongs to a
+validated French-target result. Reset the choice when a new result
+appears; a transient default avoids accidentally carrying an apology or
+reassurance into another conversation." The three finishing-touch
+pickers (Emote, Casual sign-off, Game tag) were reset by Clear and by
+Reopen from History (v1.2, v1.14) and by nothing else, so a "dsl" or
+"tkt" picked for one message was still picked for the next: shown on its
+card, copied with it and, because Quick translate copies for you, on the
+clipboard before the result had been read. It also rode along on the
+English reading of an incoming French message, and a French sign-off
+could be composed onto an English-target result, where it means nothing.
+
+- **A new result starts bare.** `_render_result`, the one place every
+  result is drawn (a translation, a Quick translate, a Reply, Reopen
+  from History, Undo Clear), now calls the new
+  `_reset_finishing_touches()` just after it stops speech and before the
+  card is drawn: all three pickers go back to None, so the card, Copy,
+  Copy all, the exports and Quick translate's auto-copy start from the
+  bare translation. Clear and Reopen from History keep their own call. A
+  touch is still a copy-time choice and still never reaches Speak.
+  "Use this" is not a new result, so the touch chosen for it stays on
+  the variation adopted as the main translation, as before.
+- **A sign-off needs a French-target result.**
+  `signoff_applies_to(result)` is true only for a result whose
+  `target_language` is French.
+  `touch_for_result(result, emote, signoff, mmorpg_term=None)` is now
+  the one place the app composes a touch, and for any other result it
+  drops the sign-off, and only the sign-off. Picking one while the card
+  holds an English reading, an older history entry with no stored target
+  language (never guessed) or nothing at all is refused: the picker
+  snaps back to None and the status bar says "Casual sign-offs apply to
+  French translations only." That is a fixed sentence with no phrase in
+  it, and transient like any status line: the next refresh, typing
+  included, replaces it.
+- **Deliberately not gated.** Emotes are language-neutral. Game tags are
+  a mixed set typed as they are in French chat, and tagging each term
+  with a language would be a catalogue change the note does not ask for.
+  The row hint beside the sign-off picker ("Changes meaning") is
+  untouched: that row is width-constrained, and the refusal says what it
+  needs to in the status bar. The note's prefix and replace operations
+  (tkt and dsl in front of the text, rdv and cad swapped in for a
+  matching expression) stay declined for the reasons given in v1.61, and
+  its drawer with a visible expansion is the glossed menu of v1.67.
+- **One behaviour changes, and is easy to put back.** A touch picked
+  *before* translating no longer survives into the translation: pick it
+  once the result is on screen (the card and Copy follow at once). That
+  is what the note asks for, and what stops a stale apology reaching the
+  clipboard, but it does end "set it once and leave it". To restore it,
+  remove the `_reset_finishing_touches()` call in `_render_result` (and
+  the unit guard that pins it).
+- No config or history-schema change. 19 new headless tests (652 → 671).
+  `TestTouchForResult` (13): the gate true for French and false for
+  English, for a missing, empty, odd or non-text target language and for
+  a result that is not a dict; `touch_for_result` identical to
+  `compose_finishing_touch` for a French result across all 3,780
+  combinations of the three pickers; an English result losing only the
+  sign-off, in every combination; the order emote, sign-off, game tag;
+  real parsed results and history entries, a legacy one included; and
+  the refusal note a short fixed sentence. `TestTouchWiring` (6 guards
+  over the parsed source, since `PlumeApp` is not importable headlessly):
+  `_render_result` resets before it draws the card, Clear and Reopen
+  still reset, the reset sets all three pickers to their None values,
+  only `touch_for_result` calls `compose_finishing_touch` and
+  `_current_touch` calls it, the picker's handler checks the gate, snaps
+  back once and reports through the status bar, and every picker change
+  still refreshes the card. 35 of 35 deliberately broken variants fail
+  at least one of them: the gate always or never true, inverted, loose
+  about case, whitespace or substring, without its type check or reading
+  the source language; `touch_for_result` keeping the sign-off, also
+  dropping the emote or the game tag, ignoring the game-tag argument or
+  swapping the order; the note emptied, unfinished or too long; the
+  reset missing, late, partial or setting the wrong value; the copy path
+  skipping the gate; and the picker's check, snap-back, refresh or note
+  dropped, wrong or replaced with a literal. A first pass counted three
+  of them killed only because the full-suite stage had errored on a file
+  missing from the scratch copy; with both baselines asserted clean
+  first they survived, and the guards were tightened until they died.
+  Verified live against a real `PlumeApp` under a virtual display
+  (Linux, customtkinter 5.2.2, not Windows) with an isolated config
+  directory, a fake backend and any network request failing the run (57
+  checks): a fresh result starts with the pickers on None and a bare
+  card; a French result composes emote, sign-off and game tag in that
+  order on the card and in Copy; a second French result starts bare
+  again; the text Quick translate copies is bare after touches were
+  chosen on the result before; an incoming French message's English
+  reading is bare with nothing copied (Reply is armed instead), and the
+  reply, translated in the direction Reply set, starts clean and then
+  takes a French sign-off; an English result refuses a sign-off with the
+  fixed note, leaves the emote and game tag alone, keeps its card and
+  Copy bare and loses the note at the next keystroke, while choosing
+  None is not a refusal; "Use this" keeps the touch; Clear, and Undo
+  Clear, leave the pickers on None; Reopen from History takes a sign-off
+  on a French entry and refuses it on an English one and on an older one
+  with no target language; with nothing on screen an emote is harmless
+  and a sign-off is refused; and every menu keeps all its options.
+  Against the v1.70 code 26 of the 57 fail. Thirteen of the broken
+  variants were also run against the same script and 11 fail it. The
+  other two, the Reopen reset removed and the copy path skipping the
+  gate, cannot be seen from the window, because the reset in
+  `_render_result` and the picker's snap-back already stand in front of
+  them; the headless guards are there for those.
+
 ---
 
 ### Notes on sequencing

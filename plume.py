@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.70"
+APP_VERSION = "1.71"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -354,6 +354,9 @@ FINISHING_TOUCHES = tuple(term for term, _gloss in FINISHING_TOUCH_CATALOGUE)
 # these without remeasuring both rows at 1000x600.
 SIGNOFF_ROW_HINT = "Changes meaning"
 MMORPG_ROW_HINT = "Game-chat tag"
+
+# Status-bar line (v1.71) for a sign-off picked on a result that is not French.
+SIGNOFF_FRENCH_ONLY_NOTE = "Casual sign-offs apply to French translations only."
 
 # --- Casual sign-off / slang catalogue (v1.14, notes_004 revisited) --------
 # The second phase notes_004 deliberately deferred: unlike the tone-only
@@ -4224,6 +4227,18 @@ def compose_finishing_touch(emote, signoff, mmorpg_term=None) -> str:
     return " ".join(parts)
 
 
+def signoff_applies_to(result) -> bool:
+    """True when *result* is a French-target result, the only kind a sign-off fits."""
+    return isinstance(result, dict) and result.get("target_language") == FRENCH
+
+
+def touch_for_result(result, emote, signoff, mmorpg_term=None) -> str:
+    """compose_finishing_touch, minus the sign-off unless *result* targets French."""
+    if not signoff_applies_to(result):
+        signoff = CASUAL_SIGNOFF_NONE
+    return compose_finishing_touch(emote, signoff, mmorpg_term)
+
+
 def format_translation_case(text: str, lowercase: bool = False) -> str:
     """Format output casing without altering the stored translation."""
     return text.lower() if lowercase else text
@@ -6758,7 +6773,8 @@ if GUI_AVAILABLE:
             v1.67); only the raw term is ever appended to the copied/spoken
             text.
             """
-            return compose_finishing_touch(
+            return touch_for_result(
+                self._current_result,
                 finishing_touch_raw_value(self.finishing_touch_var.get()),
                 casual_signoff_raw_value(self.casual_signoff_var.get()),
                 mmorpg_term_raw_value(self.mmorpg_var.get()),
@@ -6808,7 +6824,17 @@ if GUI_AVAILABLE:
             )
 
         def _on_finishing_touch_change(self, _value=None):
+            picked = casual_signoff_raw_value(self.casual_signoff_var.get())
+            if picked != CASUAL_SIGNOFF_NONE and not signoff_applies_to(self._current_result):
+                self.casual_signoff_var.set(casual_signoff_display(CASUAL_SIGNOFF_NONE))
+                self._refresh_status(state=SIGNOFF_FRENCH_ONLY_NOTE)
             self._refresh_primary_display()
+
+        def _reset_finishing_touches(self):
+            """Put all three finishing-touch pickers back on None (v1.71)."""
+            self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
+            self.casual_signoff_var.set(casual_signoff_display(CASUAL_SIGNOFF_NONE))
+            self.mmorpg_var.set(mmorpg_term_display(MMORPG_TERM_NONE))
 
         def _on_speech_rate_change(self, _choice=None):
             """Persist the playback rate immediately (v1.58), same
@@ -8021,9 +8047,7 @@ if GUI_AVAILABLE:
             self._reset_favourite_button(enabled=False)
             self._stop_speech()
             self._cleanup_tts_file()
-            self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
-            self.casual_signoff_var.set(casual_signoff_display(CASUAL_SIGNOFF_NONE))
-            self.mmorpg_var.set(mmorpg_term_display(MMORPG_TERM_NONE))
+            self._reset_finishing_touches()
             self.language_label.configure(text="")
             self._current_main = ""
             self._current_result = None
@@ -8133,9 +8157,7 @@ if GUI_AVAILABLE:
             self._result_situation = entry.get("situation", "")
             self._on_input_change()
             self.advisory.grid_remove()
-            self.finishing_touch_var.set(FINISHING_TOUCH_NONE)
-            self.casual_signoff_var.set(casual_signoff_display(CASUAL_SIGNOFF_NONE))
-            self.mmorpg_var.set(mmorpg_term_display(MMORPG_TERM_NONE))
+            self._reset_finishing_touches()
             for tone_var in self.tone_vars:
                 tone_var.set(TONE_NONE)
             # History entries predate the writing profile (v1.29) and carry
@@ -8926,6 +8948,8 @@ if GUI_AVAILABLE:
             # reading the previous one aloud must not keep playing over it
             # (M7). _clear_results already does this for the Clear path.
             self._stop_speech()
+            # A touch belongs to the result it was chosen for (v1.71).
+            self._reset_finishing_touches()
             self._current_main = result["main_translation"]
             self._current_result = result
             self._refresh_primary_display()

@@ -10,6 +10,7 @@ Run from the project root:
     python -m unittest discover -s tests -v
 """
 
+import ast
 import http.server
 import io
 import json
@@ -3594,6 +3595,200 @@ class TestGlossedFinishingTouch(unittest.TestCase):
             source = fh.read()
         self.assertNotIn("Changes register and meaning, not just tone", source)
         self.assertNotIn("Online-gaming chat term, appended the same way", source)
+
+
+class TestTouchForResult(unittest.TestCase):
+    """v1.71: a casual sign-off belongs to a French-target result only."""
+
+    FRENCH = {"source_language": "English", "target_language": "French"}
+    ENGLISH = {"source_language": "French", "target_language": "English"}
+    NONE = plume.FINISHING_TOUCH_NONE
+
+    def test_a_french_target_takes_a_signoff(self):
+        self.assertTrue(plume.signoff_applies_to(self.FRENCH))
+
+    def test_an_english_target_does_not(self):
+        self.assertFalse(plume.signoff_applies_to(self.ENGLISH))
+
+    def test_anything_without_a_confirmed_french_target_does_not(self):
+        for result in (
+            None, {}, [], (), "French", 42, True,
+            {"target_language": ""}, {"target_language": None},
+            {"target_language": "french"}, {"target_language": "French "},
+            {"target_language": "Français"}, {"source_language": "English"},
+        ):
+            self.assertFalse(plume.signoff_applies_to(result), repr(result))
+
+    def test_a_french_result_composes_exactly_as_before(self):
+        for emote in plume.FINISHING_TOUCHES:
+            for signoff in plume.CASUAL_SIGNOFFS:
+                for term in plume.MMORPG_TERMS:
+                    self.assertEqual(
+                        plume.touch_for_result(self.FRENCH, emote, signoff, term),
+                        plume.compose_finishing_touch(emote, signoff, term),
+                    )
+
+    def test_an_english_result_loses_only_the_signoff(self):
+        for emote in plume.FINISHING_TOUCHES:
+            for signoff in plume.CASUAL_SIGNOFFS:
+                for term in plume.MMORPG_TERMS:
+                    self.assertEqual(
+                        plume.touch_for_result(self.ENGLISH, emote, signoff, term),
+                        plume.compose_finishing_touch(
+                            emote, plume.CASUAL_SIGNOFF_NONE, term
+                        ),
+                    )
+
+    def test_the_emote_and_game_tag_survive_in_order(self):
+        self.assertEqual(
+            plume.touch_for_result(self.ENGLISH, ":)", "tkt", "gg"), ":) gg"
+        )
+        self.assertEqual(
+            plume.touch_for_result(self.FRENCH, ":)", "tkt", "gg"), ":) tkt gg"
+        )
+
+    def test_every_signoff_leaves_english_text_untouched(self):
+        for term in plume.CASUAL_SIGNOFFS[1:]:
+            touch = plume.touch_for_result(self.ENGLISH, self.NONE, term)
+            self.assertEqual(touch, "", term)
+            self.assertEqual(
+                plume.append_finishing_touch("I will be late", touch),
+                "I will be late",
+            )
+
+    def test_the_same_signoff_still_reaches_french_text(self):
+        touch = plume.touch_for_result(self.FRENCH, self.NONE, "dsl")
+        self.assertEqual(
+            plume.append_finishing_touch("Je serai en retard", touch),
+            "Je serai en retard dsl",
+        )
+
+    def test_with_no_result_the_signoff_is_dropped_too(self):
+        for result in (None, {}):
+            self.assertEqual(
+                plume.touch_for_result(result, ":)", "dsl", "gg"), ":) gg"
+            )
+
+    def test_the_game_tag_stays_optional(self):
+        self.assertEqual(plume.touch_for_result(self.FRENCH, ":)", "tkt"), ":) tkt")
+        self.assertEqual(plume.touch_for_result(self.ENGLISH, ":)", "tkt"), ":)")
+
+    def test_a_validated_result_decides_it(self):
+        french = plume.parse_translation_result(as_json(valid_result()), plume.DIR_AUTO)
+        english = plume.parse_translation_result(
+            as_json(valid_result(source="French", target="English", main="Hi there")),
+            plume.DIR_AUTO,
+        )
+        self.assertTrue(plume.signoff_applies_to(french))
+        self.assertFalse(plume.signoff_applies_to(english))
+
+    def test_a_saved_entry_decides_the_same_way(self):
+        french = plume.parse_translation_result(as_json(valid_result()), plume.DIR_AUTO)
+        entry = plume.make_history_entry("Say hello", french, "")
+        self.assertTrue(plume.signoff_applies_to(entry))
+        legacy = dict(entry)
+        del legacy["target_language"]
+        self.assertFalse(plume.signoff_applies_to(legacy))
+
+    def test_the_status_line_is_a_fixed_sentence(self):
+        note = plume.SIGNOFF_FRENCH_ONLY_NOTE
+        self.assertTrue(note.endswith("."))
+        self.assertLessEqual(len(note), 60)
+        self.assertNotIn("{", note)
+        self.assertNotIn("}", note)
+        status = plume.format_status({"backend": "ollama"}, 12, note)
+        self.assertTrue(status.endswith(" | " + note))
+
+
+class TestTouchWiring(unittest.TestCase):
+    """v1.71: the window code, which this headless suite cannot import, read
+    as source so the pickers' reset and gate cannot be unwired unnoticed."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(plume.__file__, "r", encoding="utf-8") as fh:
+            cls.tree = ast.parse(fh.read())
+
+    def _function(self, name):
+        found = [
+            node for node in ast.walk(self.tree)
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        ]
+        self.assertEqual(len(found), 1, name)
+        return found[0]
+
+    @staticmethod
+    def _calls(func):
+        calls = {}
+        for node in ast.walk(func):
+            if isinstance(node, ast.Call):
+                target = node.func
+                name = (
+                    target.attr if isinstance(target, ast.Attribute)
+                    else getattr(target, "id", None)
+                )
+                if name:
+                    calls.setdefault(name, []).append(node.lineno)
+        return calls
+
+    def test_a_new_result_resets_the_pickers_before_it_is_shown(self):
+        calls = self._calls(self._function("_render_result"))
+        self.assertIn("_reset_finishing_touches", calls)
+        self.assertLess(
+            min(calls["_reset_finishing_touches"]),
+            min(calls["_refresh_primary_display"]),
+        )
+
+    def test_clear_and_history_reopen_use_the_same_helper(self):
+        for name in ("_clear_results", "_reopen_history_entry"):
+            self.assertIn(
+                "_reset_finishing_touches", self._calls(self._function(name)), name
+            )
+
+    def test_the_helper_puts_all_three_pickers_back_on_none(self):
+        func = self._function("_reset_finishing_touches")
+        attributes = {
+            node.attr for node in ast.walk(func) if isinstance(node, ast.Attribute)
+        }
+        names = {node.id for node in ast.walk(func) if isinstance(node, ast.Name)}
+        self.assertTrue(
+            {"finishing_touch_var", "casual_signoff_var", "mmorpg_var"} <= attributes
+        )
+        self.assertTrue(
+            {"FINISHING_TOUCH_NONE", "CASUAL_SIGNOFF_NONE", "MMORPG_TERM_NONE"} <= names
+        )
+        self.assertEqual(len(self._calls(func)["set"]), 3)
+
+    def test_the_copy_path_composes_only_through_the_gate(self):
+        callers = {
+            node.name for node in ast.walk(self.tree)
+            if isinstance(node, ast.FunctionDef)
+            and "compose_finishing_touch" in self._calls(node)
+        }
+        self.assertEqual(callers, {"touch_for_result"})
+        self.assertIn("touch_for_result", self._calls(self._function("_current_touch")))
+
+    def test_a_signoff_picked_on_a_non_french_result_is_refused_with_the_note(self):
+        func = self._function("_on_finishing_touch_change")
+        calls = self._calls(func)
+        names = {node.id for node in ast.walk(func) if isinstance(node, ast.Name)}
+        self.assertIn("signoff_applies_to", calls)
+        self.assertIn("SIGNOFF_FRENCH_ONLY_NOTE", names)
+        self.assertIn("_refresh_status", calls)
+        snap_back = [
+            node for node in ast.walk(func)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute) and node.func.attr == "set"
+        ]
+        self.assertEqual(len(snap_back), 1)
+        cleared_to = {
+            node.id for node in ast.walk(snap_back[0]) if isinstance(node, ast.Name)
+        }
+        self.assertIn("CASUAL_SIGNOFF_NONE", cleared_to)
+
+    def test_every_picker_change_still_refreshes_the_card(self):
+        func = self._function("_on_finishing_touch_change")
+        self.assertIn("_refresh_primary_display", self._calls(func))
 
 
 class TestSlangCatalogue(unittest.TestCase):
