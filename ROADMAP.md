@@ -2933,6 +2933,102 @@ app", and measured live at the 1000×600 floor the v1.66 rows ask for
   `finishing_touch_raw_value` deliberately broken to pass the label
   through, 13 of the 44 fail.
 
+## v1.68 — Quick translate protects drafts and the clipboard
+
+From notes_029, whose six parts were each checked against the code first
+(the note says it was written without source access). Reply to this,
+slow pronunciation, Export favourites, the texting palette and bounded
+retries all have earlier counterparts (v1.51/v1.57/v1.63,
+v1.58/v1.64/v1.65, v1.13/v1.62/v1.66, v1.61/v1.66 and v1.27/v1.38/v1.59),
+so a real gap in any of them is its own version. Quick translate
+(v1.60/v1.63) existed too, but two of the protections the note asks for
+did not: a different unsent draft was replaced without a word, and the
+automatic copy ran whatever had happened in the seconds since the chord
+— it overwrote something you had copied meanwhile, and copied a result
+for a direction or Situation you had since changed.
+
+- **An unsent draft is no longer replaced silently.** New pure helper
+  `quick_translate_needs_confirm(input_text, result_source, clip)`, built
+  on `reply_should_keep_draft`: blank is not a draft, the text of the
+  result on screen is not a draft, and a draft that already equals the
+  clipboard (ignoring surrounding whitespace) loses nothing. Anything
+  else asks `messagebox.askyesno` before the box is replaced. The title,
+  prompt and cancel status are fixed constants
+  (`QUICK_REPLACE_DRAFT_TITLE`, `QUICK_REPLACE_DRAFT_PROMPT`,
+  `QUICK_KEPT_DRAFT_STATUS`), so neither the draft nor the clipboard text
+  reaches a dialog or the status bar. Yes carries on exactly as before;
+  No keeps the draft, sends nothing, arms nothing and says "Quick
+  translate cancelled. Your draft was kept.". `_quick_confirm_open`
+  ignores a second press while the dialog is up: the system-wide chord
+  is read by a Tk timer, which keeps firing under a modal dialog.
+- **The automatic copy stands down when things moved on.** `_quick_clip`
+  holds the text read at invocation. When the delivery arrives, after
+  the existing stale-result guard (which already drops a request that
+  was cleared, superseded or whose source was edited), `_deliver`
+  re-reads the clipboard and asks the new pure
+  `quick_copy_skip_reason(clip_at_invoke, clip_now, context_at_dispatch,
+  context_now)`, where a context is `(direction, Situation)`. None
+  copies as before and reads "Copied.". Otherwise nothing is written,
+  the result still shows, and the status says "Translation ready.
+  Clipboard changed; automatic copy skipped." (the note's wording) or
+  "Translation ready. Direction or Situation changed; automatic copy
+  skipped.". An empty or unreadable clipboard, or no baseline at all,
+  counts as changed: Plume does not write over what it cannot show is
+  still its own. A settings change is reported ahead of a clipboard
+  change.
+- **Direction comes from the dispatch snapshot.** `_translate` now hands
+  `_deliver` the snapshot's `default_direction`. Reading `direction_var`
+  at invocation instead would have skipped every Quick translate in
+  Correct-then-translate mode, because `_deliver_correction` pins
+  English → French between the chord and the dispatch.
+- **Nothing leaks.** `_clear_quick_followup()` resets `_quick_clip` along
+  with the other two flags, so a manual Translate never inherits a
+  baseline, and Quick translating incoming French still arms Reply to
+  this rather than copying.
+- **Deliberate deviations from the note.** No `QuickCopyIntent` /
+  `should_auto_copy` pair: the intent already is two request-scoped flags
+  plus `_request_id` / `result_is_stale`, so one clipboard baseline and
+  one pure comparison finish the job without a second mechanism to keep
+  in step with the first. No new Ctrl+Shift+Enter binding: the note says
+  to reuse an existing owner, Ctrl+Shift+T and the opt-in system-wide
+  chord are that owner, and Ctrl+Shift+Enter already means Correct
+  English. Refusing while a request runs, size validation, the
+  path-to-Paste detour and the privacy gate were already in place
+  (v1.60), and every refusal already clears the flags (v1.63). A
+  successful copy still reads "Copied." rather than "Translation
+  copied", which the note offered only as an example.
+- No config or history-schema change. 18 new headless tests in
+  `TestQuickTranslateProtections` (a blank box, the result on screen, a
+  draft that differs from or equals the clipboard, case sensitivity, a
+  blank or non-text clipboard, non-text input; the copy going ahead when
+  nothing moved and standing down for a changed, empty or unread
+  clipboard, a missing baseline, a direction change or a Situation
+  change, with settings reported first; every reason being None or one
+  of two fixed lines that never carry a clipboard or Situation sentinel;
+  the fixed strings having no format fields; the note's clipboard
+  wording; and the lines reaching the status bar unaltered). 589 → 607
+  tests. Verified live against a real `PlumeApp` under a virtual display
+  (Linux, customtkinter 5.2.2, not Windows) with an isolated config
+  directory, `run_backend` mocked and `urlopen` poisoned, so nothing
+  touched the network (45 checks): an empty box translates and copies
+  with no dialog; a draft asks once, Yes replaces it, No keeps it with
+  no request and the fixed status, and neither dialog text echoes the
+  draft or the clipboard; a draft equal to the clipboard, or still equal
+  to the last result's source, asks nothing; a second chord while the
+  dialog is open adds no second dialog or request; a clipboard changed
+  or emptied while the request runs is
+  left alone with the skip status, as is the same after a direction
+  flip, a Situation edit or a source edit; a manual Translate never
+  touches the clipboard; incoming French still arms Reply; and nothing
+  skips falsely — Correct-then-translate, a non-empty Situation, a fixed
+  direction, a Situation typed and reverted, and a chord straight after
+  a skipped one all copy. Against v1.67 the same scenarios show the
+  draft replaced without a word and the clipboard overwritten; with
+  both helpers neutralised, 13 of the 34 main checks fail. The
+  system-wide chord's native thread was not exercised: both chords land
+  in `_quick_translate_from_clipboard`, which the scenarios call
+  directly.
+
 ---
 
 ### Notes on sequencing

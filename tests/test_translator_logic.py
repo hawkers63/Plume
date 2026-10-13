@@ -252,6 +252,148 @@ class TestReplyShouldKeepDraft(unittest.TestCase):
             self.assertTrue(plume.reply_should_keep_draft(source + "!", source))
 
 
+class TestQuickTranslateProtections(unittest.TestCase):
+    """v1.68, notes_029 6: Quick translate asks before it replaces a draft
+    nobody has translated, and its automatic copy stands down when the
+    clipboard, direction or Situation moved on while the request ran."""
+
+    CLIP = "Say hello to everyone"
+    DRAFT = "my long unsent draft that I am still writing"
+    SECRET = "SECRET-PHRASE-9f3a"
+    CTX = (plume.DIR_EN_FR, "")
+    STATUS_TEXTS = (
+        plume.QUICK_KEPT_DRAFT_STATUS,
+        plume.QUICK_COPY_SKIPPED_CLIPBOARD,
+        plume.QUICK_COPY_SKIPPED_SETTINGS,
+    )
+
+    def needs_confirm(self, input_text, result_source, clip):
+        return plume.quick_translate_needs_confirm(input_text, result_source, clip)
+
+    def skip_reason(self, at_invoke, now, dispatch=None, current=None):
+        return plume.quick_copy_skip_reason(
+            at_invoke, now,
+            self.CTX if dispatch is None else dispatch,
+            self.CTX if current is None else current,
+        )
+
+    def test_blank_box_never_needs_confirmation(self):
+        for text in ("", "   ", " \n\t"):
+            self.assertIs(self.needs_confirm(text, "", self.CLIP), False)
+            self.assertIs(self.needs_confirm(text, "Bonjour", self.CLIP), False)
+
+    def test_text_that_was_just_translated_is_not_a_draft(self):
+        self.assertIs(self.needs_confirm("First message", "First message", self.CLIP), False)
+        self.assertIs(self.needs_confirm("First message ", "First message ", self.CLIP), False)
+
+    def test_untranslated_text_differing_from_clipboard_needs_confirmation(self):
+        self.assertIs(self.needs_confirm(self.DRAFT, "", self.CLIP), True)
+        self.assertIs(self.needs_confirm(self.DRAFT, None, self.CLIP), True)
+        self.assertIs(self.needs_confirm(self.DRAFT, "Earlier text", self.CLIP), True)
+        self.assertIs(self.needs_confirm(self.DRAFT + "!", self.DRAFT, self.CLIP), True)
+
+    def test_draft_equal_to_clipboard_loses_nothing(self):
+        self.assertIs(self.needs_confirm(self.CLIP, "", self.CLIP), False)
+        self.assertIs(self.needs_confirm(self.CLIP + " \n", "", self.CLIP), False)
+        self.assertIs(self.needs_confirm("  " + self.CLIP, "", self.CLIP + "\n"), False)
+        self.assertIs(self.needs_confirm(self.CLIP + " ", self.CLIP, self.CLIP), False)
+
+    def test_clipboard_comparison_is_case_sensitive(self):
+        self.assertIs(self.needs_confirm(self.CLIP.lower(), "", self.CLIP), True)
+
+    def test_blank_or_non_text_clipboard_still_protects_a_draft(self):
+        for clip in ("", "  ", None, 42, b"Say hello"):
+            self.assertIs(self.needs_confirm(self.DRAFT, "", clip), True)
+
+    def test_non_text_input_is_never_a_draft_and_never_raises(self):
+        for bad in (None, 42, b"draft", ["draft"]):
+            self.assertIs(self.needs_confirm(bad, "", self.CLIP), False)
+
+    def test_nothing_moved_means_the_copy_goes_ahead(self):
+        self.assertIsNone(self.skip_reason(self.CLIP, self.CLIP))
+        self.assertIsNone(self.skip_reason(
+            self.CLIP, self.CLIP,
+            (plume.DIR_AUTO, "texting a friend"), (plume.DIR_AUTO, "texting a friend"),
+        ))
+
+    def test_clipboard_changed_skips_the_copy(self):
+        self.assertEqual(
+            self.skip_reason(self.CLIP, "copied meanwhile"),
+            plume.QUICK_COPY_SKIPPED_CLIPBOARD,
+        )
+
+    def test_empty_or_non_text_clipboard_skips_the_copy(self):
+        self.assertEqual(self.skip_reason(self.CLIP, None), plume.QUICK_COPY_SKIPPED_CLIPBOARD)
+        self.assertEqual(self.skip_reason(self.CLIP, ""), plume.QUICK_COPY_SKIPPED_CLIPBOARD)
+
+    def test_no_baseline_means_no_overwrite(self):
+        self.assertEqual(self.skip_reason(None, self.CLIP), plume.QUICK_COPY_SKIPPED_CLIPBOARD)
+        self.assertEqual(self.skip_reason(None, None), plume.QUICK_COPY_SKIPPED_CLIPBOARD)
+
+    def test_direction_change_skips_the_copy(self):
+        self.assertEqual(
+            self.skip_reason(self.CLIP, self.CLIP,
+                             (plume.DIR_EN_FR, ""), (plume.DIR_FR_EN, "")),
+            plume.QUICK_COPY_SKIPPED_SETTINGS,
+        )
+        self.assertEqual(
+            self.skip_reason(self.CLIP, self.CLIP,
+                             (plume.DIR_AUTO, ""), (plume.DIR_EN_FR, "")),
+            plume.QUICK_COPY_SKIPPED_SETTINGS,
+        )
+
+    def test_situation_change_skips_the_copy(self):
+        self.assertEqual(
+            self.skip_reason(self.CLIP, self.CLIP,
+                             (plume.DIR_EN_FR, ""), (plume.DIR_EN_FR, "talking to my boss")),
+            plume.QUICK_COPY_SKIPPED_SETTINGS,
+        )
+
+    def test_settings_change_is_reported_before_a_clipboard_change(self):
+        self.assertEqual(
+            self.skip_reason(self.CLIP, "copied meanwhile",
+                             (plume.DIR_EN_FR, ""), (plume.DIR_FR_EN, "")),
+            plume.QUICK_COPY_SKIPPED_SETTINGS,
+        )
+
+    def test_skip_reason_is_only_ever_none_or_a_fixed_line(self):
+        allowed = {None, plume.QUICK_COPY_SKIPPED_CLIPBOARD, plume.QUICK_COPY_SKIPPED_SETTINGS}
+        contexts = [
+            (plume.DIR_EN_FR, ""),
+            (plume.DIR_FR_EN, ""),
+            (plume.DIR_EN_FR, self.SECRET),
+        ]
+        clips = [None, "", self.CLIP, self.SECRET]
+        for at_invoke in clips:
+            for now in clips:
+                for dispatch in contexts:
+                    for current in contexts:
+                        reason = plume.quick_copy_skip_reason(at_invoke, now, dispatch, current)
+                        self.assertIn(reason, allowed)
+                        if reason is not None:
+                            self.assertNotIn(self.SECRET, reason)
+
+    def test_dialog_and_status_texts_are_fixed_strings(self):
+        for text in (plume.QUICK_REPLACE_DRAFT_TITLE, plume.QUICK_REPLACE_DRAFT_PROMPT) + self.STATUS_TEXTS:
+            self.assertIsInstance(text, str)
+            self.assertTrue(text.strip())
+            self.assertNotIn("{", text)
+            self.assertNotIn("%", text)
+
+    def test_clipboard_status_matches_the_note_wording(self):
+        self.assertEqual(
+            plume.QUICK_COPY_SKIPPED_CLIPBOARD,
+            "Translation ready. Clipboard changed; automatic copy skipped.",
+        )
+
+    def test_status_lines_reach_the_status_bar_unaltered(self):
+        config = {"backend": "anthropic"}
+        for text in self.STATUS_TEXTS:
+            line = plume.format_status(config, 42, state=text)
+            self.assertTrue(line.endswith(" | " + text))
+            self.assertNotIn("42 characters", line)
+
+
 class TestHotkeyHint(unittest.TestCase):
     """v1.60, notes_026 3.J: the one pure helper in the IsolatedHotkey
     refactor, used to build an "already in use" error message."""

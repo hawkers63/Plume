@@ -292,13 +292,18 @@ On first use of Claude, Plume shows a one-time privacy notice. Open **Settings**
   copies the accepted result — one chord instead of switch-paste-
   translate-copy. Skips a file path (offers to open it, like Paste,
   rather than translating the path text) and never auto-copies a result
-  for a message you've since typed past. Quick translating an incoming
-  French message (v1.63) does not copy the English: it arms **Reply to
-  this** instead (English → French pinned, the turn remembered, the
-  source cleared, status "Ready to reply."), so the clipboard still
-  holds what you copied. Uses its own isolated message-only window, the
-  identical safe mechanism the restore hotkey already used, extended to
-  support a second independent chord.
+  for a message you've since typed past. If the source box holds an
+  unsent draft (anything other than the clipboard text or the message
+  you just translated) it asks before replacing it (v1.68), and answering
+  No keeps the draft. The copy also stands down — leaving whatever you
+  copied meanwhile alone — if the clipboard, the direction or Situation
+  changed while the request ran, saying so in the status bar. Quick
+  translating an incoming French message (v1.63) does not copy the
+  English: it arms **Reply to this** instead (English → French pinned,
+  the turn remembered, the source cleared, status "Ready to reply."), so
+  the clipboard still holds what you copied. Uses its own isolated
+  message-only window, the identical safe mechanism the restore hotkey
+  already used, extended to support a second independent chord.
 - **Conversation presets:** save the toolbar's direction, French form,
   Me/You gender agreement, situation and tones as a named preset (a
   "Presets…" menu plus Save/Delete beside the toolbar's You control) —

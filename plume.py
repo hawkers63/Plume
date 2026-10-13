@@ -101,7 +101,7 @@ except Exception:  # pragma: no cover
 # ===========================================================================
 
 APP_NAME = "Plume"
-APP_VERSION = "1.67"
+APP_VERSION = "1.68"
 APP_TITLE = "Plume \u2014 French \u2194 English conversation helper"
 # Ensure this release metadata aligns with COPYRIGHT and LICENSE.
 APP_COPYRIGHT = (
@@ -159,6 +159,54 @@ def reply_should_keep_draft(input_text, result_source) -> bool:
         return False
     source = result_source if isinstance(result_source, str) else ""
     return input_text != source
+
+
+# Quick translate protections (v1.68, notes_029 6). Fixed strings only: a
+# dialog or status line must never carry the clipboard, a draft, Situation
+# text or an exception message.
+QUICK_REPLACE_DRAFT_TITLE = "Quick translate"
+QUICK_REPLACE_DRAFT_PROMPT = (
+    "The source box holds text that has not been translated. Replace it "
+    "with the clipboard text and translate that instead?"
+)
+QUICK_KEPT_DRAFT_STATUS = "Quick translate cancelled. Your draft was kept."
+QUICK_COPY_SKIPPED_CLIPBOARD = (
+    "Translation ready. Clipboard changed; automatic copy skipped."
+)
+QUICK_COPY_SKIPPED_SETTINGS = (
+    "Translation ready. Direction or Situation changed; automatic copy skipped."
+)
+
+
+def quick_translate_needs_confirm(input_text, result_source, clip) -> bool:
+    """True when Quick translate would discard a draft nobody has translated.
+
+    Builds on reply_should_keep_draft: the text of the result on screen is
+    not a draft, and a draft that already equals the clipboard loses nothing
+    when it is replaced. Never raises and never echoes its arguments.
+    """
+    if not reply_should_keep_draft(input_text, result_source):
+        return False
+    return input_text.strip() != (clip.strip() if isinstance(clip, str) else "")
+
+
+def quick_copy_skip_reason(clip_at_invoke, clip_now,
+                           context_at_dispatch, context_now):
+    """Fixed status line when Quick translate's automatic copy must be
+    skipped, else None.
+
+    The copy lands seconds after the hotkey, so the world may have moved on:
+    the direction or Situation changed (the result no longer answers what is
+    on screen), or something else was copied meanwhile (a late write would
+    silently destroy it). *clip_now* is None when the clipboard is empty or
+    not text, which never equals the text read at invocation. The contexts
+    are (direction, situation) pairs; each is compared as given.
+    """
+    if context_at_dispatch != context_now:
+        return QUICK_COPY_SKIPPED_SETTINGS
+    if clip_at_invoke is None or clip_now != clip_at_invoke:
+        return QUICK_COPY_SKIPPED_CLIPBOARD
+    return None
 
 
 def swap_direction(direction) -> str:
@@ -5859,6 +5907,8 @@ if GUI_AVAILABLE:
             self._quick_last_ts = 0.0
             self._auto_copy_on_deliver = False
             self._quick_incoming_reply = False  # v1.63: Quick translate arms Reply
+            self._quick_clip = None  # v1.68: clipboard text read at invocation
+            self._quick_confirm_open = False  # v1.68: draft-replace dialog is up
             self._previous_exchange = None  # v1.51: one Reply pair, in memory only
             self._clear_snapshot = None  # v1.53: one-level Undo Clear, in memory only
 
@@ -7233,6 +7283,7 @@ if GUI_AVAILABLE:
             """Drop both Quick translate follow-ups (auto-copy, incoming reply)."""
             self._auto_copy_on_deliver = False
             self._quick_incoming_reply = False
+            self._quick_clip = None
 
         def _focus_input_end(self):
             """Focus the source box with the caret after any draft."""
@@ -7717,11 +7768,21 @@ if GUI_AVAILABLE:
             the clipboard text. A 400ms debounce (self._quick_last_ts)
             stops one chord press from being read as two dispatches by
             both the Tk binding and a slightly-delayed native poll.
+
+            v1.68 (notes_029 6): an unsent draft is replaced only after a
+            confirm, and the clipboard text read here is remembered so the
+            automatic copy can stand down if the clipboard has changed by
+            the time the translation arrives (see _deliver).
             """
             now = time.monotonic()
             if now - self._quick_last_ts < 0.4:
                 return
             self._quick_last_ts = now
+            if self._quick_confirm_open:
+                # The system-wide chord is polled by a Tk timer, which still
+                # runs while the confirm below is up; a second press must not
+                # stack a second dialog.
+                return
             self._show_window()
             try:
                 clip = self.clipboard_get()
@@ -7747,11 +7808,27 @@ if GUI_AVAILABLE:
                 self.advisory.configure(text=message)
                 self.advisory.grid()
                 return
+            if quick_translate_needs_confirm(
+                self._input_text(), self._result_source_text, clip
+            ):
+                self._quick_confirm_open = True
+                try:
+                    replace = messagebox.askyesno(
+                        QUICK_REPLACE_DRAFT_TITLE,
+                        QUICK_REPLACE_DRAFT_PROMPT,
+                        parent=self,
+                    )
+                finally:
+                    self._quick_confirm_open = False
+                if not replace:
+                    self._refresh_status(state=QUICK_KEPT_DRAFT_STATUS)
+                    return
             # Replace, not insert-at-caret: Quick translate means "this is
             # the new message", not "append to whatever was already there".
             self.input_box.delete("1.0", "end")
             self.input_box.insert("1.0", clip)
             self._on_input_change()
+            self._quick_clip = clip
             self._auto_copy_on_deliver = True
             self._quick_incoming_reply = True
             self._run_selected_mode()
@@ -8613,7 +8690,9 @@ if GUI_AVAILABLE:
 
                 def _deliver_safe():
                     try:
-                        self._deliver(rid, text, situation, payload, correction_notes)
+                        self._deliver(rid, text, situation, payload,
+                                      correction_notes,
+                                      snapshot["default_direction"])
                     except tk.TclError:  # pragma: no cover - window closed
                         pass
 
@@ -8626,7 +8705,8 @@ if GUI_AVAILABLE:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def _deliver(self, rid, snap_text, situation, payload, correction_notes=None):
+        def _deliver(self, rid, snap_text, situation, payload,
+                     correction_notes=None, direction=None):
             # The window may have been destroyed between scheduling and running.
             try:
                 if not self.winfo_exists():
@@ -8708,8 +8788,27 @@ if GUI_AVAILABLE:
                 and self._current_main
                 and self._input_text() == snap_text
             ):
-                self._copy_main()
-                self._refresh_status(state="Copied.")
+                # v1.68: the copy lands seconds after the hotkey. Stand down
+                # if the user flipped direction, edited Situation or copied
+                # something else meanwhile; an unreadable (empty or non-text)
+                # clipboard counts as changed. Re-read here, on the Tk
+                # thread, immediately before the write.
+                try:
+                    clip_now = self.clipboard_get()
+                except Exception:
+                    clip_now = None
+                skip = quick_copy_skip_reason(
+                    self._quick_clip,
+                    clip_now,
+                    (direction if direction is not None
+                     else self.direction_var.get(), situation),
+                    (self.direction_var.get(), self._situation_text()),
+                )
+                if skip:
+                    self._refresh_status(state=skip)
+                else:
+                    self._copy_main()
+                    self._refresh_status(state="Copied.")
             self._clear_quick_followup()
 
         def _build_variation_card(self, index, variation):
